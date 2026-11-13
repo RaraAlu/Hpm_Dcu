@@ -9,6 +9,7 @@
 ## 工程导航
 
 - [文档索引与状态分类](docs/文档索引.md)：区分当前说明、设计资料和历史记录。
+- [环境依赖与外部资源准备](docs/当前说明/环境依赖与外部资源准备.md)：系统依赖、锁定工具包、离线资源、VSIX 及新主机恢复流程。
 - [编译调试下载经验总结](docs/当前说明/编译调试下载经验总结.md)：日常 CLI/GUI 操作、关键踩坑、保留区保护、排错和环境精简边界。
 - [目录层级与维护职责](docs/当前说明/目录层级与维护职责.md)：查找实际构建入口、业务源码、可选适配和本机产物。
 - [HPM 开发扩展分类与使用指南](docs/当前说明/开发扩展分类与使用指南.md)：已安装 VS Code 扩展、具体使用方法及与当前 Presets/调试保护的差异。
@@ -17,6 +18,8 @@
 - [调试与下载实测记录](docs/验证记录/2026-11-13-调试与下载实测记录.md)：真实目标板、扩展适配器测试、复位/启动暂停修正及保留区回读结果。
 
 ## 快速开始
+
+首次搭建或迁移机器，先完成[环境与资源准备](docs/当前说明/环境依赖与外部资源准备.md)。以下命令用于基础依赖与本地工具就绪后的日常开发。
 
 在 VS Code 中打开当前 `Dcu_dev` 目录，而不是上层目录或原固件目录。
 
@@ -66,7 +69,7 @@ GDB 13.2 支持 RV32 和基本 MI 调试，但该厂商包未启用 Python，因
 python3 scripts/dcu.py bootstrap
 ```
 
-该命令校验固定摘要，优先使用 `.tools/cache`；不会安装系统软件、修改 shell 配置、配置 USB 或访问目标。SDK 仍使用系统 Python 3.12 及 `PyYAML`、`Jinja2`，本机已验证可导入。
+该命令校验固定摘要，优先使用 `.tools/cache`；不会安装系统软件、修改 shell 配置、配置 USB 或访问目标。普通 SDK 配置仍使用系统 Python 3.12 和 `PyYAML`；`Jinja2` 用于当前 Presets 已排除的 IAR/SES 工程生成，不是普通构建的强制依赖。系统运行库、离线缓存及扩展安装要求统一见[环境准备文档](docs/当前说明/环境依赖与外部资源准备.md)。
 
 来源：[HPMicro GCC 正式发布](https://github.com/hpmicro/riscv-gnu-toolchain/releases/tag/2023.10.18)、[HPMicro OpenOCD 正式发布](https://github.com/hpmicro/riscv-openocd/releases/tag/hpm_xpi_v0.3.0)。
 
