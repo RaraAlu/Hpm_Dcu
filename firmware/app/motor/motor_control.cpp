@@ -1,5 +1,6 @@
 #include "motor_control.h"
 #include "encos_motor.h"
+#include "motor_driver_binding.hpp"
 #include "ethercat_canfd_gateway.h"
 extern "C" {
 #include "ecat_def.h"
@@ -53,7 +54,8 @@ typedef struct
     mc_routing_t route;
     mc_basic_t basic;
     mc_range_t range;
-    encos_profile_t profile;
+    dcu::motor::MotorDevice device;
+    dcu::app::ParameterDialect parameter_dialect;
     mc_axis_rx_t command;
     mc_axis_rx_t startup_command;
     uint32_t feedback_ms, power_ms, online_ms, position_ms, velocity_ms, current_ms, active_ms, lease_ms, commit_ms;
@@ -359,7 +361,7 @@ static bool accept_axis(unsigned a, const mc_axis_rx_t *command, bool permit, ui
         return true;
     }
     encos_frame_t f;
-    if (!x->configured || !encos_encode(command, &x->route, &x->profile, &f))
+    if (!x->configured || !dcu::app::encode_motor_command(x->device, *command, f))
     {
         stop_axis(a, x->configured ? 2 : 1);
         s->StatusWord |= 1u << 8;
@@ -400,7 +402,7 @@ static bool accept_axis(unsigned a, const mc_axis_rx_t *command, bool permit, ui
         x->startup_command.Kp = 0;
         x->startup_command.Kd = 0;
         x->startup_command.CurrentLimit = x->route.CurrentLimit < 4095 ? x->route.CurrentLimit : 4095;
-        if (!encos_encode(&x->startup_command, &x->route, &x->profile, &f))
+        if (!dcu::app::encode_motor_command(x->device, x->startup_command, f))
             return false;
         x->active_ms = now;
         x->control_sent = false;
@@ -522,7 +524,6 @@ static bool apply_config(void)
             return false;
         if (config.ActivePdoProfile == 2 && ch->MotorConfiguredMask)
             return false;
-        uint16_t ids = 0;
         if (ch->MotorConfiguredMask & 0x80u)
             return false;
         for (unsigned j = 0; j < ENCOS_MOTORS_PER_CHANNEL; j++)
@@ -531,12 +532,12 @@ static bool apply_config(void)
                 unsigned a = c * ENCOS_MOTORS_PER_CHANNEL + j;
                 mc_routing_t *r = OD(routing, BASE(a));
                 mc_basic_t *basic = OD(basic, BASE(a) + 1);
-                encos_profile_t p;
-                if (r->CanId < 1 || r->CanId > 8 || (ids & (1u << r->CanId)) || r->ModelProfileId != 0x8000 || r->StopPolicy != 0 || r->FeedbackPolicy != 1 || !encos_profile(OD(range, BASE(a) + 2), basic, &p))
+                if (!dcu::app::validate_motor_configuration(*r, *basic, *OD(range, BASE(a) + 2), ch->FrameFormat))
                     return false;
-                if (r->PositionLimitMin >= r->PositionLimitMax || r->PositionLimitMin < p.pos[0] * 1e6 || r->PositionLimitMax > p.pos[1] * 1e6 || !r->VelocityLimit || r->VelocityLimit > fmin(-p.vel[0], p.vel[1]) * 1e6 || !r->CurrentLimit || r->CurrentLimit > fmin(-p.current[0], p.current[1]) * 10 || !r->TorqueLimit || r->TorqueLimit > fmin(-p.torque[0], p.torque[1]) * 1000 || (r->PowerQueryPeriodMs && (r->PowerQueryPeriodMs < 20 || r->PowerQueryPeriodMs > 1000)) || basic->CommunicationMode != ch->FrameFormat || basic->CanTimeoutMs > 500)
-                    return false;
-                ids |= 1u << r->CanId;
+                for (unsigned previous = 0; previous < j; ++previous)
+                    if ((ch->MotorConfiguredMask & (1u << previous)) &&
+                        OD(routing, BASE(c * ENCOS_MOTORS_PER_CHANNEL + previous))->CanId == r->CanId)
+                        return false;
                 mask |= 1u << a;
             }
     }
@@ -553,14 +554,27 @@ static bool apply_config(void)
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++)
     {
         axis_t *x = &axes[a];
-        memset(x, 0, sizeof(*x));
+        *x = {};
         memset(STATE(a), 0, sizeof(mc_axis_tx_t));
         x->configured = (mask & (1u << a)) != 0;
         x->route = *OD(routing, BASE(a));
         x->basic = *OD(basic, BASE(a) + 1);
         x->range = *OD(range, BASE(a) + 2);
-        if (x->configured)
-            encos_profile(&x->range, &x->basic, &x->profile);
+        if (x->configured) {
+            const auto binding = dcu::app::configure_motor_driver(
+                a, x->route, x->basic, x->range, channels[a / ENCOS_MOTORS_PER_CHANNEL].FrameFormat);
+            if (!binding.driver) {
+                stop_all(1);
+                config_ready = false;
+                for (auto &axis : axes) {
+                    axis.configured = false;
+                    axis.device.reset();
+                }
+                return false;
+            }
+            x->device.bind(*binding.driver);
+            x->parameter_dialect = binding.parameter_dialect;
+        }
     }
     config_ready = true;
     return true;
@@ -590,6 +604,8 @@ static void service_done(unsigned c, uint16_t result)
 }
 static bool start_query(unsigned c, unsigned a, uint8_t code, uint8_t group, uint32_t now, bool internal)
 {
+    if (axes[a].parameter_dialect != dcu::app::ParameterDialect::EncosLegacy)
+        return false;
     service_t *t = &services[c];
     if (t->busy || (int32_t)(now - t->hold_until) < 0)
         return false;
@@ -759,8 +775,11 @@ static void consume_feedback(unsigned c, const encos_frame_t *f, uint32_t stamp,
     axis_t *x = &axes[a];
     uint8_t type = f->data[0] >> 5;
     bool valid = false;
-    if (type == 1 && x->active && x->control_sent && x->configured && encos_feedback(f, &x->profile, STATE(a)))
+    bool cyclic_feedback = false;
+    if (x->active && x->control_sent && x->configured &&
+        dcu::app::decode_motor_feedback(x->device, *f, *STATE(a)))
     {
+        cyclic_feedback = true;
         if (!x->feedback_seen)
         {
             x->position_seen = x->velocity_seen = x->current_seen = false;
@@ -774,6 +793,11 @@ static void consume_feedback(unsigned c, const encos_frame_t *f, uint32_t stamp,
         if (fabs((double)STATE(a)->ActualCurrent) > x->route.CurrentLimit * 10.0)
             stop_axis(a, 2);
     }
+    // PREOP parameter transactions may precede the first Apply configuration.
+    else if ((t->busy && t->sent && a == t->axis ?
+              dcu::app::motor_parameter_dialect(OD(routing, BASE(a))->ModelProfileId) :
+              x->parameter_dialect) != dcu::app::ParameterDialect::EncosLegacy)
+        return;
     else if ((type == 2 || type == 3) && f->dlc == 8 && (f->data[0] & 31) <= 7)
     {
         int32_t v;
@@ -842,9 +866,10 @@ static void consume_feedback(unsigned c, const encos_frame_t *f, uint32_t stamp,
         x->online_seen = true;
         x->online_ms = stamp;
         DIAG(a)->RxValidCount++;
-        if (type >= 1 && type <= 5)
+        if (cyclic_feedback || (type >= 1 && type <= 5))
         {
-            STATE(a)->MotorFaultRaw = f->data[0] & 31;
+            if (!cyclic_feedback)
+                STATE(a)->MotorFaultRaw = f->data[0] & 31;
             if (STATE(a)->MotorFaultRaw)
                 stop_axis(a, 0);
         }
@@ -1053,7 +1078,8 @@ void motor_control_process(void)
                     uint32_t elapsed_us = (uint32_t)(now_us - last_axis_control_us[a]);
                     if (x->control_sent && elapsed_us < period_us)
                         continue;
-                    if (encos_encode(x->feedback_seen ? &x->command : &x->startup_command, &x->route, &x->profile, &f))
+                    if (dcu::app::encode_motor_command(x->device,
+                            x->feedback_seen ? x->command : x->startup_command, f))
                     {
                         f.flags = channels[c].FrameFormat ? 24 : 0;
                         if (ethercat_canfd_send(c, &f, a))
@@ -1191,9 +1217,10 @@ static void publish(uint32_t now)
                 bool vel = x->velocity_seen && now - x->velocity_ms <= QUERY_VELOCITY_MS;
                 bool current = x->current_seen && now - x->current_ms <= QUERY_CURRENT_MS;
                 s->ValidFlags = (pos ? 1 : 0) | (vel ? 2 : 0) | (current ? 4 : 0);
-                if (current && x->profile.kt > 0)
+                const double torque_constant = x->device.capabilities().torque_constant_Nm_A;
+                if (current && torque_constant > 0)
                 {
-                    double torque = (double)s->ActualCurrent * x->profile.kt * 10;
+                    double torque = (double)s->ActualCurrent * torque_constant * 10;
                     if (torque >= INT32_MIN && torque <= INT32_MAX)
                     {
                         s->EstimatedTorque = (int32_t)torque;
@@ -1453,6 +1480,9 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
 }
 static UINT8 commit_service(unsigned a, bool maintenance, uint32_t now)
 {
+    if (dcu::app::motor_parameter_dialect(OD(routing, BASE(a))->ModelProfileId) !=
+        dcu::app::ParameterDialect::EncosLegacy)
+        return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     unsigned c = a / ENCOS_MOTORS_PER_CHANNEL;
     service_t *t = &services[c];
     if (t->busy || (int32_t)(now - t->hold_until) < 0 || channel_active(c))

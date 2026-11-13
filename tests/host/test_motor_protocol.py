@@ -17,7 +17,7 @@ class MotorProtocolTest(unittest.TestCase):
         cls.addClassCleanup(directory.cleanup)
         work = Path(directory.name)
         includes = (
-            "firmware/cfg", "firmware/generated/encos",
+            "firmware/cfg", "firmware/ports", "firmware/generated/encos",
             "firmware/protocols/encos", "firmware/app/motor",
         )
         flags = ["-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]

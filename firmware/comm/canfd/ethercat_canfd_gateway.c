@@ -25,7 +25,7 @@ enum {
     CANFD_BUS_OFF = 3,
 };
 
-typedef struct { encos_frame_t frame; uint32_t timestamp; } rx_item_t;
+typedef struct { dcu_can_frame_t frame; uint32_t timestamp; } rx_item_t;
 typedef struct { rx_item_t item[32]; volatile uint8_t read, write; } rx_queue_t;
 
 typedef struct {
@@ -150,7 +150,7 @@ static void receive_isr(uint32_t bus)
         rx_queue_t *q=&s_rx[bus]; uint8_t next=(q->write+1)&31;
         if(f.dlc>8||f.rtr||next==q->read){++s_rx_lost[bus];led_pulse(bus,CANFD_LED_ERR);continue;}
         rx_item_t *item=&q->item[q->write];
-        item->frame=(encos_frame_t){.id=f.use_ext_id?f.ext_id:f.std_id,.dlc=f.dlc,
+        item->frame=(dcu_can_frame_t){.id=f.use_ext_id?f.ext_id:f.std_id,.dlc=f.dlc,
             .flags=(f.use_ext_id?2:0)|(f.canfd_frame?8:0)|(f.bitrate_switch?16:0)};
         memcpy(item->frame.data,f.data_8,f.dlc);item->timestamp=s_now_ms;
         __asm__ volatile("" ::: "memory");q->write=next;
@@ -266,7 +266,7 @@ uint32_t ethercat_canfd_now_us(void)
 }
 uint32_t ethercat_canfd_rx_drops(unsigned bus) { return s_rx_lost[bus]; }
 uint32_t ethercat_canfd_completions(unsigned axis) { return s_tx_complete[axis/ENCOS_MOTORS_PER_CHANNEL][axis%ENCOS_MOTORS_PER_CHANNEL]; }
-bool ethercat_canfd_receive(unsigned bus, encos_frame_t *f, uint32_t *stamp)
+bool ethercat_canfd_receive(unsigned bus, dcu_can_frame_t *f, uint32_t *stamp)
 {
     rx_queue_t *q=&s_rx[bus];uint32_t irq=disable_global_irq(CSR_MSTATUS_MIE_MASK);
     bool available=q->read!=q->write;
@@ -307,7 +307,7 @@ void ethercat_canfd_cancel_axis(unsigned axis)
     if(axis<ENCOS_AXIS_COUNT)cancel_tag(axis/ENCOS_MOTORS_PER_CHANNEL,axis%ENCOS_MOTORS_PER_CHANNEL);
 }
 void ethercat_canfd_cancel_service(unsigned bus) { cancel_tag(bus,254); }
-bool ethercat_canfd_send(unsigned bus,const encos_frame_t *f,unsigned axis)
+bool ethercat_canfd_send(unsigned bus,const dcu_can_frame_t *f,unsigned axis)
 {
     if(bus>=4||f->dlc>8||(f->flags&~26u)||((f->flags&16)&&!(f->flags&8))||f->id>((f->flags&2)?0x1FFFFFFFu:0x7FFu)||ethercat_canfd_bus_state(bus)==3)return false;
     mcan_tx_frame_t tx={0};uint32_t index;

@@ -6,9 +6,8 @@
 #include <stdint.h>
 #include "dcu_compiler.h"
 
-#define ENCOS_CHANNEL_COUNT 4u
-#define ENCOS_MOTORS_PER_CHANNEL 7u
-#define ENCOS_AXIS_COUNT (ENCOS_CHANNEL_COUNT * ENCOS_MOTORS_PER_CHANNEL)
+#include "device_config.h"
+#include "can_frame.h"
 #include "hpm_common.h"
 
 /* 固定过程映像：4 路总线，每路 7 个帧槽，每个方向共 512 字节。 */
@@ -59,7 +58,6 @@ DCU_STATIC_ASSERT(sizeof(canfd_bus_pdo_t) == 128, "CAN FD bus PDO must be 128 by
 DCU_STATIC_ASSERT(sizeof(ethercat_canfd_process_image_t) == CANFD_GATEWAY_PROCESS_SIZE,
                "EtherCAT process image must be 512 bytes");
 
-#include "encos_motor.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -71,7 +69,7 @@ uint32_t ethercat_canfd_now_us(void);
 uint32_t ethercat_canfd_rx_drops(unsigned bus);
 uint32_t ethercat_canfd_completions(unsigned axis);
 uint16_t ethercat_canfd_bus_state(uint32_t bus);
-bool ethercat_canfd_receive(unsigned bus, encos_frame_t *frame, uint32_t *stamp);
+bool ethercat_canfd_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stamp);
 bool ethercat_canfd_pending(unsigned bus);
 bool ethercat_canfd_axis_pending(unsigned axis);
 unsigned ethercat_canfd_tx_free(unsigned bus);
@@ -79,7 +77,7 @@ uint32_t ethercat_canfd_tx_progress(unsigned bus);
 void ethercat_canfd_cancel(unsigned bus);
 void ethercat_canfd_cancel_axis(unsigned axis);
 void ethercat_canfd_cancel_service(unsigned bus);
-bool ethercat_canfd_send(unsigned bus,const encos_frame_t *frame,unsigned axis);
+bool ethercat_canfd_send(unsigned bus,const dcu_can_frame_t *frame,unsigned axis);
 #ifdef __cplusplus
 }
 #endif

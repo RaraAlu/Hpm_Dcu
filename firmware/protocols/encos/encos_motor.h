@@ -1,8 +1,9 @@
 #ifndef ENCOS_MOTOR_H
 #define ENCOS_MOTOR_H
 #include <stdbool.h>
+#include "can_frame.h"
 #include "encos_interface.h"
-typedef struct { uint32_t id; uint8_t dlc, flags, data[8]; } encos_frame_t;
+typedef dcu_can_frame_t encos_frame_t;
 /* Explicitly confirmed custom profile (0x8000). No guessed installed motor model. */
 typedef struct { double kp[2], kd[2], pos[2], vel[2], torque[2], current[2], kt; } encos_profile_t;
 #ifdef __cplusplus

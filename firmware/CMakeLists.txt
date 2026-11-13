@@ -1,5 +1,6 @@
-sdk_inc(cfg generated/encos generated/ethercat)
+sdk_inc(cfg ports generated/encos generated/ethercat)
 
 add_subdirectory(app)
 add_subdirectory(comm)
 add_subdirectory(protocols/encos)
+add_subdirectory(devices)

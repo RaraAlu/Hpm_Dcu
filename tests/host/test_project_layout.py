@@ -28,6 +28,9 @@ class ProjectLayoutTest(unittest.TestCase):
             "digital_ioObjects.h": "firmware/generated/ethercat/digital_ioObjects.h",
             "gatewayObjects.h": "firmware/generated/ethercat/gatewayObjects.h",
             "eeprom.h": "firmware/generated/ethercat/eeprom.h",
+            "can_frame.h": "firmware/ports/can_frame.h",
+            "motor_driver.hpp": "firmware/devices/motor/motor_driver.hpp",
+            "imu_device.hpp": "firmware/devices/imu/imu_device.hpp",
         }
         roots = (ROOT / "firmware", ROOT / "third_party/beckhoff_ssc/Src")
         for name, owner in owners.items():
