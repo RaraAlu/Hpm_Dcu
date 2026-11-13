@@ -18,8 +18,10 @@
       "serverLaunchTimeout": 20000,
       "preLaunchTask": "DCU: Build Debug",
       "launchCompleteCommand": "None",
+      "stopAtConnect": true,
       "hardwareBreakpoints": {"require": true},
-      "setupCommands": [{"text": "hbreak main", "description": "Set a hardware breakpoint at main"}]
+      "unknownBreakpointHandling": "stop",
+      "postRemoteConnectCommands": [{"text": "hbreak main", "description": "Set a hardware breakpoint after symbols and target are ready"}]
     },
     {
       "name": "DCU: Flash + Reset Debug (backs up retained EEPROM)",
@@ -38,8 +40,10 @@
       "serverLaunchTimeout": 90000,
       "preLaunchTask": "DCU: Build Debug",
       "launchCompleteCommand": "None",
+      "stopAtConnect": true,
       "hardwareBreakpoints": {"require": true},
-      "setupCommands": [{"text": "hbreak main", "description": "Set a hardware breakpoint at main"}]
+      "unknownBreakpointHandling": "stop",
+      "postRemoteConnectCommands": [{"text": "hbreak main", "description": "Set a hardware breakpoint after symbols and target are ready"}]
     }
   ],
   "inputs": [

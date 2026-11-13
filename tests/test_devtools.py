@@ -121,12 +121,27 @@ class DevtoolsTest(unittest.TestCase):
         for configuration in launch["configurations"]:
             self.assertEqual(configuration["serverStarted"], "DCU_DEBUG_READY")
             self.assertEqual(configuration["launchCompleteCommand"], "None")
+            self.assertTrue(configuration.get("stopAtConnect"))
             self.assertTrue(configuration["hardwareBreakpoints"]["require"])
             self.assertIn("${input:targetConfirmation}", configuration["debugServerArgs"])
+            self.assertNotIn("setupCommands", configuration)
+            self.assertIn("hbreak main", [item["text"] for item in configuration["postRemoteConnectCommands"]])
 
     def test_disconnect_is_explicitly_configured_to_halt(self):
         configuration = (ROOT / "debug/openocd.cfg").read_text()
         self.assertIn("-event gdb-detach { halt }", configuration)
+
+    def test_external_breakpoints_pause_without_becoming_exceptions(self):
+        launch = json.loads((ROOT / ".vscode/launch.json").read_text())
+        for configuration in launch["configurations"]:
+            with self.subTest(configuration=configuration["name"]):
+                self.assertEqual(configuration.get("unknownBreakpointHandling"), "stop")
+
+    def test_hardware_reset_waits_for_release_without_early_halt(self):
+        configuration = (ROOT / "debug/openocd.cfg").read_text()
+        self.assertIn("adapter srst delay 500", configuration)
+        self.assertGreater(configuration.index("$_TARGET0 configure -event reset-deassert-pre {}"),
+                           configuration.index("source [find soc/hpm5e00.cfg]"))
 
     def test_target_transaction_uses_a_checked_private_snapshot(self):
         directory = Path(self.directory.name)
