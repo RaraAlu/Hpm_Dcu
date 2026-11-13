@@ -2,9 +2,16 @@
 
 独立的 HPM5E31 EtherCAT / ENCOS 固件副本，开发环境为 Ubuntu 24.04 x86_64、CMake、厂商 GNU 工具链、OpenOCD 和 J-Link JTAG。
 
-本轮先建立可重复构建的基线，不进行业务架构整理或控制逻辑优化。原 `../HPM_ethercat_canfd_encos_V1.0` 目录保持不动。导入范围见 [源码导入记录](docs/SOURCE_IMPORT.md)。
+首次导入建立了可重复构建的基线。本轮在此基础上建立本地 Git 基线、目录职责清单和文档分类，不移动业务源码或修改控制逻辑。原 `../HPM_ethercat_canfd_encos_V1.0` 目录保持不动。导入范围见 [源码导入记录](docs/SOURCE_IMPORT.md)。
 
 **当前边界：Debug/Release 编译、工具运行、源码符号读取和离线保护测试已验证；实际 JTAG 连接、烧录、断点和硬件运行尚未验收。**
+
+## 工程导航
+
+- [文档索引与状态分类](docs/README.md)：区分当前说明、设计资料和历史记录。
+- [目录层级与维护职责](docs/current/PROJECT_LAYOUT.md)：查找实际构建入口、业务源码、可选适配和本机产物。
+- [生成文件与来源清单](docs/current/GENERATED_FILES.md)：识别协议生成物、历史副本和待恢复的生成链。
+- [目录整理验证记录](docs/validation/2026-11-13-directory-baseline.md)：本地 Git 基线、离线检查和本轮未改动范围。
 
 ## 快速开始
 
@@ -133,4 +140,4 @@ CMake 也有 `check-image`、`flash`、`verify`、`debug-server` 目标。后三
 
 原 SSC 代码的 GCC 警告仍保留，包括地址比较、位掩码窄化、packed 成员和 Release 邮箱数组边界警告；未通过屏蔽警告或修改协议栈把构建“变绿”。既有 JS 生成脚本/部分 JSON 不是可解析文本，普通构建使用现成生成文件，不会执行这些脚本。后续业务整理时需单独恢复并验收生成链。
 
-`readme/`、`doc/` 中导入的旧说明和测试记录属于历史材料，不代表本轮环境或当前板上固件的状态。
+`docs/` 中导入的旧说明和测试记录按[历史材料清单](docs/archive/README.md)识别，原路径暂时保留。旧文档中的 `readme/`、`doc/` 和 Windows 路径是历史上下文，不代表当前目录布局；历史记录也不代表当前板上固件的状态。

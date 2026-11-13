@@ -1,5 +1,7 @@
 # CAN 收发指示灯初始化与控制说明
 
+> 历史移植与设计资料：引脚、冲突和显示逻辑需与当前板级配置及源码重新核对，不构成本轮硬件验收。当前入口见[目录清单](current/PROJECT_LAYOUT.md)。
+
 ## 1. 文档目的
 
 本文记录参考工程 `kh-ethercat-canfdx4-op/Firmware` 中 4 路 CAN FD 状态指示灯的引脚定义、初始化过程和运行时控制逻辑，供 `HPM_ethercat_canfd_encos_V1.0` 工程配置和移植时使用。

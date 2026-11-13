@@ -1,5 +1,7 @@
 # TwinCAT 3 验证 HPM5E31 EtherCAT 转四路 CAN FD 透传网关
 
+> 历史测试步骤：本文八槽、576 B 透传配置不是当前 ENCOS 映射，不能直接用于当前固件。当前文件入口见[目录清单](current/PROJECT_LAYOUT.md)，验证状态见[文档索引](README.md)。
+
 ## 1. 本版本实现范围
 
 固件提供 1 个 EtherCAT 从站和 4 路独立 CAN FD，总线对应关系如下：

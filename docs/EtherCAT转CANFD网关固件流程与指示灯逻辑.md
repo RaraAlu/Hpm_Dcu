@@ -1,5 +1,7 @@
 # EtherCAT 转 CAN FD 网关固件流程与指示灯逻辑
 
+> 历史透明网关版本说明：过程映像、回调和调度描述不直接代表当前 ENCOS 电机业务。当前实现入口见[目录清单](current/PROJECT_LAYOUT.md)，协议文件见[生成清单](current/GENERATED_FILES.md)。
+
 本文说明 HPM5E31 自研板网关固件的启动流程、EtherCAT 与四路 CAN FD 之间的数据透传路径、过程映像格式，以及 TX/RX/ERR 指示灯的实际触发逻辑。
 
 本文对应当前工程代码。TwinCAT 3 的 XML 导入、EEPROM 烧写、PDO 绑定和 PLC 测试程序请参见 [TwinCAT3验证EtherCAT转CANFD透传网关.md](TwinCAT3验证EtherCAT转CANFD透传网关.md)。
