@@ -1,10 +1,39 @@
+# Workspace-local tools, build output and target-operation evidence.
 .tools/
 build/
 artifacts/
-__pycache__/
-*.pyc
-CMakeUserPresets.json
-config/board.local.json
-.vscode/*.db*
 .codegraph/
 
+# Machine-specific configuration; keep shareable environment templates visible.
+CMakeUserPresets.json
+config/board.local.json
+/.env
+/.env.*
+!/.env.example
+!/.env.template
+
+# Local Python environments and caches.
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Editor databases and HPM Explorer recovery backups.
+.vscode/*.db*
+/.vscode/hpm-explorer.settings-backup.json
+/.vscode/hpm-explorer.launch-backup.*.jsonc
+
+# Accidental in-source CMake/Ninja output, restricted to the repository root.
+/CMakeCache.txt
+/CMakeFiles/
+/build.ninja
+/rules.ninja
+/.ninja_deps
+/.ninja_log
+/cmake_install.cmake
+/compile_commands.json
+/CTestTestfile.cmake
+/Testing/
+
+# Standalone OpenOCD log; normal target-operation logs live in artifacts/.
+/openocd.log
