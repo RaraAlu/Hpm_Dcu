@@ -1,0 +1,10 @@
+{
+  "board_verified": false,
+  "srst_connected": false,
+  "jlink_serial": "",
+  "adapter_speed_khz": 1000,
+  "flash_size_bytes": 1048576,
+  "flash_sector_size_bytes": 4096,
+  "flash_opt0": "0x00000005",
+  "flash_opt1": "0x00001000"
+}

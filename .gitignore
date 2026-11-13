@@ -1,0 +1,10 @@
+.tools/
+build/
+artifacts/
+__pycache__/
+*.pyc
+CMakeUserPresets.json
+config/board.local.json
+.vscode/*.db*
+.codegraph/
+

@@ -1,0 +1,24 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": false,
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/hpm-debug/compile_commands.json",
+  "C_Cpp.default.compilerPath": "${workspaceFolder}/.tools/hpm-gcc-13.2.0/bin/riscv32-unknown-elf-gcc",
+  "files.watcherExclude": {
+    "**/.tools/**": true,
+    "**/build/**": true,
+    "**/artifacts/**": true
+  },
+  "search.exclude": {
+    ".tools": true,
+    "build": true,
+    "artifacts": true
+  },
+  "ROS2.distro": "jazzy",
+  "python.autoComplete.extraPaths": [
+    "/opt/ros/jazzy/lib/python3.12/site-packages"
+  ],
+  "python.analysis.extraPaths": [
+    "/opt/ros/jazzy/lib/python3.12/site-packages"
+  ]
+}

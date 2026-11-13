@@ -1,0 +1,2 @@
+# J-Link USB access; no world-writable devices and no target initialization.
+SUBSYSTEM=="usb", ATTR{idVendor}=="1366", ATTR{idProduct}=="0101", GROUP="plugdev", MODE="0660", TAG+="uaccess"

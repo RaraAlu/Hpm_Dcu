@@ -1,0 +1,50 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "hpm-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "environment": {
+        "GNURISCV_TOOLCHAIN_PATH": "${sourceDir}/.tools/hpm-gcc-13.2.0",
+        "HPM_SDK_TOOLCHAIN_VARIANT": "gcc",
+        "PATH": "${sourceDir}/.tools/host/usr/bin:$penv{PATH}"
+      },
+      "cacheVariables": {
+        "APP_NAME": "dcu",
+        "HPM_BUILD_TYPE": "flash_xip",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/.tools/host/usr/bin/ninja",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "EXCLUDED_IDE_IAR": true,
+        "EXCLUDED_IDE_SES": true,
+        "CONFIG_CAN_LED_TEST": false
+      }
+    },
+    {
+      "name": "hpm-debug",
+      "inherits": "hpm-base",
+      "displayName": "HPM5E31 Flash XIP Debug",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "debug"}
+    },
+    {
+      "name": "hpm-release",
+      "inherits": "hpm-base",
+      "displayName": "HPM5E31 Flash XIP Release",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "release"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "hpm-debug", "configurePreset": "hpm-debug", "jobs": 4},
+    {"name": "hpm-release", "configurePreset": "hpm-release", "jobs": 4}
+  ],
+  "testPresets": [
+    {
+      "name": "hpm-debug",
+      "configurePreset": "hpm-debug",
+      "output": {"outputOnFailure": true},
+      "execution": {"noTestsAction": "error"}
+    }
+  ]
+}

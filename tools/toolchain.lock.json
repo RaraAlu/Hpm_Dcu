@@ -1,0 +1,43 @@
+{
+  "host": "Ubuntu 24.04 x86_64",
+  "sdk": "1.12.1-localized",
+  "gcc": "13.2.0",
+  "gdb": "13.2 (bundled, no Python scripting)",
+  "openocd_release": "hpm_xpi_v0.3.0",
+  "assets": [
+    {
+      "name": "gcc",
+      "file": "rv32imac_zicsr_zifencei_multilib_b_ext-linux.tar.gz",
+      "url": "https://github.com/hpmicro/riscv-gnu-toolchain/releases/download/2023.10.18/rv32imac_zicsr_zifencei_multilib_b_ext-linux.tar.gz",
+      "sha256": "550e867c86d14e0a1fddfde4d9316f7485a396474311c5d8ab61ebff5492ce17",
+      "checksum_source": "Recorded from initial official HTTPS download; upstream release has no SHA256 attachment",
+      "destination": "hpm-gcc-13.2.0",
+      "archive_root": "rv32imac_zicsr_zifencei_multilib_b_ext-linux"
+    },
+    {
+      "name": "openocd",
+      "file": "openocd-linux-hpm-0.3.0.tar.gz",
+      "url": "https://github.com/hpmicro/riscv-openocd/releases/download/hpm_xpi_v0.3.0/openocd-linux.tar.gz",
+      "sha256": "bd951e31d7a114d43366a77521e6c8b036657b1df3019072d8fe49d12aa05bbb",
+      "checksum_source": "Official GitHub release asset digest",
+      "destination": "openocd-hpm-0.3.0",
+      "archive_root": ""
+    },
+    {
+      "name": "ninja",
+      "file": "ninja-build_1.11.1-2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/n/ninja-build/ninja-build_1.11.1-2_amd64.deb",
+      "sha256": "6a17f76a0f75586f1292f6c61a9b07fd0dec963baf6a102b17673f601c6b323a",
+      "checksum_source": "Ubuntu APT package metadata",
+      "destination": "host"
+    },
+    {
+      "name": "hidapi",
+      "file": "libhidapi-hidraw0_0.14.0-1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/h/hidapi/libhidapi-hidraw0_0.14.0-1build1_amd64.deb",
+      "sha256": "940d2f097676c795fb94d61070a7e63547c76d9ba6ea81b87b5cf43f7458032c",
+      "checksum_source": "Ubuntu APT package metadata",
+      "destination": "host"
+    }
+  ]
+}

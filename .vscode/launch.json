@@ -1,0 +1,53 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "DCU: Reset Debug (verify existing Flash, no programming)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/hpm-debug/output/dcu.elf",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "${workspaceFolder}/scripts/gdb.sh",
+      "miDebuggerServerAddress": "127.0.0.1:3333",
+      "debugServerPath": "/usr/bin/python3",
+      "debugServerArgs": "\"${workspaceFolder}/scripts/dcu.py\" debug-server --skip-build --confirm-target \"${input:targetConfirmation}\"",
+      "serverStarted": "DCU_DEBUG_READY",
+      "filterStdout": true,
+      "filterStderr": true,
+      "serverLaunchTimeout": 20000,
+      "preLaunchTask": "DCU: Build Debug",
+      "launchCompleteCommand": "None",
+      "hardwareBreakpoints": {"require": true},
+      "setupCommands": [{"text": "hbreak main", "description": "Set a hardware breakpoint at main"}]
+    },
+    {
+      "name": "DCU: Flash + Reset Debug (backs up retained EEPROM)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/hpm-debug/output/dcu.elf",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "${workspaceFolder}/scripts/gdb.sh",
+      "miDebuggerServerAddress": "127.0.0.1:3333",
+      "debugServerPath": "/usr/bin/python3",
+      "debugServerArgs": "\"${workspaceFolder}/scripts/dcu.py\" debug-server --skip-build --flash-first --confirm-target \"${input:targetConfirmation}\"",
+      "serverStarted": "DCU_DEBUG_READY",
+      "filterStdout": true,
+      "filterStderr": true,
+      "serverLaunchTimeout": 90000,
+      "preLaunchTask": "DCU: Build Debug",
+      "launchCompleteCommand": "None",
+      "hardwareBreakpoints": {"require": true},
+      "setupCommands": [{"text": "hbreak main", "description": "Set a hardware breakpoint at main"}]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "targetConfirmation",
+      "type": "promptString",
+      "description": "Isolate motor power. Type RESET_TARGET to permit reset/halt and this debug operation; otherwise cancel.",
+      "default": ""
+    }
+  ]
+}

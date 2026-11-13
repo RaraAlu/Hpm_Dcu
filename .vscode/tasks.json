@@ -1,0 +1,63 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "DCU: Build Debug",
+      "type": "process",
+      "command": "/usr/bin/python3",
+      "args": ["${workspaceFolder}/scripts/dcu.py", "build", "--preset", "hpm-debug"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "group": {"kind": "build", "isDefault": true},
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "DCU: Build Release",
+      "type": "process",
+      "command": "/usr/bin/python3",
+      "args": ["${workspaceFolder}/scripts/dcu.py", "build", "--preset", "hpm-release"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "DCU: Doctor (offline)",
+      "type": "process",
+      "command": "/usr/bin/python3",
+      "args": ["${workspaceFolder}/scripts/dcu.py", "doctor"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    },
+    {
+      "label": "DCU: Offline Tests",
+      "type": "process",
+      "command": "/usr/bin/python3",
+      "args": ["${workspaceFolder}/scripts/dcu.py", "test"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "DCU: Flash (explicit confirmation)",
+      "type": "process",
+      "command": "/usr/bin/python3",
+      "args": ["${workspaceFolder}/scripts/dcu.py", "flash", "--confirm-target", "${input:targetConfirmation}"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    },
+    {
+      "label": "DCU: Verify (reset and halt)",
+      "type": "process",
+      "command": "/usr/bin/python3",
+      "args": ["${workspaceFolder}/scripts/dcu.py", "verify", "--confirm-target", "${input:targetConfirmation}"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "targetConfirmation",
+      "type": "promptString",
+      "description": "Isolate motor power. Type RESET_TARGET to permit reset/halt and the selected operation; otherwise cancel.",
+      "default": ""
+    }
+  ]
+}
