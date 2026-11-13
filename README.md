@@ -2,9 +2,11 @@
 
 独立的 HPM5E31 EtherCAT / ENCOS 固件副本，开发环境为 Ubuntu 24.04 x86_64、CMake、厂商 GNU 工具链、OpenOCD 和 J-Link JTAG。
 
-首次导入建立了可重复构建的基线。本轮在此基础上建立本地 Git 基线、目录职责清单和文档分类，不移动业务源码或修改控制逻辑。原 `../HPM_ethercat_canfd_encos_V1.0` 目录保持不动。首次导入记录原路径为 `docs/SOURCE_IMPORT.md`，当前工作区已移除；现存资料见[文档索引](docs/文档索引.md)。
+首次导入建立了可重复构建的基线，当前已按单片机维护职责完成目录迁移：固件位于 `firmware/`，依赖位于 `third_party/`，自研 BSP、生成物与协议交付物分开维护。旧示例、失效工具和过期资料已删除，当前入口见[文档索引](docs/文档索引.md)。工程外的原 `../HPM_ethercat_canfd_encos_V1.0` 目录不在本次清理范围内。
 
-**当前边界：Debug/Release 编译、JTAG 连接、固件下载与独立回读、基础断点/单步/变量/内存读取已验证；扩展 GUI、脱离调试器启动、EtherCAT/CAN 控制业务和实时性仍未验收。**
+**当前边界：混合语言版本已通过 Debug/Release 编译与离线测试，尚未上板；此前 C 基线已验证 JTAG、下载回读及基础断点/单步/变量/内存读取。扩展 GUI、脱离调试器启动、EtherCAT/CAN 控制业务和实时性仍未验收。**
+
+当前采用 C/C++ 混合固件：电机实现使用 C++17，IMU 与后续项目自有抽象层沿用 C++；入口、协议栈、底层适配及生成存储保留 C。混合语言版本已通过离线构建与协议测试，尚未上板，不能沿用此前 C 固件的硬件验收结论。语言归属、首次清理步骤和约束见[混合语言开发规范](docs/当前说明/混合语言开发规范.md)。
 
 ## 工程导航
 
@@ -12,8 +14,13 @@
 - [环境依赖与外部资源准备](docs/当前说明/环境依赖与外部资源准备.md)：系统依赖、锁定工具包、离线资源、VSIX 及新主机恢复流程。
 - [编译调试下载经验总结](docs/当前说明/编译调试下载经验总结.md)：日常 CLI/GUI 操作、关键踩坑、保留区保护、排错和环境精简边界。
 - [目录层级与维护职责](docs/当前说明/目录层级与维护职责.md)：查找实际构建入口、业务源码、可选适配和本机产物。
+- [配置文件归档规范](docs/当前说明/配置文件归档规范.md)：各模块 `cfg/` 的职责、工具固定入口例外、本机私有配置和迁移验证。
+- [遗留清理验证记录](docs/验证记录/2026-11-13-遗留清理验证记录.md)：删除范围、活动资源保留、离线验证和后续限制。
 - [HPM 开发扩展分类与使用指南](docs/当前说明/开发扩展分类与使用指南.md)：已安装 VS Code 扩展、具体使用方法及与当前 Presets/调试保护的差异。
 - [生成文件与来源清单](docs/当前说明/生成文件与来源清单.md)：识别协议生成物、历史副本和待恢复的生成链。
+- [混合语言开发规范](docs/当前说明/混合语言开发规范.md)：C/C++ 归属、跨语言接口、实时约束与当前验证范围。
+- [目录规划与实施状态](docs/设计资料/单片机工程目录重构规划.md)：实际迁移对照、模块归属及尚待解耦的依赖。
+- [混合语言目录迁移验证记录](docs/验证记录/2026-11-13-混合语言目录迁移验证记录.md)：源码摘要、70 个默认编译单元、BSP、二进制差异和离线验收范围。
 - [目录整理验证记录](docs/验证记录/2026-11-13-目录整理基线.md)：本地 Git 基线、离线检查和首次整理的未改动范围。
 - [调试与下载实测记录](docs/验证记录/2026-11-13-调试与下载实测记录.md)：真实目标板、扩展适配器测试、复位/启动暂停修正及保留区回读结果。
 
@@ -22,6 +29,8 @@
 首次搭建或迁移机器，先完成[环境与资源准备](docs/当前说明/环境依赖与外部资源准备.md)。以下命令用于基础依赖与本地工具就绪后的日常开发。
 
 在 VS Code 中打开当前 `Dcu_dev` 目录，而不是上层目录或原固件目录。
+
+入口在 [firmware/app/main.c](firmware/app/main.c)。自研板通过 `firmware/bsp/dcu_hpm5e31/` 接入，不再修改 SDK 内评估板目录。首次从旧布局切换时，先按[清理步骤](docs/当前说明/混合语言开发规范.md)移除旧构建缓存与静态库对象，再使用日常命令。
 
 ```bash
 cd ~/work/MCU/Hpm/igh_ethercat_v2.2/hpm/Dcu_dev
@@ -46,7 +55,7 @@ build/hpm-debug/image-check.json
 build/hpm-release/output/dcu.elf
 ```
 
-不需要手动设置全局 `HPM_SDK_BASE` 或交叉编译器 PATH。Presets 和脚本使用当前工程内的工具与 SDK，普通构建不会访问 J-Link。
+不需要手动设置全局 `HPM_SDK_BASE` 或交叉编译器 PATH。根 `CMakePresets.json` 仅引用 [cmake/cfg/CMakePresets.json](cmake/cfg/CMakePresets.json)，实际构建参数只维护一份。Presets 和脚本使用当前工程内的工具与 SDK，普通构建不会访问 J-Link。
 
 ## 固定工具版本
 
@@ -59,7 +68,7 @@ build/hpm-release/output/dcu.elf
 | Ninja | Ubuntu 24.04 包 `1.11.1-2` |
 | HIDAPI | Ubuntu 包 `0.14.0-1build1`，只解包到本工程内 |
 
-工具在 `.tools/`，安装包摘要、固定下载地址和摘要来源记录在 [toolchain.lock.json](tools/toolchain.lock.json)。不自动升级。厂商 OpenOCD 程序自身显示 `0.11.0+dev (2025-07-16-11:09)`，这里锁定的是其正式发布标签和附件 SHA-256，不是下载滚动开发分支。
+工具在 `.tools/`，安装包摘要、固定下载地址和摘要来源记录在 [toolchain.lock.json](tools/cfg/toolchain.lock.json)。不自动升级。厂商 OpenOCD 程序自身显示 `0.11.0+dev (2025-07-16-11:09)`，这里锁定的是其正式发布标签和附件 SHA-256，不是下载滚动开发分支。
 
 GDB 13.2 支持 RV32 和基本 MI 调试，但该厂商包未启用 Python，因此不配置依赖 Python 的 pretty-printer。GCC 附件没有厂商公布的 SHA-256，锁文件中的 GCC 摘要来自首次官方 HTTPS 下载，不能称为厂商签名认证。
 
@@ -77,7 +86,7 @@ python3 scripts/dcu.py bootstrap
 
 - `Ctrl+Shift+B`：默认执行 `DCU: Build Debug`。
 - 任务菜单提供 Release、离线检查、测试、烧录和校验入口。
-- CMake Tools 使用 Presets；C/C++ 扩展使用本次构建的编译数据库，不再使用原目录的 ROS2/x86 配置。
+- CMake Tools 使用 Presets；C/C++ 索引已从 ROS2/x86 旧配置切换到交叉工具链和编译数据库，其他扩展的 ROS2/Python 辅助设置不作为固件构建来源。
 - F5 提供两个独立入口：校验已有 Flash 后调试，或先备份/烧录再调试。
 - 两个调试入口都属于**复位后调试**，不是无扰动附加；使用 `stopAtConnect=true` 配合 `launchCompleteCommand=None` 保持连接后暂停，单设后者不够。
 - 硬件断点启用，加载符号并连接目标后预设 `main` 断点；手动继续可停到 `main`。目前已验证单个硬件断点，未验收全部断点资源。
@@ -97,7 +106,7 @@ bash scripts/setup-usb.sh
 
 向导分三步：安装仅匹配该 VID/PID 的 udev 规则、重载规则、重新插拔并检查权限。sudo 密码只在本机终端输入，不会写入文件；不要用 sudo 启动整个 VS Code。向导不执行 JTAG、复位或烧录命令，重新插拔前仍应隔离电机动力。
 
-[board.local.json](config/board.local.json) 已按用户确认的 Windows 既有默认配置将 `board_verified` 和 `srst_connected` 设为 `true`；Linux 本次 Flash 探测返回 1 MiB 容量、4 KiB 扇区，并完成烧录和回读。用户确认电机动力隔离并授权本次复位、暂停和烧录；这些条件不代表以后每次操作都自动成立。换板、换接线或首次联调前必须重新确认：
+[board.local.json](scripts/cfg/board.local.json) 已按用户确认的 Windows 既有默认配置将 `board_verified` 和 `srst_connected` 设为 `true`；Linux 本次 Flash 探测返回 1 MiB 容量、4 KiB 扇区，并完成烧录和回读。用户确认电机动力隔离并授权本次复位、暂停和烧录；这些条件不代表以后每次操作都自动成立。换板、换接线或首次联调前必须重新确认：
 
 1. J-Link 型号、固件、VTref/GND、电源及 TCK/TMS/TDI/TDO 接线。
 2. nSRST 确实接到目标复位脚；当前配置为 `srst_only`。
@@ -140,7 +149,7 @@ CMake 也有 `check-image`、`flash`、`verify`、`debug-server` 目标。后三
 - Debug 与 Release 完整编译链接、ELF/映像生成与保留区检查。
 - GDB 能读取新 ELF 的 `main` 地址、源码路径和行号。
 - OpenOCD 配置解析，仅执行 `shutdown`，未执行 `init`。
-- 35 项离线保护与工具测试，以及 CTest 入口。
+- 55 项离线测试及 CTest 入口，其中包括 35 项保护与工具测试、8 项协议和 C/C++ 互操作测试、4 项目录归属与文档命名测试、8 项配置归档测试。
 - USB 用户读写权限。
 - 实物 TAP `0x1000563d`、单个 RV32 hart、Flash 探测、受保护下载及独立回读；6 个非空 ELF 加载段全部匹配，擦除范围外和 64 KiB EEPROM 均零字节变化。
 - C/C++ 两个现有入口的调试适配器，以及 Cortex-Debug 外接受保护 OpenOCD 服务的基础互操作：连接暂停、`main` 硬件断点、单步、变量、16 字节内存读取及断开。
@@ -149,6 +158,6 @@ CMake 也有 `check-image`、`flash`、`verify`、`debug-server` 目标。后三
 
 未验证：VS Code GUI 点击流程、HPM 插件默认 J-Link GDB Server 配置、SVD/RTOS/SWO 视图、故障注入、脱离调试器启动、EtherCAT/CAN 功能、实时性和电机停止行为。C/C++ 适配器仍提示未识别 RISC-V 的架构元数据并假定 x86_64；实际 GDB/目标为 RV32，基础功能通过，但不能据此保证所有复杂数据展示均兼容。
 
-原 SSC 代码的 GCC 警告仍保留，包括地址比较、位掩码窄化、packed 成员和 Release 邮箱数组边界警告；未通过屏蔽警告或修改协议栈把构建“变绿”。既有 JS 生成脚本/部分 JSON 不是可解析文本，普通构建使用现成生成文件，不会执行这些脚本。后续业务整理时需单独恢复并验收生成链。
+原 SSC 代码的 GCC 警告仍保留，包括地址比较、位掩码窄化、packed 成员和 Release 邮箱数组边界警告；未通过屏蔽警告或修改协议栈把构建“变绿”。已删除不可解析的旧 JS 生成脚本和 JSON 材料，普通构建继续使用现成生成文件。后续调整协议前必须单独恢复并验收生成链，不能因旧文件已清理就认定可再生成。
 
-`docs/` 中现存文件与子目录统一使用中文名称。已移除的旧说明、图片和日志仅在[历史材料清单](docs/历史资料/历史材料清单.md)中保留原路径说明，没有恢复为实际文件。历史记录中的 `readme/`、`doc/` 和 Windows 路径不代表当前目录布局，也不代表当前板上固件的状态。
+`docs/` 中现存文件与子目录统一使用中文名称。`legacy/` 和 `docs/历史资料/` 已删除，仅保留当前说明、设计规划和有效验证记录；旧材料可从 Git 历史追溯，不保留工作区副本。历史验证记录中的旧目录和 Windows 路径只代表当时状态，不作为当前操作入口。
