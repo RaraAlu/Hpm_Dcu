@@ -15,7 +15,7 @@ from pathlib import Path
 from image_guard import FLASH_SIZE, RETAINED_SIZE, RETAINED_START, SECTOR_SIZE, inspect_image
 
 ROOT = Path(__file__).resolve().parents[1]
-SDK = ROOT / "hpm_sdk_localized_for_hpm5e00evk"
+SDK = ROOT / "third_party/hpm_sdk"
 GCC = ROOT / ".tools/hpm-gcc-13.2.0/bin"
 OPENOCD = ROOT / "scripts/openocd.sh"
 PRESETS = ("hpm-debug", "hpm-release")
@@ -85,7 +85,7 @@ def doctor():
     if not devices:
         print("WARN No SEGGER USB device is currently enumerated")
     try:
-        require_board(ROOT / "config/board.local.json")
+        require_board(ROOT / "scripts/cfg/board.local.json")
         print("PASS Board profile review is declared (not a hardware verification)")
     except (OSError, ValueError) as error:
         print(f"WARN Target operations are disabled: {error}")
@@ -95,7 +95,7 @@ def doctor():
 
 def require_board(path):
     if not path.is_file():
-        raise ValueError("Create config/board.local.json from the example and verify the real board first")
+        raise ValueError("Create scripts/cfg/board.local.json from the example and verify the real board first")
     board = json.loads(path.read_text())
     if not isinstance(board, dict):
         raise ValueError("Board configuration must be a JSON object")
@@ -199,7 +199,7 @@ def target_operation(args):
         "DCU_FLASH_OPT1": board["flash_opt1"],
     })
     command = [str(OPENOCD), "-s", str(SDK / "boards/openocd"),
-               "-f", str(ROOT / "debug/openocd.cfg"), "-f", str(script)]
+               "-f", str(ROOT / "debug/cfg/openocd.cfg"), "-f", str(script)]
     print(f"Target operation: {args.action}; audit directory: {directory}", flush=True)
     if args.action == "debug-server":
         # Preserve the PID so a debugger stopping its server cannot orphan OpenOCD.
@@ -214,13 +214,13 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("doctor", help="Check tools and USB permissions without initializing a target")
     sub.add_parser("bootstrap", help="Install locked local tools, without sudo")
-    sub.add_parser("test", help="Run offline guard and tooling tests")
+    sub.add_parser("test", help="Run offline guard, layout and motor protocol tests")
     sub.add_parser("usb-check", help="Check USB enumeration and permissions without opening the probe")
     for action in ("configure", "build", "check-image", "flash", "verify", "debug-server"):
         command = sub.add_parser(action)
         command.add_argument("--preset", choices=PRESETS, default="hpm-debug")
         if action in ("flash", "verify", "debug-server"):
-            command.add_argument("--board", type=Path, default=ROOT / "config/board.local.json")
+            command.add_argument("--board", type=Path, default=ROOT / "scripts/cfg/board.local.json")
             command.add_argument("--confirm-target", default=os.environ.get("DCU_TARGET_CONFIRM", ""))
             command.add_argument("--skip-build", action="store_true")
             if action == "debug-server":
@@ -237,7 +237,7 @@ def main(argv=None):
             print(json.dumps(devices, indent=2))
             return 0 if len(devices) == 1 and devices[0]["writable"] else 1
         elif args.action == "test":
-            run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"])
+            run([sys.executable, "-m", "unittest", "discover", "-s", "tests/host", "-v"])
         elif args.action == "configure":
             configure(args.preset)
         elif args.action == "build":

@@ -14,7 +14,7 @@ add_custom_target(check-image
 
 enable_testing()
 add_test(NAME devtools-offline
-    COMMAND ${PYTHON_EXECUTABLE} -m unittest discover -s tests -v)
+    COMMAND ${PYTHON_EXECUTABLE} -m unittest discover -s tests/host -v)
 set_tests_properties(devtools-offline PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 get_filename_component(DCU_PRESET ${CMAKE_CURRENT_BINARY_DIR} NAME)

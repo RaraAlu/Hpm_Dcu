@@ -33,7 +33,7 @@ def main():
     host = platform.freedesktop_os_release()
     if host.get("ID") != "ubuntu" or host.get("VERSION_ID") != "24.04":
         raise RuntimeError("The locked host packages require Ubuntu 24.04")
-    lock = json.loads((ROOT / "tools/toolchain.lock.json").read_text())
+    lock = json.loads((ROOT / "tools/cfg/toolchain.lock.json").read_text())
     cache = TOOLS / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     groups = {}

@@ -1,0 +1,10 @@
+sdk_inc(Src)
+sdk_src(
+    Src/coeappl.c
+    Src/ecatappl.c
+    Src/ecatcoe.c
+    Src/ecatslv.c
+    Src/mailbox.c
+    Src/objdef.c
+    Src/sdoserv.c
+)

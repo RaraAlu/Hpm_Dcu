@@ -5,14 +5,10 @@
         "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db",
         "limitSymbolsToIncludedHeaders": false
       },
-      "includePath": [
-        "/home/zkbot/Lib/ws_rmw_zenoh_0.2.11/install/include/**",
-        "/opt/ros/jazzy/include/**",
-        "/usr/include/**"
-      ],
-      "name": "ros2",
-      "intelliSenseMode": "gcc-x64",
-      "compilerPath": "/usr/bin/gcc",
+      "name": "HPM5E31",
+      "configurationProvider": "ms-vscode.cmake-tools",
+      "compileCommands": "${workspaceFolder}/build/hpm-debug/compile_commands.json",
+      "compilerPath": "${workspaceFolder}/.tools/hpm-gcc-13.2.0/bin/riscv32-unknown-elf-gcc",
       "cStandard": "gnu11",
       "cppStandard": "c++17"
     }

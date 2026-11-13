@@ -6,6 +6,8 @@ artifacts/
 
 # Machine-specific configuration; keep shareable environment templates visible.
 CMakeUserPresets.json
+scripts/cfg/board.local.json
+# Keep the retired location ignored so stale local profiles cannot be published.
 config/board.local.json
 /.env
 /.env.*

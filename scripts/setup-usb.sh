@@ -215,12 +215,12 @@ say "sudo will ask for your password in this local terminal; it is not captured.
 say "Stages: install permission rule, reload rules, reconnect and check USB access."
 confirm "Install this USB permission rule?" || exit 1
 sudo -v
-if sudo test -e "$RULE" && ! sudo cmp -s "$ROOT/config/60-dcu-jlink.rules" "$RULE"; then
+if sudo test -e "$RULE" && ! sudo cmp -s "$ROOT/scripts/cfg/60-dcu-jlink.rules" "$RULE"; then
   warn "A different rule already exists at $RULE."
   confirm "Back it up and replace it?" || exit 1
   sudo cp -a -- "$RULE" "$RULE.backup.$(date -u +%Y%m%dT%H%M%SZ)"
 fi
-sudo install -o root -g root -m 0644 -- "$ROOT/config/60-dcu-jlink.rules" "$RULE"
+sudo install -o root -g root -m 0644 -- "$ROOT/scripts/cfg/60-dcu-jlink.rules" "$RULE"
 
 stage "Reload the USB rules"
 say "Only SEGGER USB 1366:0101 devices will receive a synthetic udev add event."
