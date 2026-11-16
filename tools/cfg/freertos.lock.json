@@ -1,0 +1,19 @@
+{
+  "repository": "https://github.com/hpmicro/hpm_sdk.git",
+  "sdk_tag": "v1.12.1",
+  "commit": "12bd92495abeed7f0a908c589e60974267c0506b",
+  "kernel_version": "V10.5.1",
+  "upstream_path": "middleware/FreeRTOS",
+  "local_path": "third_party/hpm_sdk/middleware/FreeRTOS",
+  "toolchain": "GCC RISC-V with HPMicro extensions",
+  "file_count": 38,
+  "manifest_format": "sorted UTF-8 relative POSIX path + NUL + lowercase file SHA-256 + LF",
+  "manifest_sha256": "93c1a351c21cf20d986908a506a3b75def0d41d5172451c28014dfb4b085b6a8",
+  "renamed_documents": {
+    "Source/LICENSE.md": "Source/许可证.md",
+    "Source/include/stdint.readme": "Source/include/整数类型说明.readme"
+  },
+  "content_changes": [],
+  "excluded": ["IAR", "MemMang", "tickless", "samples"],
+  "checksum_source": "Calculated locally after byte-for-byte comparison to the pinned upstream Git checkout; not a publisher signature"
+}
