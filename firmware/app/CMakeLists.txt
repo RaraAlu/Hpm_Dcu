@@ -1,5 +1,6 @@
 sdk_inc(motor cycle runtime)
 sdk_src(motor/motor_application.cpp motor/motor_driver_binding.cpp)
+sdk_src(motor/axis_controller.cpp motor/raw_can_gateway.cpp)
 sdk_src(motor/encos_parameter_transactions.cpp)
 sdk_src(motor/can_bus_scheduler.cpp)
 sdk_src(cycle/pdo_pipeline.c cycle/ethercat_cycle.c)

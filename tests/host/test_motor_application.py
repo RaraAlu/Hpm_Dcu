@@ -37,6 +37,9 @@ class MotorApplicationTest(unittest.TestCase):
         cls.run_command([
             cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", *flags,
             str(ROOT / "tests/host/motor/motor_application_test.cpp"),
+            str(ROOT / "firmware/app/motor/motor_application.cpp"),
+            str(ROOT / "firmware/app/motor/axis_controller.cpp"),
+            str(ROOT / "firmware/app/motor/raw_can_gateway.cpp"),
             str(ROOT / "firmware/app/motor/motor_driver_binding.cpp"),
             str(ROOT / "firmware/app/motor/encos_parameter_transactions.cpp"),
             str(ROOT / "firmware/app/motor/can_bus_scheduler.cpp"),
@@ -99,6 +102,36 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_pdo_codec_matches_fixed_wire_offsets_and_bytes(self):
         self.run_command([str(self.executable), "codec"])
+
+    def test_axis_objects_own_independent_configuration_and_startup_state(self):
+        self.run_command([str(self.executable), "axis_objects"])
+
+    def test_preapply_maintenance_routes_to_a_nonzero_axis_on_another_bus(self):
+        self.run_command([str(self.executable), "service_other_axis"])
+
+    def test_raw_objects_own_independent_queues_and_drop_counters(self):
+        self.run_command([str(self.executable), "raw_objects"])
+
+    def test_raw_batch_deduplication_and_two_ms_rate_window(self):
+        self.run_command([str(self.executable), "raw_limits"])
+
+    def test_raw_filtering_gating_and_failed_send_do_not_consume_credit(self):
+        self.run_command([str(self.executable), "raw_filter"])
+
+    def test_raw_full_session_restarts_its_cycle_deduplication(self):
+        self.run_command([str(self.executable), "raw_full_session"])
+
+    def test_start_requires_a_separate_query_only_handshake(self):
+        self.run_command([str(self.executable), "startup_gate"])
+
+    def test_command_lease_expiry_stops_the_running_axis(self):
+        self.run_command([str(self.executable), "lease_timeout"])
+
+    def test_feedback_timeout_stops_even_with_fresh_commands(self):
+        self.run_command([str(self.executable), "feedback_timeout"])
+
+    def test_bus_off_stops_the_affected_axis(self):
+        self.run_command([str(self.executable), "bus_off"])
 
 
 if __name__ == "__main__":

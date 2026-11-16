@@ -99,6 +99,18 @@ class ProjectLayoutTest(unittest.TestCase):
         self.assertNotIn('#include "ethercat_cycle.h"', can)
         self.assertIn('#include "realtime_port.h"', can)
 
+    def test_motor_stateful_operations_have_object_owners_and_interface_tests(self):
+        motor = ROOT / "firmware/app/motor"
+        implementation = (motor / "detail/motor_application_impl.hpp").read_text()
+        self.assertIn("AxisController axes_", implementation)
+        self.assertIn("RawCanGateway raw_", implementation)
+        self.assertFalse((motor / "detail/motor_application_state.hpp").exists())
+        for name in ("motor_application", "axis_controller", "raw_can_gateway"):
+            self.assertNotRegex((motor / f"{name}.cpp").read_text(), r"(?m)^static\s+")
+        fixture = (ROOT / "tests/host/motor/motor_application_test.cpp").read_text()
+        self.assertNotIn('#include "motor_application.cpp"', fixture)
+        self.assertNotIn("motor_application_impl.hpp", fixture)
+
 
 if __name__ == "__main__":
     unittest.main()
