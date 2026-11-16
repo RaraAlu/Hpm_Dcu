@@ -10,6 +10,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # If you do not want to use flash to simulate eeprom. It requests to regenerate
 # the SSC code, please refer to the README
 set(CONFIG_EEPROM_EMULATION 1) # using eeprom emulation compenent
+set(CONFIG_FREERTOS 1)
+set(CONFIG_FREERTOS_HEAP custom)
 
 if("${HPM_BUILD_TYPE}" STREQUAL "")
     SET(HPM_BUILD_TYPE flash_xip)
@@ -29,6 +31,7 @@ find_package(hpm-sdk REQUIRED HINTS $ENV{HPM_SDK_BASE})
 
 project(dcu LANGUAGES C CXX ASM)
 
+sdk_compile_definitions(-DUSE_SYSCALL_INTERRUPT_PRIORITY=1)
 sdk_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>"
                     "$<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>")
 set_property(TARGET ${APP_ELF_NAME} PROPERTY LINKER_LANGUAGE CXX)

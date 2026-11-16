@@ -14,6 +14,7 @@
 #include "digital_io.h"
 #include "ethercat_canfd_gateway.h"
 #include "motor_control.h"
+#include "cycle_runtime.h"
 #include "coeappl.h"
 #include "hpm_ecat_e2p_emulation.h"
 extern TOBJ1018 sIdentity;
@@ -60,7 +61,10 @@ int main(void)
     }
 
     motor_control_init();
+    dcu_cycle_init();
     MainInit(); /* SSC Initilize the stack */
+    sSyncManOutPar.u16SyncTypesSupported = SYNCTYPE_DCSYNC0SUPP;
+    sSyncManInPar.u16SyncTypesSupported = SYNCTYPE_DCSYNC0SUPP;
 
 #if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
     pAPPL_EEPROM_Read  = ecat_eeprom_emulation_read;
@@ -74,11 +78,7 @@ int main(void)
 
     /* Set stack run flag */
     bRunApplication = TRUE;
-    /* Execute the stack */
-    while (bRunApplication == TRUE) {
-        MainLoop();
-        motor_control_background();
-    }
+    dcu_rtos_start();
 
     /* hardware deinit */
 

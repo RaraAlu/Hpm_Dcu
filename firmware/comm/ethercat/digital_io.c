@@ -33,6 +33,7 @@
 #include "hpm_gpio_drv.h"
 #include "ethercat_canfd_gateway.h"
 #include "motor_control.h"
+#include "cycle_runtime.h"
 #include "encos_interface.h"
 #include "hpm_ecat_e2p_emulation.h"
 
@@ -124,7 +125,8 @@ UINT16 APPL_StopMailboxHandler(void)
 
 UINT16 APPL_StartInputHandler(UINT16 *pIntMask)
 {
-    return ALSTATUSCODE_NOERROR;
+    (void)pIntMask;
+    return dcu_cycle_configure();
 }
 
 /**
@@ -139,6 +141,7 @@ UINT16 APPL_StartInputHandler(UINT16 *pIntMask)
 
 UINT16 APPL_StopInputHandler(void)
 {
+    dcu_cycle_stop_inputs();
     return ALSTATUSCODE_NOERROR;
 }
 
@@ -156,6 +159,9 @@ UINT16 APPL_StopInputHandler(void)
 
 UINT16 APPL_StartOutputHandler(void)
 {
+    UINT16 result = dcu_cycle_start_outputs();
+    if (result != ALSTATUSCODE_NOERROR)
+        return result;
     /* 只有 EtherCAT 进入 OP 后才允许向电机总线发送周期帧。 */
     motor_control_operational(true);
     return ALSTATUSCODE_NOERROR;
@@ -173,6 +179,7 @@ UINT16 APPL_StartOutputHandler(void)
 
 UINT16 APPL_StopOutputHandler(void)
 {
+    dcu_cycle_stop_outputs();
     /* OP→SAFEOP 时立即阻止旧 PDO 继续驱动电机。 */
     motor_control_operational(false);
     return ALSTATUSCODE_NOERROR;
@@ -214,7 +221,7 @@ void APPL_InputMapping(UINT16 *pData)
 void APPL_OutputMapping(UINT16 *pData)
 {
     /* 只保存 EtherCAT 输出快照，CAN 发送放到应用周期执行。 */
-    motor_control_output(pData);
+    dcu_cycle_stage(pData);
 }
 
 /**

@@ -9,7 +9,6 @@ extern "C" {
 #include "objdef.h"
 #include "digital_io.h"
 }
-#include "hpm_interrupt.h"
 #include <limits.h>
 #include <math.h>
 #include <string.h>
@@ -93,11 +92,10 @@ static volatile bool operational, pending, session_armed;
 static bool resume_pdo_owner;
 static bool seen_cycle, config_ready, raw_pending, raw_seen;
 static uint32_t last_command_ms, last_cycle, last_raw_batch, raw_batch, rx_total, tx_total;
-static uint32_t last_process_us = UINT32_MAX, last_budget_ms[4], last_publish_ms;
+static uint32_t last_process_us = UINT32_MAX, last_budget_ms[4];
 static uint32_t last_bus_tx_us[4], last_axis_control_us[ENCOS_AXIS_COUNT];
 static uint16_t budget_us[4];
 static uint8_t published_image[1072];
-static bool published_once;
 static uint32_t last_tx_progress[4], last_tx_progress_ms[4];
 static uint32_t last_full_cycle[4], raw_budget_ms[4];
 static uint8_t raw_budget[4], round_robin, query_slot[4], control_slot[4];
@@ -106,8 +104,8 @@ static bool full_seen[4];
 static uint16_t board_fault;
 static uint32_t channel_tx_drop[4];
 
-static uint32_t lock(void) { return disable_global_irq(CSR_MSTATUS_MIE_MASK); }
-static void unlock(uint32_t irq) { restore_global_irq(irq & CSR_MSTATUS_MIE_MASK); }
+/* MainLoop, SDO callbacks and motor state have one RTOS task owner. ISR paths
+ * exchange complete PDO snapshots and CAN queue entries, never these objects. */
 static bool newer(uint32_t a, uint32_t b)
 {
     uint32_t d = a - b;
@@ -168,8 +166,8 @@ static void budget_tick(unsigned c, uint32_t now)
     if (!elapsed)
         return;
     last_budget_ms[c] = now;
-    unsigned credit = elapsed >= 3 ? CAN_BUDGET_CAP_US : budget_us[c] + elapsed * CAN_BUDGET_US_PER_MS;
-    budget_us[c] = credit > CAN_BUDGET_CAP_US ? CAN_BUDGET_CAP_US : credit;
+    unsigned credit = elapsed >= 3 ? unsigned(CAN_BUDGET_CAP_US) : budget_us[c] + elapsed * CAN_BUDGET_US_PER_MS;
+    budget_us[c] = credit > CAN_BUDGET_CAP_US ? unsigned(CAN_BUDGET_CAP_US) : credit;
 }
 static mc_object_t *find_object(uint16_t index)
 {
@@ -245,7 +243,6 @@ static void stop_all(uint16_t fault)
 }
 void motor_control_operational(bool op)
 {
-    uint32_t irq = lock();
     mc_owner_t *owner = OD(owner, 0x2003);
     if (!op)
     {
@@ -268,7 +265,6 @@ void motor_control_operational(bool op)
     pending = false;
     seen_cycle = false;
     raw_seen = false;
-    published_once = false;
     memset(full_seen, 0, sizeof(full_seen));
     memset(&board_command, 0, sizeof(board_command));
     stop_all(0);
@@ -287,7 +283,13 @@ void motor_control_operational(bool op)
         memset(&axes[a].command, 0, sizeof(axes[a].command));
         axes[a].previous_control = 0;
     }
-    unlock(irq);
+}
+void motor_control_cycle_fault(void)
+{
+    motor_control_operational(false);
+    /* Keep the existing invalid-PDO bit understood by the master's 0xfc mask.
+     * Detailed cycle causes remain in g_dcu_cycle_diagnostics. */
+    board_fault |= 64U;
 }
 void motor_control_tick(uint32_t now)
 {
@@ -419,10 +421,8 @@ static bool accept_axis(unsigned a, const mc_axis_rx_t *command, bool permit, ui
 }
 void motor_control_output(const void *p)
 {
-    uint32_t irq = lock();
     memcpy(candidate, p, output_size);
     pending = true;
-    unlock(irq);
 }
 static void accept_candidate(uint32_t now)
 {
@@ -944,7 +944,7 @@ static void process_raw(uint32_t now)
             if (r->ValidMask & (1u << i))
             {
                 const uint8_t *p = (const uint8_t *)r + 16 + 16 * i;
-                encos_frame_t f = {0};
+                encos_frame_t f{};
                 memcpy(&f.id, p, 4);
                 f.flags = p[5];
                 f.dlc = p[6];
@@ -993,7 +993,7 @@ void motor_control_process(void)
     if ((uint32_t)(now_us - last_process_us) < PROCESS_PERIOD_US)
         return;
     last_process_us = now_us;
-    uint32_t irq = lock(), now = ethercat_canfd_now_ms();
+    uint32_t now = ethercat_canfd_now_ms();
     accept_candidate(now);
     motor_control_tick(now);
     for (unsigned c = 0; c < 4; c++)
@@ -1176,7 +1176,6 @@ void motor_control_process(void)
         }
     }
     process_raw(now);
-    unlock(irq);
 }
 static void publish(uint32_t now)
 {
@@ -1200,7 +1199,7 @@ static void publish(uint32_t now)
             axis_t *x = &axes[a];
             mc_axis_tx_t *s = STATE(a);
             bool type1 = x->active && x->feedback_seen;
-            bool online = x->online_seen && now - x->online_ms <= (type1 ? config.FeedbackTimeoutMs : QUERY_ONLINE_MS);
+            bool online = x->online_seen && now - x->online_ms <= (type1 ? unsigned(config.FeedbackTimeoutMs) : unsigned(QUERY_ONLINE_MS));
             bool power_stale = !x->route.PowerQueryPeriodMs || !x->power_seen || now - x->power_ms >= x->route.PowerQueryPeriodMs * 3u;
             s->PowerAgeMs = age_ms(now, x->power_ms, x->power_seen);
             bool stale;
@@ -1321,22 +1320,15 @@ uint16_t motor_control_mapping(uint16_t *in, uint16_t *out)
             OD(board_config, 0x2001)->ActivePdoProfile = p;
             *in = input_size = sizes[p][0];
             *out = output_size = sizes[p][1];
-            published_once = false;
             return 0;
         }
     }
     *in = *out = 0;
     return ALSTATUSCODE_INVALIDOUTPUTMAPPING;
 }
-void motor_control_input(void *data)
+void motor_control_prepare_input(void)
 {
-    uint32_t irq = lock(), now = ethercat_canfd_now_ms();
-    if (published_once && now - last_publish_ms < 2)
-    {
-        memcpy(data, published_image, input_size);
-        unlock(irq);
-        return;
-    }
+    uint32_t now = ethercat_canfd_now_ms();
     publish(now);
     uint8_t *p = published_image;
     memcpy(p, mc_object(0x6000), 32);
@@ -1416,10 +1408,10 @@ void motor_control_input(void *data)
             memcpy(p + 1024, raw, 48);
         }
     }
-    last_publish_ms = now;
-    published_once = true;
+}
+void motor_control_input(void *data)
+{
     memcpy(data, published_image, input_size);
-    unlock(irq);
 }
 UINT8 MC_AssignWrite(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 complete)
 {
@@ -1471,9 +1463,7 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
             return ABORTIDX_WRITE_ONLY_ENTRY;
         if (bytes != f->bytes)
             return ABORTIDX_PARAM_LENGTH_ERROR;
-        uint32_t irq = lock();
         memcpy(data, o->data + f->offset, bytes);
-        unlock(irq);
         return 0;
     }
     return ABORTIDX_SUBINDEX_NOT_EXISTING;
@@ -1614,7 +1604,6 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     if (index >= 0x3000 && index <= 0x31B8 && services[((index - 0x3000) / 16) / ENCOS_MOTORS_PER_CHANNEL].busy)
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
-    uint32_t irq = lock();
     memcpy(o->data + field->offset, data, bytes);
     uint32_t now = ethercat_canfd_now_ms();
     UINT8 result = 0;
@@ -1688,7 +1677,6 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
         if ((part == 7 && sub == 3) || (part == 8 && sub == 4))
             result = commit_service(a, part == 8, now);
     }
-    unlock(irq);
     return result;
 }
 void motor_control_background(void) { motor_control_process(); }

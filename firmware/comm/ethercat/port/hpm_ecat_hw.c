@@ -11,6 +11,8 @@
 #include "hpm_i2c_drv.h"
 #include "hpm_romapi.h"
 #include "hpm_ecat_hw.h"
+#include "cycle_runtime.h"
+#include "cycle_config.h"
 #ifdef HPMSOC_HAS_HPMSDK_GPTMRV2
 #include "hpm_gptmrv2_drv.h"
 #else
@@ -47,7 +49,7 @@ static TickType_t time_base = 0;
 void ecat_time_init_rtos(void);
 #endif /* __ENABLE_FREERTOS */
 #else
-    static UINT32 ecat_time_ms = 0;
+    static volatile UINT32 ecat_time_ms = 0;
     void ecat_time_ms_isr(void);
     void ecat_timer_ms_enable(void);
 #endif /* ECAT_SSC_TIMER_USE_RTOS_TICK */
@@ -228,7 +230,7 @@ void ecat_time_ms_isr(void)
         gptmr_clear_status(ECAT_TIMER_GPTMR, GPTMR_CH_RLD_STAT_MASK(ECAT_TIMER_GPTMR_CH));
         ecat_time_ms += ECAT_TIMER_INC_P_MS;
 #if defined(ECAT_TIMER_INT) && ECAT_TIMER_INT
-        ECAT_CheckTimer();
+        dcu_cycle_timer_isr();
 #endif
 
 #if defined(EOE_SUPPORTED) && EOE_SUPPORTED && (!defined(__ENABLE_FREERTOS) || !__ENABLE_FREERTOS)
@@ -273,7 +275,7 @@ void ecat_sync0_isr(void)
     (void) SyncState;
 
     /* call handler in SSC */
-    Sync0_Isr();
+    dcu_cycle_sync0_isr();
 
     /* callback */
 }
@@ -292,7 +294,7 @@ void ecat_sync1_isr(void)
     (void) SyncState;
 
     /* call handler in SSC */
-    Sync1_Isr();
+    dcu_cycle_sync1_isr();
 
     /* callback */
 }
@@ -346,7 +348,7 @@ void HW_SetLed(UINT8 RunLed, UINT8 ErrLed)
 
 void DISABLE_ESC_INT(void)
 {
-    intc_m_disable_irq(IRQn_ESC_SYNC0);
+    /* Fast Sync0 touches only the atomic handoff, not the SSC state. */
     intc_m_disable_irq(IRQn_ESC_SYNC1);
     intc_m_disable_irq(IRQn_ESC);
     intc_m_disable_irq(IRQn_ESC_RESET);
@@ -358,14 +360,13 @@ void DISABLE_ESC_INT(void)
 
 void ENABLE_ESC_INT(void)
 {
-    intc_m_enable_irq_with_priority(IRQn_ESC_SYNC0, 3);
+    intc_m_enable_irq_with_priority(IRQn_ESC_SYNC0, DCU_IRQ_SYNC0_PRIORITY);
     intc_m_enable_irq_with_priority(IRQn_ESC_SYNC1, 3);
-    intc_m_enable_irq_with_priority(IRQn_ESC, 4);
+    intc_m_enable_irq_with_priority(IRQn_ESC, DCU_IRQ_PDI_PRIORITY);
     intc_m_enable_irq_with_priority(IRQn_ESC_RESET, 2);
 #if !defined(ECAT_SSC_TIMER_USE_RTOS_TICK) || !ECAT_SSC_TIMER_USE_RTOS_TICK
-    /* If ECAT_TIMER_INT = 1, the priority of the 1ms tick interrupt needs to be >= the priority of SYNC0/SYNC1 interrupts */
-    /* to avoid function DC_CheckWatchdog() being interrupted by function Sync0_Isr()/Sync1_Isr() */
-    intc_m_enable_irq_with_priority(ECAT_TIMER_GPTRM_IRQ, 3);
+    /* SSC watchdog and Sync handlers are serialized in the business task. */
+    intc_m_enable_irq_with_priority(ECAT_TIMER_GPTRM_IRQ, DCU_IRQ_TIMER_PRIORITY);
 #endif /* ECAT_SSC_TIMER_USE_RTOS_TICK */
 }
 

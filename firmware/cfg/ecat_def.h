@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "hpm_common.h"
+#include "cycle_config.h"
 /*-----------------------------------------------------------------------------------------
 ------	
 ------	Slave Sample Code Configuration Defines
@@ -1035,13 +1036,13 @@ MAX_PD_OUTPUT_SIZE: Maximum size of the process output data (Sync Manager 2) for
 MIN_PD_CYCLE_TIME: Minimum cycle time in ns the slave is supporting (entry 0x1C3x:05).<br>
 In case that the value is set to 0 the value of 0x1C3x:5 is calculated if 0x1C3x.8 is 1 */
 #ifndef MIN_PD_CYCLE_TIME
-#define MIN_PD_CYCLE_TIME                         0x79E0
+#define MIN_PD_CYCLE_TIME                         DCU_SYNC_MIN_PERIOD_NS
 #endif
 
 /** 
 MAX_PD_CYCLE_TIME: Maximum cycle time in ns the slave is supporting */
 #ifndef MAX_PD_CYCLE_TIME
-#define MAX_PD_CYCLE_TIME                         0xC3500000
+#define MAX_PD_CYCLE_TIME                         DCU_SYNC_MAX_PERIOD_NS
 #endif
 
 /** 

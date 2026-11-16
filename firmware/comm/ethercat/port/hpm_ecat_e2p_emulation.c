@@ -7,6 +7,7 @@
 #include "hpm_ecat_e2p_emulation.h"
 #include "hpm_romapi.h"
 #include "hpm_ecat_hw.h"
+#include "ecatslv.h"
 #include "hpm_nor_flash.h"
 #include <string.h>
 
@@ -194,16 +195,18 @@ hpm_stat_t ecat_flash_eeprom_init(void)
 
 hpm_stat_t ecat_flash_eeprom_write(uint32_t word_addr, uint8_t *data)
 {
+    if ((nAlStatus & STATE_MASK) == STATE_OP || (nAlStatus & STATE_MASK) == STATE_SAFEOP)
+        return status_fail;
     if (!g_initialized || word_addr >= ESC_EEPROM_SIZE / EEPROM_WRITE_SIZE) {
         return status_invalid_argument;
     }
     uint32_t byte_addr = word_addr * EEPROM_WRITE_SIZE;
-    uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    /* Runtime SII access is owned by the SSC task; flash writes are deferred
+     * below, never hidden in an OP-time critical section. */
     if (memcmp(g_sii + byte_addr, data, EEPROM_WRITE_SIZE) != 0) {
         memcpy(g_sii + byte_addr, data, EEPROM_WRITE_SIZE);
         g_dirty_pages |= UINT64_C(1) << (byte_addr / SII_PAGE_SIZE);
     }
-    restore_global_irq(irq & CSR_MSTATUS_MIE_MASK);
     return status_success;
 }
 
@@ -223,7 +226,8 @@ void ecat_flash_eeprom_format(void)
 
 void ecat_flash_eeprom_flush(void)
 {
-    if (g_initialized) {
+    if (g_initialized && (nAlStatus & STATE_MASK) != STATE_OP &&
+        (nAlStatus & STATE_MASK) != STATE_SAFEOP) {
         (void)flush_dirty_pages();
     }
 }

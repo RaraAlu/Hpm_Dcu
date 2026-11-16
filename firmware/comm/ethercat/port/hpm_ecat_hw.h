@@ -31,7 +31,9 @@ extern MEM_ADDR ESCMEM * pEsc;         /* pointer to the ESC */
 
 
 #define     HW_GetALEventRegister()                     ((((volatile UINT16 ESCMEM *) pEsc)[((ESC_AL_EVENT_OFFSET) >> 1)]))
-#define     HW_GetALEventRegister_Isr                   HW_GetALEventRegister
+/* Dedicated Sync IRQs acknowledge these events. Do not dispatch SSC Sync
+ * handlers again from PDI while the task is preparing a feedback image. */
+#define     HW_GetALEventRegister_Isr()                 (HW_GetALEventRegister() & (UINT16)~SWAPWORD(SYNC0_EVENT | SYNC1_EVENT))
 
 #define     HW_EscReadDWord(DWordValue, Address)        ((DWordValue) = (((volatile UINT32 *) pEsc)[(Address >> 2)]))
 #define     HW_EscReadDWordIsr(DWordValue, Address)     HW_EscReadDWord(DWordValue, Address)

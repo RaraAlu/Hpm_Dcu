@@ -13,8 +13,10 @@ void motor_control_background(void);
 void motor_control_process(void);
 void motor_control_tick(uint32_t now);
 void motor_control_operational(bool operational);
+void motor_control_cycle_fault(void);
 uint16_t motor_control_mapping(uint16_t *input_size, uint16_t *output_size);
 void motor_control_input(void *data);
+void motor_control_prepare_input(void);
 void motor_control_output(const void *data);
 void *mc_object(uint16_t index);
 

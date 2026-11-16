@@ -1,10 +1,10 @@
 #include "ethercat_canfd_gateway.h"
+#include "cycle_runtime.h"
+#include "cycle_config.h"
 
 #include <string.h>
-#include "motor_control.h"
 #include "board.h"
 #include "hpm_clock_drv.h"
-#include "hpm_csr_drv.h"
 #include "hpm_gpio_drv.h"
 #include "hpm_interrupt.h"
 #include "hpm_mcan_drv.h"
@@ -103,7 +103,6 @@ static void led_pulse(uint32_t bus, uint32_t kind)
 void ethercat_canfd_gateway_led_tick(void)
 {
     ++s_now_ms;
-    if(s_initialized) motor_control_tick(s_now_ms);
     for (uint32_t bus = 0; bus < CANFD_GATEWAY_BUS_COUNT; bus++) {
         for (uint32_t kind = 0; kind < CANFD_LED_KIND_COUNT; kind++) {
             if (s_led_ticks[bus][kind] != 0U && --s_led_ticks[bus][kind] == 0U) {
@@ -250,7 +249,7 @@ hpm_stat_t ethercat_canfd_gateway_init(void)
         }
         mcan_interrupt_line_select(s_mcan[bus], config.interrupt_mask, 0U);
         board_can_transceiver_phy_set(s_mcan[bus], true);
-        intc_m_enable_irq_with_priority(s_irq[bus], 2U);
+        intc_m_enable_irq_with_priority(s_irq[bus], DCU_IRQ_CAN_PRIORITY);
     }
     memset(s_tx_axis,255,sizeof(s_tx_axis));
     s_initialized=true;
@@ -261,17 +260,16 @@ hpm_stat_t ethercat_canfd_gateway_init(void)
 uint32_t ethercat_canfd_now_ms(void) { return s_now_ms; }
 uint32_t ethercat_canfd_now_us(void)
 {
-    const uint32_t ticks_per_us = clock_get_core_clock_ticks_per_us();
-    return ticks_per_us ? (uint32_t)(hpm_csr_get_core_cycle() / ticks_per_us) : 0U;
+    return dcu_cycle_now_us();
 }
 uint32_t ethercat_canfd_rx_drops(unsigned bus) { return s_rx_lost[bus]; }
 uint32_t ethercat_canfd_completions(unsigned axis) { return s_tx_complete[axis/ENCOS_MOTORS_PER_CHANNEL][axis%ENCOS_MOTORS_PER_CHANNEL]; }
 bool ethercat_canfd_receive(unsigned bus, dcu_can_frame_t *f, uint32_t *stamp)
 {
-    rx_queue_t *q=&s_rx[bus];uint32_t irq=disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    rx_queue_t *q=&s_rx[bus];intc_m_disable_irq(s_irq[bus]);
     bool available=q->read!=q->write;
     if(available){*f=q->item[q->read].frame;*stamp=q->item[q->read].timestamp;q->read=(q->read+1)&31;}
-    restore_global_irq(irq&CSR_MSTATUS_MIE_MASK);return available;
+    intc_m_enable_irq(s_irq[bus]);return available;
 }
 bool ethercat_canfd_pending(unsigned bus) { return s_mcan[bus]->TXBRP!=0; }
 bool ethercat_canfd_axis_pending(unsigned axis)
@@ -279,11 +277,11 @@ bool ethercat_canfd_axis_pending(unsigned axis)
     if(axis>=ENCOS_AXIS_COUNT)return false;
     unsigned bus=axis/ENCOS_MOTORS_PER_CHANNEL;
     uint8_t tag=axis%ENCOS_MOTORS_PER_CHANNEL;
-    uint32_t irq=disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    intc_m_disable_irq(s_irq[bus]);
     uint32_t pending=s_mcan[bus]->TXBRP;
     bool found=false;
     for(unsigned i=0;i<CANFD_TX_FIFO_DEPTH;i++)if((pending&(1u<<i))&&s_tx_axis[bus][i]==tag){found=true;break;}
-    restore_global_irq(irq&CSR_MSTATUS_MIE_MASK);
+    intc_m_enable_irq(s_irq[bus]);
     return found;
 }
 unsigned ethercat_canfd_tx_free(unsigned bus)
@@ -298,9 +296,9 @@ void ethercat_canfd_cancel(unsigned bus) { for(unsigned i=0;i<8;i++)mcan_cancel_
 static void cancel_tag(unsigned bus,uint8_t tag)
 {
     if(bus>=CANFD_GATEWAY_BUS_COUNT)return;
-    uint32_t irq=disable_global_irq(CSR_MSTATUS_MIE_MASK),pending=s_mcan[bus]->TXBRP;
+    intc_m_disable_irq(s_irq[bus]);uint32_t pending=s_mcan[bus]->TXBRP;
     for(unsigned i=0;i<CANFD_TX_FIFO_DEPTH;i++)if((pending&(1u<<i))&&s_tx_axis[bus][i]==tag)mcan_cancel_tx_buf_send_request(s_mcan[bus],i);
-    restore_global_irq(irq&CSR_MSTATUS_MIE_MASK);
+    intc_m_enable_irq(s_irq[bus]);
 }
 void ethercat_canfd_cancel_axis(unsigned axis)
 {
@@ -309,14 +307,15 @@ void ethercat_canfd_cancel_axis(unsigned axis)
 void ethercat_canfd_cancel_service(unsigned bus) { cancel_tag(bus,254); }
 bool ethercat_canfd_send(unsigned bus,const dcu_can_frame_t *f,unsigned axis)
 {
+    if(dcu_cycle_tx_inhibited())return false;
     if(bus>=4||f->dlc>8||(f->flags&~26u)||((f->flags&16)&&!(f->flags&8))||f->id>((f->flags&2)?0x1FFFFFFFu:0x7FFu)||ethercat_canfd_bus_state(bus)==3)return false;
     mcan_tx_frame_t tx={0};uint32_t index;
     tx.use_ext_id=(f->flags&2)!=0;if(tx.use_ext_id)tx.ext_id=f->id;else tx.std_id=f->id;
     tx.dlc=f->dlc;tx.canfd_frame=(f->flags&8)!=0;tx.bitrate_switch=(f->flags&16)!=0;memcpy(tx.data_8,f->data,f->dlc);
-    uint32_t irq=disable_global_irq(CSR_MSTATUS_MIE_MASK);
-    bool ok=mcan_transmit_via_txfifo_nonblocking(s_mcan[bus],&tx,&index)==status_success;
+    intc_m_disable_irq(s_irq[bus]);
+    bool ok=!dcu_cycle_tx_inhibited()&&mcan_transmit_via_txfifo_nonblocking(s_mcan[bus],&tx,&index)==status_success;
     if(ok)s_tx_axis[bus][index]=axis<ENCOS_AXIS_COUNT?axis%ENCOS_MOTORS_PER_CHANNEL:254;
-    restore_global_irq(irq&CSR_MSTATUS_MIE_MASK);
+    intc_m_enable_irq(s_irq[bus]);
     if(!ok) {
         led_pulse(bus,CANFD_LED_ERR);
     }
