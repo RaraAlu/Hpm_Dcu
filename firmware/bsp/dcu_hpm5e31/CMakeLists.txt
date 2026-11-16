@@ -7,6 +7,7 @@ sdk_inc(.)
 sdk_src(pinmux.c)
 sdk_src(clock.c)
 sdk_src(board.c)
+sdk_src(cycle_timers.c)
 
 if(APP_USE_ENET_PORT_COUNT EQUAL 1)
     set(_apply_rtl8211 0)

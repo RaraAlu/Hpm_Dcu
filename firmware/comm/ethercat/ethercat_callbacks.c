@@ -9,8 +9,8 @@
 */
 
 /**
-\file digital_io.c
-\brief Implementation
+\file ethercat_callbacks.c
+\brief EtherCAT application callbacks for the DCU motor gateway.
  Created with SSC Tool application parser 1.6.4.0
 \version 0.0.0.1
 */
@@ -25,15 +25,14 @@
 
 #include "applInterface.h"
 
-#define _DIGITAL_IO_ 1
-#include "digital_io.h"
-#undef _DIGITAL_IO_
+#include "detail/ethercat_dictionary_owner.h"
 
 #include "ecat_config.h"
 #include "hpm_gpio_drv.h"
 #include "ethercat_canfd_gateway.h"
-#include "motor_control.h"
-#include "cycle_runtime.h"
+#include "motor_application.h"
+#include "motor_ethercat.h"
+#include "ethercat_cycle.h"
 #include "encos_interface.h"
 #include "hpm_ecat_e2p_emulation.h"
 

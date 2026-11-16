@@ -27,6 +27,14 @@
 #define CANFD_INPUT_FLAG_NEW          CANFD_FLAG_VALID
 #define CANFD_INPUT_FLAG_ESI          CANFD_FLAG_ON_CHANGE
 
+/* Stable bus_state codes published in TxPDO. */
+enum {
+    CANFD_BUS_ERROR_ACTIVE = 0,
+    CANFD_BUS_ERROR_WARNING = 1,
+    CANFD_BUS_ERROR_PASSIVE = 2,
+    CANFD_BUS_OFF = 3,
+};
+
 /* 单帧 PDO 槽。packed 保证与 TwinCAT/ESI 的 16 字节布局完全一致。 */
 typedef struct __attribute__((packed)) {
     uint32_t can_id;     /* 标准帧使用低 11 bit，扩展帧使用低 29 bit。 */

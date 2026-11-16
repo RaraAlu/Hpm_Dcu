@@ -1,0 +1,8 @@
+#ifndef DCU_ETHERCAT_CYCLE_POLICY_H
+#define DCU_ETHERCAT_CYCLE_POLICY_H
+
+enum {
+    DCU_MAX_DEFERRED_SSC_TICKS = 10
+};
+
+#endif

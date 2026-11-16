@@ -7,6 +7,7 @@ typedef uint32_t StackType_t;
 typedef struct { uint32_t unused; } StaticTask_t;
 typedef void *TaskHandle_t;
 #define configMAX_PRIORITIES 5U
+#define configMAX_SYSCALL_INTERRUPT_PRIORITY 3U
 #define pdTRUE 1
 #define pdFALSE 0
 #define portMAX_DELAY UINT32_MAX

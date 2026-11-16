@@ -1,5 +1,5 @@
 #include "encos_motor.h"
-#include "motor_control.h"
+#include "motor_application.h"
 
 #include <cstdio>
 #include <cstring>

@@ -1,0 +1,8 @@
+#ifndef DCU_DIAGNOSTIC_CONFIG_H
+#define DCU_DIAGNOSTIC_CONFIG_H
+
+#ifndef CONFIG_CAN_LED_TEST
+#define CONFIG_CAN_LED_TEST 0
+#endif
+
+#endif

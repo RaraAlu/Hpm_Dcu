@@ -57,6 +57,48 @@ class ProjectLayoutTest(unittest.TestCase):
             with self.subTest(path=relative):
                 self.assertTrue(any("\u4e00" <= character <= "\u9fff" for character in file.name))
 
+    def test_rtos_and_timer_setup_have_explicit_owners(self):
+        cycle = (ROOT / "firmware/app/cycle/ethercat_cycle.c").read_text()
+        runtime = (ROOT / "firmware/app/runtime/ethercat_can_task.c").read_text()
+        hardware = (ROOT / "firmware/bsp/dcu_hpm5e31/cycle_timers.c").read_text()
+        for token in ("FreeRTOS.h", "xTaskCreateStatic", "gptmr_channel_config"):
+            self.assertNotIn(token, cycle)
+        self.assertIn("xTaskCreateStatic", runtime)
+        self.assertNotIn("gptmr_channel_config", runtime)
+        self.assertIn("gptmr_channel_config", hardware)
+
+    def test_renamed_modules_have_no_retired_source_copies(self):
+        modules = (
+            ("firmware/app/motor", "motor_control", "motor_application", ("cpp", "h")),
+            ("firmware/app/motor", "bus_scheduler", "can_bus_scheduler", ("cpp", "hpp")),
+            ("firmware/app/motor", "parameter_transactions", "encos_parameter_transactions", ("cpp", "hpp")),
+            ("firmware/app/motor/cfg", "motor_control", "motor_policy", ("hpp",)),
+            ("firmware/app/cycle", "cycle_runtime", "ethercat_cycle", ("c", "h")),
+            ("firmware/app/cycle/cfg", "runtime_config", "ethercat_cycle_policy", ("h",)),
+            ("firmware/app/runtime", "app_runtime", "ethercat_can_task", ("c", "h")),
+            ("firmware/app/runtime/cfg", "rtos_config", "ethercat_can_task_config", ("h",)),
+            ("firmware/bsp/dcu_hpm5e31", "cycle_hardware", "cycle_timers", ("c", "h")),
+            ("firmware/bsp/dcu_hpm5e31/cfg", "cycle_board", "cycle_timer_map", ("h",)),
+            ("firmware/comm/canfd", "tx_guard", "can_tx_gate", ("c",)),
+            ("firmware/comm/ethercat", "digital_io", "ethercat_callbacks", ("c",)),
+        )
+        for directory, old, new, extensions in modules:
+            for extension in extensions:
+                with self.subTest(module=new, extension=extension):
+                    self.assertFalse((ROOT / directory / f"{old}.{extension}").exists())
+                    self.assertTrue((ROOT / directory / f"{new}.{extension}").is_file())
+        for source in ("coeappl.c", "ecatappl.c", "ecatslv.c"):
+            text = (ROOT / "third_party/beckhoff_ssc/Src" / source).read_text()
+            self.assertIn('#include "digital_io.h"', text)
+
+    def test_motor_policy_and_can_transport_do_not_import_ssc_or_ethercat_cycle(self):
+        motor = (ROOT / "firmware/app/motor/motor_application.cpp").read_text()
+        can = (ROOT / "firmware/comm/canfd/ethercat_canfd_gateway.c").read_text()
+        for header in ("digital_io.h", "ecatslv.h", "sdoserv.h", "FreeRTOS.h"):
+            self.assertNotIn(f'#include "{header}"', motor)
+        self.assertNotIn('#include "ethercat_cycle.h"', can)
+        self.assertIn('#include "realtime_port.h"', can)
+
 
 if __name__ == "__main__":
     unittest.main()

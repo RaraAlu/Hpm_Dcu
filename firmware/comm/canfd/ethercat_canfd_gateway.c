@@ -1,6 +1,10 @@
 #include "ethercat_canfd_gateway.h"
-#include "cycle_runtime.h"
+#include "cfg/can_bus_config.h"
+#include "detail/can_gateway_state.h"
+#include "realtime_port.h"
 #include "cycle_config.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #include <string.h>
 #include "board.h"
@@ -9,39 +13,9 @@
 #include "hpm_interrupt.h"
 #include "hpm_mcan_drv.h"
 
-#define CANFD_NOMINAL_BITRATE         1000000U
-#define CANFD_DATA_BITRATE            5000000U
-#define CANFD_RX_FIFO_DEPTH           16U
-#define CANFD_TX_FIFO_DEPTH           8U
-#define CANFD_OUTPUT_WATCHDOG_CYCLES  3U
-/* 事件保持两个 1 ms 节拍，保证跨定时边界时实际点亮时间仍不短于 1 ms。 */
-#define CANFD_LED_PULSE_TICKS          2U
-
-/* bus_state 写入 TxPDO 的稳定编码，供 TwinCAT 直接诊断。 */
-enum {
-    CANFD_BUS_ERROR_ACTIVE = 0,
-    CANFD_BUS_ERROR_WARNING = 1,
-    CANFD_BUS_ERROR_PASSIVE = 2,
-    CANFD_BUS_OFF = 3,
-};
-
-typedef struct { dcu_can_frame_t frame; uint32_t timestamp; } rx_item_t;
-typedef struct { rx_item_t item[32]; volatile uint8_t read, write; } rx_queue_t;
-
-typedef struct {
-    GPIO_Type *ctrl;
-    uint32_t index;
-    uint32_t pin;
-    uint8_t on_level;
-    uint8_t off_level;
-} canfd_led_t;
-
-enum {
-    CANFD_LED_TX = 0,
-    CANFD_LED_RX,
-    CANFD_LED_ERR,
-    CANFD_LED_KIND_COUNT,
-};
+#if defined(CAN_SOC_TX_RX_BUFFER_ACCESS_WORKAROUND) && CAN_SOC_TX_RX_BUFFER_ACCESS_WORKAROUND == 1
+#error "The split TX commit must implement this SoC's MCAN buffer-access workaround"
+#endif
 
 /* 每路依次为 TX、RX、ERR，使用自研板上已有的 12 个低电平点亮 LED。 */
 static const canfd_led_t s_led[CANFD_GATEWAY_BUS_COUNT][CANFD_LED_KIND_COUNT] = {
@@ -260,7 +234,7 @@ hpm_stat_t ethercat_canfd_gateway_init(void)
 uint32_t ethercat_canfd_now_ms(void) { return s_now_ms; }
 uint32_t ethercat_canfd_now_us(void)
 {
-    return dcu_cycle_now_us();
+    return dcu_time_now_us();
 }
 uint32_t ethercat_canfd_rx_drops(unsigned bus) { return s_rx_lost[bus]; }
 uint32_t ethercat_canfd_completions(unsigned axis) { return s_tx_complete[axis/ENCOS_MOTORS_PER_CHANNEL][axis%ENCOS_MOTORS_PER_CHANNEL]; }
@@ -307,14 +281,26 @@ void ethercat_canfd_cancel_axis(unsigned axis)
 void ethercat_canfd_cancel_service(unsigned bus) { cancel_tag(bus,254); }
 bool ethercat_canfd_send(unsigned bus,const dcu_can_frame_t *f,unsigned axis)
 {
-    if(dcu_cycle_tx_inhibited())return false;
-    if(bus>=4||f->dlc>8||(f->flags&~26u)||((f->flags&16)&&!(f->flags&8))||f->id>((f->flags&2)?0x1FFFFFFFu:0x7FFu)||ethercat_canfd_bus_state(bus)==3)return false;
+    if(bus>=CANFD_GATEWAY_BUS_COUNT||f==NULL)return false;
+    if(dcu_tx_inhibited())return false;
+    if(f->dlc>8||(f->flags&~26u)||((f->flags&16)&&!(f->flags&8))||f->id>((f->flags&2)?0x1FFFFFFFu:0x7FFu)||ethercat_canfd_bus_state(bus)==3)return false;
     mcan_tx_frame_t tx={0};uint32_t index;
     tx.use_ext_id=(f->flags&2)!=0;if(tx.use_ext_id)tx.ext_id=f->id;else tx.std_id=f->id;
     tx.dlc=f->dlc;tx.canfd_frame=(f->flags&8)!=0;tx.bitrate_switch=(f->flags&16)!=0;memcpy(tx.data_8,f->data,f->dlc);
     intc_m_disable_irq(s_irq[bus]);
-    bool ok=!dcu_cycle_tx_inhibited()&&mcan_transmit_via_txfifo_nonblocking(s_mcan[bus],&tx,&index)==status_success;
-    if(ok)s_tx_axis[bus][index]=axis<ENCOS_AXIS_COUNT?axis%ENCOS_MOTORS_PER_CHANNEL:254;
+    bool ok=mcan_request_and_fill_txfifo(s_mcan[bus],&tx,&index)==status_success;
+    if(ok) {
+        /* Stage outside the kernel critical section. Only the final gate, tag
+         * and TX request are indivisible with respect to the fault timer.
+         * Sync0/PDI remain enabled above the kernel priority threshold. */
+        taskENTER_CRITICAL();
+        ok=!dcu_tx_inhibited();
+        if(ok) {
+            s_tx_axis[bus][index]=axis<ENCOS_AXIS_COUNT?axis%ENCOS_MOTORS_PER_CHANNEL:254;
+            mcan_send_add_request(s_mcan[bus],index);
+        }
+        taskEXIT_CRITICAL();
+    }
     intc_m_enable_irq(s_irq[bus]);
     if(!ok) {
         led_pulse(bus,CANFD_LED_ERR);

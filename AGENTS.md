@@ -1,1 +1,4 @@
 - 所有的文档命名都要用中文
+- 自有固件的宏和 `struct`、`union`、`enum`、`class`、类型别名声明放在 `.h/.hpp`；工程配置归所属模块的 `cfg/`，内部类型归 `detail/`。
+- 公共头只暴露调用契约；可变状态实例保留在 `.c/.cpp` 的模块私有作用域。第三方及生成物沿用原有规则，SSC 实例选择宏通过专用私有头限定作用域。
+- 调整上述声明归属后运行 `python3 -m unittest discover -s tests/host -p test_header_ownership.py -v`，同时验证受影响模块和固件构建。

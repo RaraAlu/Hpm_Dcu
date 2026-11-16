@@ -1,0 +1,12 @@
+#ifndef DCU_PDO_PIPELINE_SLOTS_H
+#define DCU_PDO_PIPELINE_SLOTS_H
+
+enum {
+    SLOT_FREE,
+    SLOT_WRITING,
+    SLOT_READY,
+    SLOT_LATCHED,
+    SLOT_READING
+};
+
+#endif

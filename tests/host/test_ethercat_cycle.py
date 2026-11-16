@@ -7,25 +7,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-class CycleRuntimeTest(unittest.TestCase):
+class EthercatCycleTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cc = shutil.which("cc")
         if not cc:
-            raise RuntimeError("Cycle runtime tests require a host C compiler")
-        directory = tempfile.TemporaryDirectory(prefix="dcu-cycle-runtime-")
+            raise RuntimeError("EtherCAT cycle tests require a host C compiler")
+        directory = tempfile.TemporaryDirectory(prefix="dcu-ethercat-cycle-")
         cls.addClassCleanup(directory.cleanup)
-        cls.executable = Path(directory.name) / "cycle_runtime"
+        cls.executable = Path(directory.name) / "ethercat_cycle"
         flags = ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         for include in (
             "tests/host/cycle/stubs", "firmware/app/cycle", "firmware/app/motor",
-            "firmware/comm/canfd", "firmware/cfg", "firmware/ports",
-            "firmware/generated/encos",
+            "firmware/app/runtime",
+            "firmware/comm/canfd", "firmware/comm/ethercat", "firmware/cfg", "firmware/ports",
+            "firmware/generated/encos", "firmware/bsp/dcu_hpm5e31",
         ):
             flags.extend(("-I", str(ROOT / include)))
         cls.run_command([
-            cc, *flags, str(ROOT / "tests/host/cycle/cycle_runtime_test.c"),
+            cc, *flags, str(ROOT / "tests/host/cycle/ethercat_cycle_test.c"),
             str(ROOT / "firmware/app/cycle/pdo_pipeline.c"), "-o", str(cls.executable),
+            str(ROOT / "firmware/comm/canfd/can_tx_gate.c"),
         ])
 
     @staticmethod
@@ -60,6 +62,9 @@ class CycleRuntimeTest(unittest.TestCase):
 
     def test_session_restart_discards_staged_old_command(self):
         self.run_command([str(self.executable), "restart"])
+
+    def test_reconfigure_cannot_reset_a_running_pipeline(self):
+        self.run_command([str(self.executable), "reconfigure_running"])
 
 
 if __name__ == "__main__":

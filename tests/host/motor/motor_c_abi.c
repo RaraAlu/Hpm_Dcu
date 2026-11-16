@@ -1,5 +1,5 @@
 #include "encos_motor.h"
-#include "motor_control.h"
+#include "motor_application.h"
 
 size_t motor_c_layout(unsigned index)
 {

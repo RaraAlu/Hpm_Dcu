@@ -1,0 +1,14 @@
+#ifndef DCU_CYCLE_TIMER_MAP_H
+#define DCU_CYCLE_TIMER_MAP_H
+
+#include "board.h"
+
+#define DCU_WORKER_TIMER HPM_GPTMR2
+#define DCU_WORKER_TIMER_CLOCK clock_gptmr2
+#define DCU_WORKER_TIMER_IRQ IRQn_GPTMR2
+#define DCU_WORKER_TIMER_CHANNEL 0U
+#define DCU_TIMEBASE_TIMER HPM_GPTMR1
+#define DCU_TIMEBASE_CLOCK clock_gptmr1
+#define DCU_TIMEBASE_CHANNEL 0U
+
+#endif

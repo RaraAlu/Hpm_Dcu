@@ -11,7 +11,8 @@
 #include "hpm_i2c_drv.h"
 #include "hpm_romapi.h"
 #include "hpm_ecat_hw.h"
-#include "cycle_runtime.h"
+#include "cfg/ethercat_eeprom_config.h"
+#include "ethercat_cycle.h"
 #include "cycle_config.h"
 #ifdef HPMSOC_HAS_HPMSDK_GPTMRV2
 #include "hpm_gptmrv2_drv.h"
@@ -534,7 +535,6 @@ void hw_esc_read_4bytes(void *dest, const void *src, uint16_t size)
 
 /* actual EEPROM initialization */
 #if defined(ESC_EEPROM_EMULATION) && (!ESC_EEPROM_EMULATION)
-#define ESC_EEPROM_DEVICE_ADDRESS (0x50U) /* ESC EEPROM device address */
 
 /* check EtherCAT Slave Controller Configuration Area is first 8 words(1 word = 2 bytes) */
 static hpm_stat_t ecat_i2c_eeprom_check_configuration_area(void)

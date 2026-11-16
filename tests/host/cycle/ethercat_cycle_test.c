@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "hpm_gptmr_drv.h"
+#include "ethercat_can_task.c"
 
 /* Include the production implementation to exercise its private single-step
  * worker without adding test-only entry points to the firmware API. */
-#include "cycle_runtime.c"
+#include "ethercat_cycle.c"
 
 #define CHECK(expr) do { if (!(expr)) { \
     fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #expr); exit(1); \
@@ -26,6 +28,9 @@ static uint16_t requested_error;
 static bool sync_during_mapping;
 
 uint32_t ethercat_canfd_now_us(void) { return time_us; }
+uint32_t dcu_time_now_us(void) { return time_us; }
+bool dcu_worker_timer_ack(void) { return true; }
+void dcu_worker_timer_start(void) {}
 uint32_t ethercat_canfd_now_ms(void) { return time_us / 1000U; }
 void ethercat_canfd_cancel(unsigned channel) { CHECK(channel < 4); ++cancel_calls; }
 void motor_control_output(const void *data) { ++output_calls; memcpy(last_output, data, sizeof(last_output)); }
@@ -93,8 +98,8 @@ static void check_stopped(uint32_t expected_fault)
     CHECK(fault_calls == 1);
     CHECK(g_dcu_cycle_diagnostics.faults & expected_fault);
     CHECK(requested_state == STATE_SAFEOP && requested_error == ALSTATUSCODE_SYNCERROR);
-    CHECK(!outputs_running);
-    CHECK(dcu_cycle_tx_inhibited());
+    CHECK(!runtime.outputs_running);
+    CHECK(dcu_tx_inhibited());
 }
 
 int main(int argc, char **argv)
@@ -116,7 +121,7 @@ int main(int argc, char **argv)
         test_esc_period = 5000000U;
         nPdOutputSize = 0;
         CHECK(dcu_cycle_start_outputs() == ALSTATUSCODE_DCINVALIDSYNCCFG);
-        CHECK(!outputs_running);
+        CHECK(!runtime.outputs_running);
         return 0;
     }
     start();
@@ -124,25 +129,33 @@ int main(int argc, char **argv)
     CHECK(output_calls == 0 && sync_calls == 0);
     dcu_cycle_timer_isr();
     CHECK(tick_calls == 0);
-    run_once();
+    dcu_cycle_step();
     CHECK(output_calls == 1 && sync_calls == 1 && tick_calls == 1);
     for (unsigned i = 0; i < sizeof(last_output); ++i)
         CHECK(last_output[i] == 0xA5);
 
     if (!strcmp(argv[1], "normal")) {
         time_us = 1750;
-        run_once();
+        dcu_cycle_step();
         CHECK(mapping_calls == 1 && g_dcu_cycle_diagnostics.published_epoch == 1);
         command_boundary(2100);
-        run_once();
+        dcu_cycle_step();
         CHECK(output_calls == 2 && fault_calls == 0);
+        return 0;
+    }
+    if (!strcmp(argv[1], "reconfigure_running")) {
+        CHECK(dcu_cycle_configure() == ALSTATUSCODE_DCINVALIDSYNCCFG);
+        CHECK(runtime.outputs_running && pipeline.epoch == 1);
+        time_us = 1750;
+        dcu_cycle_step();
+        CHECK(fault_calls == 0 && g_dcu_cycle_diagnostics.published_epoch == 1);
         return 0;
     }
     if (!strcmp(argv[1], "prepare_late")) {
         time_us = 1750;
         prepare_cost_us = 50;
         mapping_cost_us = 51;
-        run_once();
+        dcu_cycle_step();
         check_stopped(PDO_PIPELINE_TX_LATE);
         return 0;
     }
@@ -150,43 +163,43 @@ int main(int argc, char **argv)
         time_us = 1750;
         mapping_cost_us = 350;
         sync_during_mapping = true;
-        run_once();
+        dcu_cycle_step();
         check_stopped(PDO_PIPELINE_TX_LATE);
         return 0;
     }
     if (!strcmp(argv[1], "missing")) {
         time_us = 1750;
-        run_once();
+        dcu_cycle_step();
         time_us = 2100;
         dcu_cycle_sync0_isr();
-        run_once();
+        dcu_cycle_step();
         check_stopped(PDO_PIPELINE_RX_MISSING);
         CHECK(output_calls == 1);
         return 0;
     }
     if (!strcmp(argv[1], "sync_lost")) {
         time_us = 1750;
-        run_once();
+        dcu_cycle_step();
         time_us = 4101;
-        run_once();
+        dcu_cycle_step();
         check_stopped(PDO_PIPELINE_SYNC_LOST);
         return 0;
     }
     if (!strcmp(argv[1], "hot_change")) {
         test_esc_period = 1000000U;
-        run_once();
+        dcu_cycle_step();
         check_stopped(PDO_PIPELINE_CONFIG_CHANGED);
         return 0;
     }
     if (!strcmp(argv[1], "worker_stalled")) {
         time_us = 1851;
         dcu_worker_timer_isr();
-        CHECK(dcu_cycle_tx_inhibited());
+        CHECK(dcu_tx_inhibited());
         CHECK(cancel_calls == 4 && fault_calls == 0);
-        run_once();
+        dcu_cycle_step();
         check_stopped(PDO_PIPELINE_TX_LATE);
         dcu_cycle_stop_inputs();
-        CHECK(!dcu_cycle_tx_inhibited());
+        CHECK(!dcu_tx_inhibited());
         return 0;
     }
     if (!strcmp(argv[1], "restart")) {
@@ -198,7 +211,7 @@ int main(int argc, char **argv)
         CHECK(dcu_cycle_start_outputs() == ALSTATUSCODE_NOERROR);
         time_us = 2100;
         dcu_cycle_sync0_isr();
-        run_once();
+        dcu_cycle_step();
         CHECK(output_calls == 1 && fault_calls == 0);
         dcu_cycle_stop_inputs();
         CHECK(dcu_cycle_start_outputs() == ALSTATUSCODE_DCINVALIDSYNCCFG);

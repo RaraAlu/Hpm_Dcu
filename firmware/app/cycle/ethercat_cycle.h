@@ -1,5 +1,5 @@
-#ifndef DCU_CYCLE_RUNTIME_H
-#define DCU_CYCLE_RUNTIME_H
+#ifndef DCU_ETHERCAT_CYCLE_H
+#define DCU_ETHERCAT_CYCLE_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -23,17 +23,18 @@ typedef struct {
 extern volatile dcu_cycle_diagnostics_t g_dcu_cycle_diagnostics;
 
 void dcu_cycle_init(void);
-uint32_t dcu_cycle_now_us(void);
-bool dcu_cycle_tx_inhibited(void);
-void dcu_rtos_start(void);
+void dcu_cycle_step(void);
+/* SSC/worker task only, except for the explicit PDI/Sync/timer handoffs below. */
 uint16_t dcu_cycle_configure(void);
 uint16_t dcu_cycle_start_outputs(void);
 void dcu_cycle_stop_outputs(void);
 void dcu_cycle_stop_inputs(void);
+/* The PDI producer stages complete RxPDOs; dedicated ISRs only hand off events. */
 void dcu_cycle_stage(const void *data);
 void dcu_cycle_sync0_isr(void);
 void dcu_cycle_sync1_isr(void);
 void dcu_cycle_timer_isr(void);
+void dcu_cycle_watchdog_isr(void);
 
 #ifdef __cplusplus
 }

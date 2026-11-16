@@ -6,6 +6,7 @@
  */
 
 #include <stdio.h>
+#include "cfg/diagnostic_config.h"
 #include "board.h"
 #include "ecat_def.h"
 #include "ecatappl.h"
@@ -13,17 +14,15 @@
 #include "applInterface.h"
 #include "digital_io.h"
 #include "ethercat_canfd_gateway.h"
-#include "motor_control.h"
-#include "cycle_runtime.h"
+#include "motor_application.h"
+#include "ethercat_cycle.h"
+#include "ethercat_can_task.h"
+#include "cycle_timers.h"
 #include "coeappl.h"
 #include "hpm_ecat_e2p_emulation.h"
 extern TOBJ1018 sIdentity;
 #include "hpm_ecat_hw.h"
 #include "hpm_l1c_drv.h"
-
-#ifndef CONFIG_CAN_LED_TEST
-#define CONFIG_CAN_LED_TEST 0
-#endif
 
 #if CONFIG_CAN_LED_TEST
 #include "can_led_test.h"
@@ -61,6 +60,10 @@ int main(void)
     }
 
     motor_control_init();
+    if (!dcu_timebase_init()) {
+        printf("Init cycle timebase failed!\n");
+        return 0;
+    }
     dcu_cycle_init();
     MainInit(); /* SSC Initilize the stack */
     sSyncManOutPar.u16SyncTypesSupported = SYNCTYPE_DCSYNC0SUPP;

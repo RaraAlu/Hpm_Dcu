@@ -1,9 +1,10 @@
 #include "encos_motor.h"
+#include "detail/encos_math.hpp"
 #include <limits.h>
 #include <math.h>
 #include <string.h>
 
-#define PI 3.14159265358979323846
+using dcu::encos::detail::pi;
 uint16_t encos_be16(const uint8_t *p) { return (uint16_t)((uint16_t)p[0]<<8 | p[1]); }
 uint32_t encos_be32(const uint8_t *p) { return (uint32_t)p[0]<<24 | (uint32_t)p[1]<<16 | (uint32_t)p[2]<<8 | p[3]; }
 static void put16(uint8_t *p, uint16_t v) { p[0]=v>>8; p[1]=v; }
@@ -47,14 +48,14 @@ bool encos_encode(const mc_axis_rx_t *c, const mc_routing_t *r, const encos_prof
     memset(f,0,sizeof(*f)); f->id=r->CanId;
     switch(c->Mode) {
     case 1: {
-        double rpm10=vel*60/(2*PI)*10;
+        double rpm10=vel*60/(2*pi)*10;
         if(rpm10<0 || rpm10>32767 || c->CurrentLimit>4095) return false;
-        uint64_t bits=(UINT64_C(1)<<61) | ((uint64_t)float_bits((float)(pos*180/PI))<<29)
+        uint64_t bits=(UINT64_C(1)<<61) | ((uint64_t)float_bits((float)(pos*180/pi))<<29)
             | ((uint64_t)(uint32_t)rpm10<<14) | ((uint64_t)c->CurrentLimit<<2) | 1;
         f->dlc=8; for(unsigned i=0;i<8;i++) f->data[i]=(uint8_t)(bits>>(56-8*i)); break;
     }
     case 2:
-        f->dlc=7; f->data[0]=0x41; put32(f->data+1,float_bits((float)(vel*60/(2*PI)))); put16(f->data+5,c->CurrentLimit); break;
+        f->dlc=7; f->data[0]=0x41; put32(f->data+1,float_bits((float)(vel*60/(2*pi)))); put16(f->data+5,c->CurrentLimit); break;
     case 3: case 5: {
         int32_t value=c->Mode==3?c->TargetCurrent:c->TargetTorque/10;
         if(value<INT16_MIN || value>INT16_MAX) return false;

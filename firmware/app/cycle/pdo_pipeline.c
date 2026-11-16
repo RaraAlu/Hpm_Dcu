@@ -1,8 +1,7 @@
 #include "pdo_pipeline.h"
+#include "detail/pdo_pipeline_slots.h"
 #include "cycle_config.h"
 #include <string.h>
-
-enum { SLOT_FREE, SLOT_WRITING, SLOT_READY, SLOT_LATCHED, SLOT_READING };
 
 _Static_assert(__GCC_ATOMIC_INT_LOCK_FREE == 2 && sizeof(uint32_t) == sizeof(unsigned int),
                "PDO handoff requires lock-free 32-bit atomics");
@@ -25,7 +24,7 @@ static inline __attribute__((always_inline)) uint32_t exchange(uint32_t *value, 
 static inline __attribute__((always_inline)) bool claim(uint32_t *state, uint32_t from, uint32_t to)
 {
     return __atomic_compare_exchange_n(state, &from, to, false,
-                                        __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
 
 DCU_FAST_CODE void pdo_pipeline_fault(pdo_pipeline_t *p, uint32_t fault)

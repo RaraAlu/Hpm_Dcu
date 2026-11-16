@@ -1,0 +1,79 @@
+#ifndef TEST_CANFD_BOARD_H
+#define TEST_CANFD_BOARD_H
+#include "hpm_mcan_drv.h"
+typedef struct { unsigned unused; } GPIO_Type;
+extern MCAN_Type test_mcan[4];
+extern GPIO_Type test_gpio;
+#define HPM_MCAN0 (&test_mcan[0])
+#define HPM_MCAN1 (&test_mcan[1])
+#define HPM_MCAN2 (&test_mcan[2])
+#define HPM_MCAN3 (&test_mcan[3])
+#define IRQn_MCAN0 10U
+#define IRQn_MCAN1 11U
+#define IRQn_MCAN2 12U
+#define IRQn_MCAN3 13U
+#define BOARD_CAN0_TX_LED_CTRL (&test_gpio)
+#define BOARD_CAN0_RX_LED_CTRL (&test_gpio)
+#define BOARD_CAN0_ERR_LED_CTRL (&test_gpio)
+#define BOARD_CAN1_TX_LED_CTRL (&test_gpio)
+#define BOARD_CAN1_RX_LED_CTRL (&test_gpio)
+#define BOARD_CAN1_ERR_LED_CTRL (&test_gpio)
+#define BOARD_CAN2_TX_LED_CTRL (&test_gpio)
+#define BOARD_CAN2_RX_LED_CTRL (&test_gpio)
+#define BOARD_CAN2_ERR_LED_CTRL (&test_gpio)
+#define BOARD_CAN3_TX_LED_CTRL (&test_gpio)
+#define BOARD_CAN3_RX_LED_CTRL (&test_gpio)
+#define BOARD_CAN3_ERR_LED_CTRL (&test_gpio)
+#define BOARD_CAN0_TX_LED_INDEX 0
+#define BOARD_CAN0_RX_LED_INDEX 0
+#define BOARD_CAN0_ERR_LED_INDEX 0
+#define BOARD_CAN1_TX_LED_INDEX 0
+#define BOARD_CAN1_RX_LED_INDEX 0
+#define BOARD_CAN1_ERR_LED_INDEX 0
+#define BOARD_CAN2_TX_LED_INDEX 0
+#define BOARD_CAN2_RX_LED_INDEX 0
+#define BOARD_CAN2_ERR_LED_INDEX 0
+#define BOARD_CAN3_TX_LED_INDEX 0
+#define BOARD_CAN3_RX_LED_INDEX 0
+#define BOARD_CAN3_ERR_LED_INDEX 0
+#define BOARD_CAN0_TX_LED_PIN 0
+#define BOARD_CAN0_RX_LED_PIN 0
+#define BOARD_CAN0_ERR_LED_PIN 0
+#define BOARD_CAN1_TX_LED_PIN 0
+#define BOARD_CAN1_RX_LED_PIN 0
+#define BOARD_CAN1_ERR_LED_PIN 0
+#define BOARD_CAN2_TX_LED_PIN 0
+#define BOARD_CAN2_RX_LED_PIN 0
+#define BOARD_CAN2_ERR_LED_PIN 0
+#define BOARD_CAN3_TX_LED_PIN 0
+#define BOARD_CAN3_RX_LED_PIN 0
+#define BOARD_CAN3_ERR_LED_PIN 0
+#define BOARD_CAN0_TX_LED_ON_LEVEL 0
+#define BOARD_CAN0_RX_LED_ON_LEVEL 0
+#define BOARD_CAN0_ERR_LED_ON_LEVEL 0
+#define BOARD_CAN1_TX_LED_ON_LEVEL 0
+#define BOARD_CAN1_RX_LED_ON_LEVEL 0
+#define BOARD_CAN1_ERR_LED_ON_LEVEL 0
+#define BOARD_CAN2_TX_LED_ON_LEVEL 0
+#define BOARD_CAN2_RX_LED_ON_LEVEL 0
+#define BOARD_CAN2_ERR_LED_ON_LEVEL 0
+#define BOARD_CAN3_TX_LED_ON_LEVEL 0
+#define BOARD_CAN3_RX_LED_ON_LEVEL 0
+#define BOARD_CAN3_ERR_LED_ON_LEVEL 0
+#define BOARD_CAN0_TX_LED_OFF_LEVEL 1
+#define BOARD_CAN0_RX_LED_OFF_LEVEL 1
+#define BOARD_CAN0_ERR_LED_OFF_LEVEL 1
+#define BOARD_CAN1_TX_LED_OFF_LEVEL 1
+#define BOARD_CAN1_RX_LED_OFF_LEVEL 1
+#define BOARD_CAN1_ERR_LED_OFF_LEVEL 1
+#define BOARD_CAN2_TX_LED_OFF_LEVEL 1
+#define BOARD_CAN2_RX_LED_OFF_LEVEL 1
+#define BOARD_CAN2_ERR_LED_OFF_LEVEL 1
+#define BOARD_CAN3_TX_LED_OFF_LEVEL 1
+#define BOARD_CAN3_RX_LED_OFF_LEVEL 1
+#define BOARD_CAN3_ERR_LED_OFF_LEVEL 1
+void board_led_toggle(void);
+void board_init_can(MCAN_Type *base);
+uint32_t board_init_can_clock(MCAN_Type *base);
+void board_can_transceiver_phy_set(MCAN_Type *base, bool enabled);
+#endif

@@ -1,4 +1,5 @@
 import shutil
+import os
 import subprocess
 import tempfile
 import unittest
@@ -7,20 +8,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-class MotorControlStateTest(unittest.TestCase):
+class MotorApplicationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cc, cxx = shutil.which("cc"), shutil.which("c++")
         if not cc or not cxx:
-            raise RuntimeError("Motor-state tests require host cc/c++")
-        directory = tempfile.TemporaryDirectory(prefix="dcu-motor-state-")
+            raise RuntimeError("Motor-application tests require host cc/c++")
+        directory = tempfile.TemporaryDirectory(prefix="dcu-motor-application-")
         cls.addClassCleanup(directory.cleanup)
         work = Path(directory.name)
         flags = ["-O0", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
+        if os.environ.get("DCU_HOST_SANITIZE") == "1":
+            flags.extend(("-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"))
         for include in (
             "tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
             "firmware/generated/encos", "firmware/generated/ethercat",
-            "firmware/app/motor", "firmware/protocols/encos", "firmware/comm/canfd",
+            "firmware/app/motor", "firmware/app/cycle", "firmware/protocols/encos", "firmware/comm/canfd",
             "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
             "firmware/devices/motor", "firmware/devices/motor/drivers/encos",
         ):
@@ -30,11 +33,16 @@ class MotorControlStateTest(unittest.TestCase):
             cc, "-std=c11", *flags, "-c", str(ROOT / "firmware/comm/ethercat/encos_storage.c"),
             "-o", str(storage),
         ])
-        cls.executable = work / "motor_state"
+        cls.executable = work / "motor_application"
         cls.run_command([
             cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", *flags,
-            str(ROOT / "tests/host/motor/motor_control_state.cpp"),
+            str(ROOT / "tests/host/motor/motor_application_test.cpp"),
             str(ROOT / "firmware/app/motor/motor_driver_binding.cpp"),
+            str(ROOT / "firmware/app/motor/encos_parameter_transactions.cpp"),
+            str(ROOT / "firmware/app/motor/can_bus_scheduler.cpp"),
+            str(ROOT / "firmware/comm/ethercat/motor_dictionary.cpp"),
+            str(ROOT / "firmware/comm/ethercat/motor_coe.cpp"),
+            str(ROOT / "firmware/comm/ethercat/motor_pdo.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),
@@ -61,6 +69,36 @@ class MotorControlStateTest(unittest.TestCase):
 
     def test_invalid_pdo_does_not_override_stop_priority(self):
         self.run_command([str(self.executable), "invalid_stop"])
+
+    def test_initial_board_defaults_come_from_the_generated_dictionary(self):
+        self.run_command([str(self.executable), "config_source"])
+
+    def test_raw_ring_has_bounded_capacity_and_preserves_fifo_order(self):
+        self.run_command([str(self.executable), "raw_queue"])
+
+    def test_rejected_parameter_encoding_cannot_corrupt_the_next_transaction(self):
+        self.run_command([str(self.executable), "service_rejected"])
+
+    def test_parameter_write_ack_and_readback_complete_the_same_transaction(self):
+        self.run_command([str(self.executable), "service_verify"])
+
+    def test_parameter_readback_mismatch_is_reported(self):
+        self.run_command([str(self.executable), "service_mismatch"])
+
+    def test_parameter_timeout_completes_and_releases_the_transaction(self):
+        self.run_command([str(self.executable), "service_timeout"])
+
+    def test_parameter_observations_update_axis_feedback(self):
+        self.run_command([str(self.executable), "service_observations"])
+
+    def test_maintenance_before_apply_matches_the_sent_can_id_and_holds_off(self):
+        self.run_command([str(self.executable), "service_maintenance"])
+
+    def test_busy_transaction_blocks_owner_change_and_session_exit_completes_it(self):
+        self.run_command([str(self.executable), "service_cancel"])
+
+    def test_pdo_codec_matches_fixed_wire_offsets_and_bytes(self):
+        self.run_command([str(self.executable), "codec"])
 
 
 if __name__ == "__main__":

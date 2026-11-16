@@ -5,16 +5,12 @@
  */
 
 #include "hpm_ecat_e2p_emulation.h"
+#include "cfg/ethercat_eeprom_config.h"
 #include "hpm_romapi.h"
 #include "hpm_ecat_hw.h"
 #include "ecatslv.h"
 #include "hpm_nor_flash.h"
 #include <string.h>
-
-#define SII_PAGE_SIZE       256U
-#define SII_PAGE_COUNT      (ESC_EEPROM_SIZE / SII_PAGE_SIZE)
-#define SII_PAGE_KEY        0x10000U
-#define LEGACY_BACKUP_KEY   0x11000U
 
 extern unsigned char aEepromData[];
 
