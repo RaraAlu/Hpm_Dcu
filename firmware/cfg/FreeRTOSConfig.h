@@ -2,6 +2,7 @@
 #define DCU_FREERTOS_CONFIG_H
 
 #include "board.h"
+#include "cycle_config.h"
 
 #define configMTIME_BASE_ADDRESS HPM_MCHTMR_BASE
 #define configMTIMECMP_BASE_ADDRESS (HPM_MCHTMR_BASE + 8UL)
@@ -30,7 +31,7 @@
 #define configUSE_TRACE_FACILITY 0
 #define configGENERATE_RUN_TIME_STATS 0
 #define configHSP_ENABLE 0
-#define configMAX_SYSCALL_INTERRUPT_PRIORITY 3U
+#define configMAX_SYSCALL_INTERRUPT_PRIORITY DCU_IRQ_KERNEL_PRIORITY
 #define INCLUDE_vTaskSuspend 1
 #define INCLUDE_uxTaskGetStackHighWaterMark 1
 #define INCLUDE_xTaskGetSchedulerState 1

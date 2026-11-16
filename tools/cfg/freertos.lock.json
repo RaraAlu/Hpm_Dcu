@@ -8,12 +8,25 @@
   "toolchain": "GCC RISC-V with HPMicro extensions",
   "file_count": 38,
   "manifest_format": "sorted UTF-8 relative POSIX path + NUL + lowercase file SHA-256 + LF",
-  "manifest_sha256": "93c1a351c21cf20d986908a506a3b75def0d41d5172451c28014dfb4b085b6a8",
+  "manifest_sha256": "9ca796d323d56047e1b7b0c393f7b7d6a1a9dcec4394bd47fef54edea553f324",
   "renamed_documents": {
     "Source/LICENSE.md": "Source/许可证.md",
     "Source/include/stdint.readme": "Source/include/整数类型说明.readme"
   },
-  "content_changes": [],
+  "content_changes": [
+    {
+      "path": "Source/portable/GCC/RISC-V/portASM.S",
+      "upstream_sha256": "c30a5bc8db8381295a23fe70f9233ac917a7a8115b2ef89cc4e7960934dacda3",
+      "patched_sha256": "0a010e32fd75794aedf8deacd76ac36dbe59fad67bf930c43750da93b8c4ef37",
+      "reason": "Initialize the saved priority-mask context for newly created tasks"
+    },
+    {
+      "path": "Source/portable/GCC/RISC-V/chip_specific_extensions/HPMicro/freertos_risc_v_chip_specific_extensions.h",
+      "upstream_sha256": "53302d813a028b7a4c6d05dde631ab30e749f801a1e4c976e21d61aa789f0f9c",
+      "patched_sha256": "b1c68c66cdd1d26dddd9e50220affa40d70a62858df102f3bd76b6ef58acd368",
+      "reason": "Save and restore MIE and PLIC threshold across task and nested-ISR context switches"
+    }
+  ],
   "excluded": ["IAR", "MemMang", "tickless", "samples"],
-  "checksum_source": "Calculated locally after byte-for-byte comparison to the pinned upstream Git checkout; not a publisher signature"
+  "checksum_source": "Calculated locally from the pinned upstream checkout with two documented GCC/HPM priority-mask context patches; not a publisher signature"
 }

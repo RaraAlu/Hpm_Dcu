@@ -28,11 +28,21 @@ class FreeRtosVendorTest(unittest.TestCase):
         config = (ROOT / "firmware/cfg/FreeRTOSConfig.h").read_text()
         self.assertIn("#define configSUPPORT_STATIC_ALLOCATION 1", config)
         self.assertIn("#define configSUPPORT_DYNAMIC_ALLOCATION 0", config)
-        self.assertIn("#define configMAX_SYSCALL_INTERRUPT_PRIORITY 3U", config)
+        self.assertIn("#define configMAX_SYSCALL_INTERRUPT_PRIORITY DCU_IRQ_KERNEL_PRIORITY", config)
         self.assertIn("#define configUSE_TICKLESS_IDLE 0", config)
         cmake = (ROOT / "CMakeLists.txt").read_text()
         self.assertIn("set(CONFIG_FREERTOS_HEAP custom)", cmake)
         self.assertIn("-DUSE_SYSCALL_INTERRUPT_PRIORITY=1", cmake)
+
+    def test_local_patch_bytes_match_the_declared_provenance(self):
+        lock = json.loads((ROOT / "tools/cfg/freertos.lock.json").read_text())
+        patches = lock["content_changes"]
+        self.assertEqual(len(patches), 2)
+        for patch in patches:
+            data = (ROOT / lock["local_path"] / patch["path"]).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(), patch["patched_sha256"])
+            self.assertNotEqual(patch["upstream_sha256"], patch["patched_sha256"])
+            self.assertTrue(patch["reason"])
 
 
 if __name__ == "__main__":

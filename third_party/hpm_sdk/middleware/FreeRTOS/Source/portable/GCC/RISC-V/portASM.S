@@ -258,6 +258,7 @@ fpu_specific_stack_frame:
 #endif
     addi a0, a0, -portWORD_SIZE
     store_x a1, 0(a0)                   /* mret value (pxCode parameter) onto the stack. */
+    portasmINITIALISE_ADDITIONAL_REGISTERS
     ret
 /*-----------------------------------------------------------*/
 

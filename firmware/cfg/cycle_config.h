@@ -16,6 +16,21 @@
 #define DCU_IRQ_TIMER_PRIORITY 3U
 #define DCU_IRQ_CAN_PRIORITY 2U
 #define DCU_IRQ_WORKER_PRIORITY 1U
+#define DCU_IRQ_KERNEL_PRIORITY 3U
+
+#if DCU_IRQ_SYNC0_PRIORITY <= DCU_IRQ_PDI_PRIORITY || \
+    DCU_IRQ_PDI_PRIORITY <= DCU_IRQ_KERNEL_PRIORITY || \
+    DCU_IRQ_CAN_PRIORITY > DCU_IRQ_KERNEL_PRIORITY || \
+    DCU_IRQ_WORKER_PRIORITY > DCU_IRQ_KERNEL_PRIORITY
+#error "Cycle IRQ priorities violate the fast-ISR/kernel handoff contract"
+#endif
+
+#if DCU_WORKER_PERIOD_US == 0U || DCU_SYNC_MIN_PERIOD_NS < 1000U || \
+    DCU_SYNC_MAX_PERIOD_NS < DCU_SYNC_MIN_PERIOD_NS || \
+    DCU_TX_PUBLISH_ADVANCE_US < DCU_WORKER_PERIOD_US || \
+    DCU_TX_PUBLISH_ADVANCE_US + DCU_TX_BUILD_BUDGET_US >= DCU_SYNC_MIN_PERIOD_NS / 1000U
+#error "Invalid cycle range or feedback publication window"
+#endif
 
 #if defined(__riscv)
 #define DCU_FAST_CODE __attribute__((section(".fast"), optimize("O2")))
