@@ -14,6 +14,7 @@ inline constexpr unsigned can_budget_cap_us = 2400;
 inline constexpr unsigned budget_refill_window_ms =
     (can_budget_cap_us + can_budget_us_per_ms - 1) / can_budget_us_per_ms;
 inline constexpr unsigned raw_queue_capacity = 32;
+inline constexpr unsigned raw_batch_capacity = 7;
 inline constexpr uint32_t query_online_ms = 300;
 inline constexpr uint32_t query_position_ms = 100;
 inline constexpr uint32_t query_velocity_ms = 150;

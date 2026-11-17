@@ -41,6 +41,8 @@ public:
     void acknowledge_publication();
 
     bool configured() const { return state_.configured; }
+    // Applied route only; meaningful when configured().
+    uint32_t can_id() const { return state_.route.CanId; }
     bool active() const { return state_.active; }
     bool control_sent() const { return state_.control_sent; }
     bool matches(uint32_t can_id) const { return state_.configured && state_.route.CanId == can_id; }

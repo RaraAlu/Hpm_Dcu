@@ -37,7 +37,8 @@ private:
     bool command_permitted(uint32_t now_ms) const;
     void stop_all(uint16_t fault);
     void check_timeouts(uint32_t now_ms);
-    void accept_candidate(uint32_t now_ms);
+    bool accept_candidate(uint32_t now_ms);
+    void process_raw(uint32_t now_ms);
     bool accept_axis_command(unsigned axis, const mc_axis_rx_t &command, bool permitted, uint32_t now_ms);
     void consume_feedback(unsigned bus, const dcu_can_frame_t &frame,
                           uint32_t timestamp_ms, uint32_t now_ms);

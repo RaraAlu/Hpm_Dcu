@@ -116,6 +116,15 @@ class ProjectLayoutTest(unittest.TestCase):
         self.assertNotIn("motor_dictionary.hpp", controller)
         self.assertNotRegex(controller, r"\b(?:mc_object|axis_feedback|axis_diagnostics)\s*\(")
 
+    def test_raw_gateway_does_not_depend_on_axis_dictionary_or_pdo_parsing(self):
+        for name in ("raw_can_gateway.hpp", "raw_can_gateway.cpp"):
+            text = (ROOT / "firmware/app/motor" / name).read_text()
+            with self.subTest(name=name):
+                for dependency in ("axis_controller.hpp", "motor_dictionary.hpp", "motor_pdo_codec.hpp",
+                                   "encos_parameter_transactions.hpp", "AxisController", "mc_channel_config_t",
+                                   "mc_raw_t", "canfd_bus_pdo_t", "RawCanCycle", "stage_batch", "stage_full"):
+                    self.assertNotIn(dependency, text)
+
     def test_motor_motion_codec_has_no_retired_wire_api_or_driver_roundtrip(self):
         for path in (ROOT / "firmware").rglob("*"):
             if path.suffix in (".c", ".cpp", ".h", ".hpp"):

@@ -160,6 +160,15 @@ class MotorApplicationTest(unittest.TestCase):
     def test_raw_full_session_restarts_its_cycle_deduplication(self):
         self.run_command([str(self.executable), "raw_full_session"])
 
+    def test_raw_admission_uses_applied_routes_and_channel_configuration(self):
+        self.run_command([str(self.executable), "raw_applied_policy"])
+
+    def test_raw_pdo_decoder_preserves_header_slot_and_flag_rules(self):
+        self.run_command([str(self.executable), "raw_codec"])
+
+    def test_raw_full_input_preserves_sequence_gates_and_dictionary_mirrors(self):
+        self.run_command([str(self.executable), "raw_full_admission"])
+
     def test_start_requires_a_separate_query_only_handshake(self):
         self.run_command([str(self.executable), "startup_gate"])
 

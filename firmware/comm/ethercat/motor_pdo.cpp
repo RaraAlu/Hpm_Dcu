@@ -20,6 +20,49 @@ dcu::ethercat::motor_pdo::detail::PublicationState publication;
 }
 
 namespace dcu::ethercat::motor_pdo {
+static_assert(app::config::motor_control::raw_batch_capacity >= CANFD_GATEWAY_SLOTS_PER_BUS);
+
+void decode_raw_sideband(const mc_raw_t &raw, app::RawCanBatch &batch)
+{
+    batch = {};
+    batch.sequence = raw.BatchSeq;
+    if ((raw.ValidMask & ~3u) || raw.SlotCount > 2 || raw.Flags || raw.DropCount ||
+        raw.Reserved || raw.Reserved1 || raw.Reserved2)
+        return;
+    batch.valid = true;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!(raw.ValidMask & (1u << i))) continue;
+        const auto wire = raw_slot(raw, i);
+        auto &slot = batch.slots[batch.count++];
+        slot.bus = wire.channel;
+        slot.frame.id = wire.id;
+        slot.frame.flags = wire.flags;
+        slot.frame.dlc = wire.dlc;
+        std::memcpy(slot.frame.data, wire.data, sizeof(slot.frame.data));
+    }
+}
+
+void decode_raw_bus(const canfd_bus_pdo_t &raw, unsigned bus, app::RawCanBatch &batch)
+{
+    batch = {};
+    batch.kind = app::RawCanBatch::Kind::FullBus;
+    batch.bus = bus < ENCOS_CHANNEL_COUNT ? static_cast<uint8_t>(bus) : ENCOS_CHANNEL_COUNT;
+    batch.sequence = raw.cycle_seq;
+    if (bus >= ENCOS_CHANNEL_COUNT || (raw.valid_mask & 0x80u))
+        return;
+    batch.valid = true;
+    for (unsigned i = 0; i < CANFD_GATEWAY_SLOTS_PER_BUS; ++i) {
+        if (!(raw.valid_mask & (1u << i)) || !(raw.slot[i].flags & CANFD_FLAG_VALID)) continue;
+        const auto &wire = raw.slot[i];
+        auto &slot = batch.slots[batch.count++];
+        slot.bus = bus;
+        slot.frame.id = wire.can_id;
+        slot.frame.flags = static_cast<uint8_t>(wire.flags & ~(CANFD_FLAG_VALID | CANFD_FLAG_ON_CHANGE));
+        slot.frame.dlc = wire.dlc;
+        std::memcpy(slot.frame.data, wire.data, sizeof(slot.frame.data));
+    }
+}
+
 unsigned mapping_indices(unsigned profile, bool tx, uint16_t *indices)
 {
     unsigned n = 0;

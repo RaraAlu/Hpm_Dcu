@@ -69,7 +69,6 @@ void MotorApplication::stop_all(uint16_t fault)
         axes_[a].stop(axes_[a].configured() ? fault : 0);
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++)
         ethercat_canfd_cancel(c);
-    raw_.cancel();
     state_.session_armed = false;
 }
 void MotorApplication::operational(bool op)
@@ -130,10 +129,10 @@ bool MotorApplication::accept_axis_command(unsigned axis, const mc_axis_rx_t &co
         *object<mc_axis_rx_t>(0x7200 + axis) = command;
     return accepted;
 }
-void MotorApplication::accept_candidate(uint32_t now)
+bool MotorApplication::accept_candidate(uint32_t now)
 {
     if (!state_.pending) {
-        return;
+        return false;
     }
     state_.pending = false;
     auto b = motor_pdo::board(state_.candidate);
@@ -151,13 +150,13 @@ void MotorApplication::accept_candidate(uint32_t now)
     if (b.InterfaceVersion != MC_INTERFACE_VERSION || (b.BoardControl & ~7u) || (b.ChannelEnableMask & 0xF0) || (b.AxisEnableMask & 0xF0000000u) || b.Reserved0 || b.Reserved1 || b.Reserved2 || b.Reserved3 || b.Reserved4 || !b.CommandLeaseMs || b.CommandLeaseMs > state_.config.MaxCommandLeaseMs) {
         state_.board_fault |= 64;
         stop_all(9);
-        return;
+        return false;
     }
     if (!state_.operational || (state_.seen_cycle && !newer(b.CycleSeq, state_.last_cycle)))
-        return;
+        return false;
     if (!state_.session_armed && !stop) {
         stop_all(8);
-        return;
+        return false;
     }
     if (stop && !b.AxisEnableMask)
         state_.session_armed = true;
@@ -170,8 +169,7 @@ void MotorApplication::accept_candidate(uint32_t now)
     *object<mc_board_rx_t>(0x7000) = b;
     object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq = b.CycleSeq;
     if (state_.config.ActivePdoProfile == 2) {
-        raw_.stage_full(!stop);
-        return;
+        return true;
     }
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
         auto ch = motor_pdo::channel(state_.candidate, c);
@@ -193,8 +191,8 @@ void MotorApplication::accept_candidate(uint32_t now)
     if (state_.config.ActivePdoProfile == 1) {
         mc_raw_t *r = object<mc_raw_t>(0x7300);
         *r = motor_pdo::raw(state_.candidate);
-        raw_.stage_batch(r->BatchSeq, !stop);
     }
+    return true;
 }
 bool MotorApplication::apply_configuration()
 {
@@ -279,7 +277,7 @@ void MotorApplication::process()
         return;
     state_.last_process_us = now_us;
     uint32_t now = ethercat_canfd_now_ms();
-    accept_candidate(now);
+    const bool accepted = accept_candidate(now);
     check_timeouts(now);
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
         schedule_[c].refill(now);
@@ -380,12 +378,42 @@ void MotorApplication::process()
             }
         }
     }
-    RawCanCycle cycle{state_.config.ActivePdoProfile, state_.board_command.ChannelEnableMask,
-                      command_permitted(now), state_.candidate};
-    const auto drops = raw_.process(cycle, now, state_.channels, axes_, schedule_);
-    state_.tx_total += drops.total;
-    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
-        state_.channel_tx_drop[c] += drops.channel[c];
+    if (accepted)
+        process_raw(now);
+}
+void MotorApplication::process_raw(uint32_t now)
+{
+    const unsigned profile = state_.config.ActivePdoProfile;
+    if (profile != 1 && profile != 2) return;
+    RawCanPolicy policy{};
+    policy.permitted = command_permitted(now);
+    if (profile == 2 && !policy.permitted) return;
+    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
+        auto &bus = policy.buses[c];
+        const auto &channel = state_.channels[c];
+        bus.can_send = (state_.board_command.ChannelEnableMask & (1u << c)) &&
+            (channel.Role == 2 || channel.Role == 3) && parameters::available(c, now);
+        bus.rate_limit = channel.RawRateLimit;
+        bus.fd_response = channel.FrameFormat != 0;
+        for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; ++a)
+            if (axes_[a].configured())
+                bus.protected_ids[bus.protected_count++] = axes_[a].can_id();
+    }
+    const unsigned batches = profile == 2 ? ENCOS_CHANNEL_COUNT : 1;
+    for (unsigned c = 0; c < batches; ++c) {
+        RawCanBatch batch{};
+        if (profile == 1) {
+            motor_pdo::decode_raw_sideband(motor_pdo::raw(state_.candidate), batch);
+        } else {
+            const auto raw = motor_pdo::raw_bus(state_.candidate, c);
+            *object<canfd_bus_pdo_t>(0x7400 + 16 * c) = raw;
+            motor_pdo::decode_raw_bus(raw, c, batch);
+        }
+        const auto drops = raw_.process(batch, policy, now, schedule_);
+        state_.tx_total += drops.total;
+        for (unsigned bus = 0; bus < ENCOS_CHANNEL_COUNT; ++bus)
+            state_.channel_tx_drop[bus] += drops.channel[bus];
+    }
 }
 void MotorApplication::publish(uint32_t now)
 {

@@ -209,6 +209,65 @@ void start_axis()
     CHECK(axis_feedback(0)->StatusWord & 8U);
 }
 
+struct RawPdoFixture {
+    unsigned profile;
+    mc_raw_t sideband{};
+    canfd_bus_pdo_t full[ENCOS_CHANNEL_COUNT]{};
+    mc_board_rx_t board{};
+
+    explicit RawPdoFixture(unsigned selected) : profile(selected)
+    {
+        select_wire_profile(profile);
+        for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
+            auto *channel = object<mc_channel_config_t>(0x2010 + c);
+            channel->Role = 2;
+            channel->RawRateLimit = 8;
+            channel->FrameFormat = 0;
+            full[c].cycle_seq = 1;
+            full[c].valid_mask = 1;
+            full[c].slot[0].can_id = 0x100 + c;
+            full[c].slot[0].flags = 1;
+            full[c].slot[0].dlc = 1;
+            full[c].slot[0].data[0] = 42 + c;
+        }
+        sideband.ValidMask = sideband.SlotCount = 1;
+        sideband.CanId0 = 0x100;
+        sideband.Dlc0 = 1;
+    }
+    void submit(bool enabled = true, uint8_t channels = 15, bool advance = true)
+    {
+        uint8_t data[784]{};
+        board.InterfaceVersion = MC_INTERFACE_VERSION;
+        if (advance) board.CycleSeq = object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq + 1;
+        board.BoardControl = enabled ? 1 : 0;
+        board.ChannelEnableMask = channels;
+        board.CommandLeaseMs = 10;
+        std::memcpy(data, &board, sizeof(board));
+        if (profile == 1) {
+            for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
+                mc_channel_rx_t channel{};
+                channel.ChannelControl = 1;
+                channel.ExpectedRole = object<mc_channel_config_t>(0x2010 + c)->Role;
+                channel.Reserved = 2000;
+                std::memcpy(data + 32 + 8 * c, &channel, sizeof(channel));
+            }
+            std::memcpy(data + 736, &sideband, sizeof(sideband));
+        } else {
+            std::memcpy(data + 32, full, sizeof(full));
+        }
+        motor_control_output(data);
+        run_cycle();
+        motor_control_prepare_input();
+    }
+    void start()
+    {
+        CHECK(apply_configuration());
+        motor_control_operational(true);
+        submit(false);
+        sent.clear();
+    }
+};
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
@@ -944,6 +1003,210 @@ int main(int argc, char **argv)
         CHECK(!axis.query_ready(2));
         return 0;
     }
+    if (!std::strcmp(argv[1], "raw_codec")) {
+        mc_raw_t raw{};
+        dcu::app::RawCanBatch batch{};
+        raw.BatchSeq = UINT32_MAX;
+        raw.SlotCount = 2;
+        for (unsigned i = 0; i < 2; ++i) {
+            motor_pdo::RawSlot slot{};
+            slot.id = 0x100 + i;
+            slot.channel = i + 2;
+            slot.flags = 2 + i;
+            slot.dlc = 9 + i;
+            for (unsigned j = 0; j < 8; ++j) slot.data[j] = i * 19 + j;
+            motor_pdo::write_raw_slot(raw, i, slot);
+        }
+        for (unsigned mask = 0; mask < 256; ++mask) {
+            raw.ValidMask = mask;
+            motor_pdo::decode_raw_sideband(raw, batch);
+            CHECK(batch.sequence == UINT32_MAX && batch.kind == dcu::app::RawCanBatch::Kind::Sideband);
+            CHECK(batch.valid == (mask < 4));
+            if (!batch.valid) { CHECK(batch.count == 0); continue; }
+            unsigned count = 0;
+            for (unsigned i = 0; i < 2; ++i) {
+                if (!(mask & (1u << i))) continue;
+                const auto wire = motor_pdo::raw_slot(raw, i);
+                const auto &slot = batch.slots[count++];
+                CHECK(slot.bus == wire.channel && slot.frame.id == wire.id);
+                CHECK(slot.frame.flags == wire.flags && slot.frame.dlc == wire.dlc);
+                CHECK(!std::memcmp(slot.frame.data, wire.data, 8));
+            }
+            CHECK(batch.count == count);
+        }
+        raw.ValidMask = 3;
+        raw.SlotCount = 0;
+        motor_pdo::decode_raw_sideband(raw, batch);
+        CHECK(batch.count == 2);
+        for (unsigned which = 0; which < 6; ++which) {
+            auto invalid = raw;
+            switch (which) {
+            case 0: invalid.SlotCount = 3; break;
+            case 1: invalid.Flags = 1; break;
+            case 2: invalid.DropCount = 1; break;
+            case 3: invalid.Reserved = 1; break;
+            case 4: invalid.Reserved1 = 1; break;
+            case 5: invalid.Reserved2 = 1; break;
+            }
+            motor_pdo::decode_raw_sideband(invalid, batch);
+            CHECK(!batch.valid && batch.count == 0 && batch.sequence == UINT32_MAX);
+        }
+        canfd_bus_pdo_t full{};
+        full.cycle_seq = UINT16_MAX;
+        for (unsigned i = 0; i < 7; ++i) {
+            full.slot[i].can_id = 0x100 + i;
+            full.slot[i].flags = i & 1 ? 25 : 0;
+            full.slot[i].dlc = 8 - i;
+            for (unsigned j = 0; j < 8; ++j) full.slot[i].data[j] = i * 19 + j;
+        }
+        for (unsigned mask = 0; mask < 256; ++mask) {
+            full.valid_mask = mask;
+            motor_pdo::decode_raw_bus(full, 3, batch);
+            CHECK(batch.sequence == UINT16_MAX && batch.kind == dcu::app::RawCanBatch::Kind::FullBus);
+            CHECK(batch.bus == 3 && batch.valid == (mask < 128));
+            if (!batch.valid) { CHECK(batch.count == 0); continue; }
+            unsigned count = 0;
+            for (unsigned i = 0; i < 7; ++i) {
+                if (!(mask & (1u << i)) || !(full.slot[i].flags & 1)) continue;
+                const auto &slot = batch.slots[count++];
+                CHECK(slot.bus == 3 && slot.frame.id == full.slot[i].can_id);
+                CHECK(slot.frame.flags == 24 && slot.frame.dlc == full.slot[i].dlc);
+                CHECK(!std::memcmp(slot.frame.data, full.slot[i].data, 8));
+            }
+            CHECK(batch.count == count);
+        }
+        full.valid_mask = 1;
+        for (unsigned flags = 0; flags < 256; ++flags) {
+            full.slot[0].flags = flags;
+            motor_pdo::decode_raw_bus(full, 0, batch);
+            CHECK(batch.valid && batch.count == (flags & 1));
+            if (batch.count) CHECK(batch.slots[0].frame.flags == (flags & ~33u));
+        }
+        motor_pdo::decode_raw_bus(full, 256, batch);
+        CHECK(!batch.valid);
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "raw_applied_policy")) {
+        RawPdoFixture input(1);
+        configure_axis(0);
+        auto *channel = object<mc_channel_config_t>(0x2010);
+        channel->Role = 3;
+        input.start();
+        object<mc_routing_t>(0x3000)->CanId = 2;
+        channel->Role = channel->RawRateLimit = 0;
+        input.sideband.BatchSeq = 1;
+        input.sideband.CanId0 = 1;
+        input.submit();
+        CHECK(sent.empty() && object<mc_board_tx_t>(0x6000)->TxDropCount == 1);
+        input.sideband.BatchSeq = 2;
+        input.sideband.CanId0 = 2;
+        input.submit();
+        CHECK(sent.size() == 1 && std::get<1>(sent.back()).id == 2);
+        input.sideband.BatchSeq = 3;
+        input.sideband.CanId0 = 1;
+        input.sideband.Channel0 = 1;
+        input.submit();
+        CHECK(sent.size() == 2 && std::get<0>(sent.back()) == 1);
+        input.sideband.BatchSeq = 4;
+        input.submit(true, 1);
+        CHECK(sent.size() == 2 && object<mc_channel_tx_t>(0x6101)->TxDropCount == 1);
+        run_cycle();
+        CHECK(sent.size() == 2);
+
+        motor_control_operational(false);
+        channel->Role = 3;
+        channel->RawRateLimit = 8;
+        CHECK(apply_configuration());
+        motor_control_operational(true);
+        input.submit(false);
+        input.sideband.Channel0 = 0;
+        input.sideband.BatchSeq = 5;
+        input.submit();
+        CHECK(sent.size() == 3 && std::get<1>(sent.back()).id == 1);
+        input.sideband.BatchSeq = 6;
+        input.sideband.CanId0 = 2;
+        input.submit();
+        CHECK(sent.size() == 3);
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "raw_full_admission")) {
+        RawPdoFixture input(2);
+        input.start();
+        input.full[0].cycle_seq = UINT16_MAX;
+        input.full[0].slot[0].can_id = 0x7FF;
+        input.full[1].cycle_seq = 5;
+        input.full[1].slot[0].can_id = 1;
+        input.full[2].valid_mask = input.full[3].valid_mask = 0;
+        input.submit();
+        CHECK(sent.size() == 2 && std::get<1>(sent.front()).id == 0x7FF);
+        input.full[0].slot[0].data[0] = 77;
+        input.full[1].cycle_seq = 6;
+        input.submit();
+        CHECK(sent.size() == 3 && std::get<0>(sent.back()) == 1);
+        CHECK(object<canfd_bus_pdo_t>(0x7400)->slot[0].data[0] == 77);
+        input.full[0].cycle_seq = 0;
+        input.submit();
+        CHECK(sent.size() == 4);
+        input.full[0].cycle_seq = UINT16_MAX;
+        input.submit();
+        CHECK(sent.size() == 5);
+        input.full[0].cycle_seq = 1;
+        input.full[0].valid_mask = 0x80;
+        input.submit();
+        input.full[0].valid_mask = 1;
+        input.submit();
+        CHECK(sent.size() == 5);
+        input.full[0].cycle_seq = 2;
+        input.submit();
+        CHECK(sent.size() == 6);
+        input.full[0].cycle_seq = 3;
+        input.submit(false);
+        CHECK(sent.size() == 6 && object<canfd_bus_pdo_t>(0x7400)->cycle_seq == 2);
+        input.submit();
+        CHECK(sent.size() == 7 && object<canfd_bus_pdo_t>(0x7400)->cycle_seq == 3);
+        input.full[0].cycle_seq = 4;
+        input.submit(true, 15, false);
+        CHECK(sent.size() == 7 && object<canfd_bus_pdo_t>(0x7400)->cycle_seq == 3);
+        input.submit();
+        CHECK(sent.size() == 8);
+        run_cycle();
+        CHECK(sent.size() == 8);
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "raw_service_hold")) {
+        RawPdoFixture input(1);
+        input.start();
+        object<mc_routing_t>(0x3000)->ModelProfileId = 0x8000;
+        auto *maintenance = object<mc_maintenance_t>(0x3008);
+        maintenance->Opcode = 3;
+        maintenance->RequestSeq = 1;
+        CHECK(parameters::commit(0, true, 0, true, false));
+        parameters::mark_sent(0, 1);
+        parameters::cancel(0, RESULT_IO);
+        CHECK(!parameters::inspect(0).busy && !parameters::available(0, 500));
+        test_ms = 500;
+        input.sideband.BatchSeq = 1;
+        input.submit();
+        CHECK(sent.empty() && object<mc_board_tx_t>(0x6000)->TxDropCount == 1);
+        test_ms = 501;
+        CHECK(parameters::available(0, 501));
+        input.sideband.BatchSeq = 2;
+        input.submit();
+        CHECK(sent.size() == 1);
+        maintenance->RequestSeq = 2;
+        CHECK(parameters::commit(0, true, 501, true, false));
+        parameters::mark_sent(0, 501);
+        motor_control_operational(false);
+        CHECK(parameters::available(0, 502));
+        CHECK(maintenance->Result == RESULT_STATE && maintenance->DoneSeq == 2);
+        motor_control_operational(true);
+        test_ms = 502;
+        input.submit(false);
+        input.sideband.BatchSeq = 3;
+        input.submit();
+        CHECK(sent.size() == 2);
+        return 0;
+    }
     if (!std::strcmp(argv[1], "raw_objects")) {
         dcu::app::RawCanGateway first_gateway, second_gateway;
         dcu_can_frame_t frame{};
@@ -959,15 +1222,14 @@ int main(int argc, char **argv)
     }
     if (!std::strncmp(argv[1], "raw_", 4)) {
         dcu::app::RawCanGateway gateway;
-        dcu::app::AxisController axes[ENCOS_AXIS_COUNT];
         dcu::app::BusScheduler budgets[ENCOS_CHANNEL_COUNT];
-        mc_channel_config_t channels[ENCOS_CHANNEL_COUNT]{};
+        dcu::app::RawCanPolicy policy{};
+        policy.permitted = true;
         for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
             budgets[c].reset_budget(0);
-            channels[c].Role = 2;
-            channels[c].RawRateLimit = 1;
+            policy.buses[c].can_send = c == 0;
+            policy.buses[c].rate_limit = 1;
         }
-        dcu::app::RawCanCycle cycle{1, 1, true, nullptr};
         auto *raw = object<mc_raw_t>(0x7300);
         *raw = {};
         raw->ValidMask = 1;
@@ -977,47 +1239,30 @@ int main(int argc, char **argv)
         slot.dlc = 1;
         slot.data[0] = 42;
         motor_pdo::write_raw_slot(*raw, 0, slot);
+        const auto process_sideband = [&](uint32_t now) {
+            dcu::app::RawCanBatch batch{};
+            motor_pdo::decode_raw_sideband(*raw, batch);
+            return gateway.process(batch, policy, now, budgets);
+        };
         if (!std::strcmp(argv[1], "raw_costs")) {
             for (unsigned variant = 0; variant < 4; ++variant) {
                 const bool fd_request = (variant & 1) != 0, fd_response = (variant & 2) != 0;
                 slot.dlc = 8;
                 slot.flags = fd_request ? 24 : 0;
-                channels[0].FrameFormat = fd_response ? 1 : 0;
+                policy.buses[0].fd_response = fd_response;
                 motor_pdo::write_raw_slot(*raw, 0, slot);
                 const unsigned cost = (fd_request ? 64U : 138U) + (fd_response ? 64U : 138U);
                 budgets[0].reset_budget(2 * variant);
                 budgets[0].charge(motor_cfg::can_budget_cap_us - cost + 1);
-                gateway.stage_batch(2 * variant + 1, true);
-                CHECK(gateway.process(cycle, 2 * variant, channels, axes, budgets).total == 1);
+                raw->BatchSeq = 2 * variant + 1;
+                CHECK(process_sideband(2 * variant).total == 1);
                 CHECK(sent.size() == variant && budgets[0].can_afford(cost - 1));
                 budgets[0].reset_budget(2 * variant);
                 budgets[0].charge(motor_cfg::can_budget_cap_us - cost);
-                gateway.stage_batch(2 * variant + 2, true);
-                CHECK(gateway.process(cycle, 2 * variant, channels, axes, budgets).total == 0);
+                raw->BatchSeq = 2 * variant + 2;
+                CHECK(process_sideband(2 * variant).total == 0);
                 CHECK(sent.size() == variant + 1 && !budgets[0].can_afford(1));
             }
-            return 0;
-        }
-        if (!std::strcmp(argv[1], "raw_service_hold")) {
-            object<mc_routing_t>(0x3000)->ModelProfileId = 0x8000;
-            auto *maintenance = object<mc_maintenance_t>(0x3008);
-            maintenance->Opcode = 3;
-            maintenance->RequestSeq = 1;
-            CHECK(parameters::commit(0, true, 0, true, false));
-            parameters::mark_sent(0, 1);
-            parameters::cancel(0, RESULT_IO);
-            CHECK(!parameters::inspect(0).busy && !parameters::available(0, 500));
-            gateway.stage_batch(1, true);
-            CHECK(gateway.process(cycle, 500, channels, axes, budgets).total == 1 && sent.empty());
-            CHECK(parameters::available(0, 501));
-            gateway.stage_batch(2, true);
-            CHECK(gateway.process(cycle, 501, channels, axes, budgets).total == 0 && sent.size() == 1);
-            maintenance->RequestSeq = 2;
-            CHECK(parameters::commit(0, true, 501, true, false));
-            parameters::mark_sent(0, 501);
-            parameters::reset_session(RESULT_STATE);
-            CHECK(parameters::available(0, 502));
-            CHECK(maintenance->Result == RESULT_STATE && maintenance->DoneSeq == 2);
             return 0;
         }
         if (!std::strcmp(argv[1], "raw_limits")) {
@@ -1025,47 +1270,45 @@ int main(int argc, char **argv)
             raw->SlotCount = 2;
             slot.id = 0x101;
             motor_pdo::write_raw_slot(*raw, 1, slot);
-            gateway.stage_batch(1, true);
-            auto drops = gateway.process(cycle, 0, channels, axes, budgets);
+            raw->BatchSeq = 1;
+            auto drops = process_sideband(0);
             CHECK(sent.size() == 1 && drops.total == 1 && drops.channel[0] == 1);
-            gateway.stage_batch(1, true);
-            CHECK(gateway.process(cycle, 0, channels, axes, budgets).total == 0 && sent.size() == 1);
-            gateway.stage_batch(2, true);
-            CHECK(gateway.process(cycle, 1, channels, axes, budgets).total == 2 && sent.size() == 1);
-            gateway.stage_batch(3, true);
-            CHECK(gateway.process(cycle, 2, channels, axes, budgets).total == 1 && sent.size() == 2);
+            CHECK(process_sideband(0).total == 0 && sent.size() == 1);
+            raw->BatchSeq = 2;
+            CHECK(process_sideband(1).total == 2 && sent.size() == 1);
+            raw->BatchSeq = 3;
+            CHECK(process_sideband(2).total == 1 && sent.size() == 2);
             return 0;
         }
         if (!std::strcmp(argv[1], "raw_filter")) {
-            configure_axis(0);
-            axes[0].initialize(0);
-            CHECK(configure_controller(axes[0], 0));
+            policy.buses[0].protected_count = 1;
+            policy.buses[0].protected_ids[0] = 1;
             slot.id = 1;
             motor_pdo::write_raw_slot(*raw, 0, slot);
-            gateway.stage_batch(1, true);
-            CHECK(gateway.process(cycle, 0, channels, axes, budgets).total == 1 && sent.empty());
+            raw->BatchSeq = 1;
+            CHECK(process_sideband(0).total == 1 && sent.empty());
             slot.id = 0x7FF;
             motor_pdo::write_raw_slot(*raw, 0, slot);
-            gateway.stage_batch(2, true);
-            CHECK(gateway.process(cycle, 0, channels, axes, budgets).total == 1 && sent.empty());
+            raw->BatchSeq = 2;
+            CHECK(process_sideband(0).total == 1 && sent.empty());
             slot.id = 0x100;
             motor_pdo::write_raw_slot(*raw, 0, slot);
             const unsigned cost = dcu::app::BusScheduler::frame_cost(false, 1) +
                                   dcu::app::BusScheduler::frame_cost(false, 8);
             budgets[0].charge(motor_cfg::can_budget_cap_us - cost);
-            gateway.stage_batch(3, true);
+            raw->BatchSeq = 3;
             allow_send = false;
-            CHECK(gateway.process(cycle, 0, channels, axes, budgets).total == 1 && sent.empty());
+            CHECK(process_sideband(0).total == 1 && sent.empty());
             CHECK(budgets[0].can_afford(cost));
             allow_send = true;
-            gateway.stage_batch(4, true);
-            CHECK(gateway.process(cycle, 0, channels, axes, budgets).total == 0 && sent.size() == 1);
+            raw->BatchSeq = 4;
+            CHECK(process_sideband(0).total == 0 && sent.size() == 1);
             CHECK(!budgets[0].can_afford(cost));
-            gateway.stage_batch(5, true);
-            cycle.permitted = false;
-            CHECK(gateway.process(cycle, 2, channels, axes, budgets).total == 0 && sent.size() == 1);
-            cycle.permitted = true;
-            CHECK(gateway.process(cycle, 2, channels, axes, budgets).total == 0 && sent.size() == 1);
+            raw->BatchSeq = 5;
+            policy.permitted = false;
+            CHECK(process_sideband(2).total == 0 && sent.size() == 1);
+            policy.permitted = true;
+            CHECK(process_sideband(2).total == 0 && sent.size() == 1);
             return 0;
         }
         if (!std::strcmp(argv[1], "raw_full_session")) {
@@ -1077,15 +1320,12 @@ int main(int argc, char **argv)
             bus.slot[0].flags = 1;
             bus.slot[0].dlc = 1;
             std::memcpy(data + 32, &bus, sizeof(bus));
-            cycle.profile = 2;
-            cycle.pdo = data;
-            gateway.stage_full(true);
-            CHECK(gateway.process(cycle, 0, channels, axes, budgets).total == 0 && sent.size() == 1);
-            gateway.stage_full(true);
-            CHECK(gateway.process(cycle, 2, channels, axes, budgets).total == 0 && sent.size() == 1);
+            dcu::app::RawCanBatch batch{};
+            motor_pdo::decode_raw_bus(motor_pdo::raw_bus(data, 0), 0, batch);
+            CHECK(gateway.process(batch, policy, 0, budgets).total == 0 && sent.size() == 1);
+            CHECK(gateway.process(batch, policy, 2, budgets).total == 0 && sent.size() == 1);
             gateway.reset_session();
-            gateway.stage_full(true);
-            CHECK(gateway.process(cycle, 2, channels, axes, budgets).total == 0 && sent.size() == 2);
+            CHECK(gateway.process(batch, policy, 2, budgets).total == 0 && sent.size() == 2);
             return 0;
         }
     }
