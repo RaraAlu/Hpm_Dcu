@@ -61,7 +61,8 @@ MotorBinding configure_motor_driver(unsigned axis, const mc_routing_t &route,
     return {&encos_drivers[axis], ParameterDialect::EncosLegacy};
 }
 
-motor::Command motor_command_from_wire(const mc_axis_rx_t &wire) noexcept
+bool encode_motor_command(const motor::MotorDevice &device, const mc_axis_rx_t &wire,
+                          motor::CanFrame &frame) noexcept
 {
     motor::Command command{};
     command.mode = static_cast<motor::ControlMode>(wire.Mode);
@@ -74,13 +75,7 @@ motor::Command motor_command_from_wire(const mc_axis_rx_t &wire) noexcept
     command.current_limit_dA = wire.CurrentLimit;
     command.kp_centi = wire.Kp;
     command.kd_milli = wire.Kd;
-    return command;
-}
-
-bool encode_motor_command(const motor::MotorDevice &device, const mc_axis_rx_t &wire,
-                          motor::CanFrame &frame) noexcept
-{
-    return device.encode(motor_command_from_wire(wire), frame) == motor::Result::Ok;
+    return device.encode(command, frame) == motor::Result::Ok;
 }
 
 bool decode_motor_feedback(const motor::MotorDevice &device, const motor::CanFrame &frame,

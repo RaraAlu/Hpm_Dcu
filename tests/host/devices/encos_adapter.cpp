@@ -1,9 +1,11 @@
 #include "motor_driver_binding.hpp"
 #include "encos_motor.h"
+#include "../motor/encos_motion_reference.hpp"
 #include "device_config.h"
 
 #include <cstdio>
 #include <cstring>
+#include <climits>
 
 #define CHECK(expression) do { if (!(expression)) { \
     std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #expression); return false; \
@@ -120,7 +122,7 @@ static bool command_bytes()
         command.Kp = command.Mode == 4 ? 1234 : 0;
         command.Kd = command.Mode == 4 ? 2345 : 0;
         motor::CanFrame expected{}, actual{};
-        CHECK(encos_encode(&command, &f.route, &f.profile, &expected));
+        CHECK(legacy_reference::encode(&command, &f.route, &f.profile, &expected));
         CHECK(app::encode_motor_command(device, command, actual));
         CHECK(actual.id == expected.id && actual.dlc == expected.dlc && actual.flags == expected.flags);
         CHECK(std::memcmp(actual.data, expected.data, 8) == 0);
@@ -180,7 +182,7 @@ static bool feedback_bytes()
         std::memset(&expected, 0x5A, sizeof(expected));
         expected.ValidFlags = 64;
         actual = expected;
-        CHECK(encos_feedback(&frame, &f.profile, &expected));
+        CHECK(legacy_reference::feedback(&frame, &f.profile, &expected));
         CHECK(app::decode_motor_feedback(device, frame, actual));
         CHECK(std::memcmp(&actual, &expected, sizeof(actual)) == 0);
     }
@@ -243,6 +245,140 @@ static bool feedback_rejection()
     return true;
 }
 
+static Fixture boundary_fixture(unsigned variant)
+{
+    Fixture f;
+    if (variant == 1) {
+        f.range = {0, 17, 0, 3, -1234, 876, -3123, 2134, -456, 234, -473, 357};
+        f.basic.TorqueConstantRaw = 0;
+        f.route.CanId = 8;
+        f.route.PositionLimitMin = -12340000;
+        f.route.PositionLimitMax = 8760000;
+        f.route.VelocityLimit = 21340000;
+        f.route.CurrentLimit = 357;
+        f.route.TorqueLimit = 23400;
+    } else if (variant == 2) {
+        f.range.CurMinRaw = f.range.TorMinRaw = -5000;
+        f.range.CurMaxRaw = f.range.TorMaxRaw = 5000;
+        f.basic.TorqueConstantRaw = UINT16_MAX;
+        f.route.CurrentLimit = 5000;
+        f.route.TorqueLimit = 500000;
+    }
+    encos_profile(&f.range, &f.basic, &f.profile);
+    return f;
+}
+
+static bool command_boundaries()
+{
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        const auto f = boundary_fixture(variant);
+        const auto binding = f.bind();
+        CHECK(binding.driver != nullptr);
+        motor::MotorDevice device;
+        device.bind(*binding.driver);
+        for (uint8_t mode = 1; mode <= 5; ++mode) {
+            for (unsigned edge = 0; edge < 42; ++edge) {
+                mc_axis_rx_t command{};
+                command.Mode = mode;
+                command.CurrentLimit = mode <= 2 ? 1 : 0;
+                switch (edge) {
+                case 0: break;
+                case 1: command.TargetPosition = f.route.PositionLimitMin; break;
+                case 2: command.TargetPosition = f.route.PositionLimitMax; break;
+                case 3: command.TargetPosition = f.route.PositionLimitMin - 1; break;
+                case 4: command.TargetPosition = f.route.PositionLimitMax + 1; break;
+                case 5: command.TargetVelocity = -1; break;
+                case 6: command.TargetVelocity = f.route.VelocityLimit; break;
+                case 7: command.TargetVelocity = f.route.VelocityLimit + 1; break;
+                case 8: command.TargetVelocity = -static_cast<int32_t>(f.route.VelocityLimit); break;
+                case 9: command.TargetVelocity = -static_cast<int32_t>(f.route.VelocityLimit) - 1; break;
+                case 10: command.TargetCurrent = 1000; break;
+                case 11: command.TargetCurrent = 1001; break;
+                case 12: command.TargetCurrent = -1000; break;
+                case 13: command.TargetCurrent = -1001; break;
+                case 14: command.TargetCurrent = INT16_MIN; break;
+                case 15: command.TargetCurrent = INT16_MAX; break;
+                case 16: command.TargetTorque = f.route.TorqueLimit; break;
+                case 17: command.TargetTorque = f.route.TorqueLimit + 1; break;
+                case 18: command.TargetTorque = -static_cast<int32_t>(f.route.TorqueLimit); break;
+                case 19: command.TargetTorque = -static_cast<int32_t>(f.route.TorqueLimit) - 1; break;
+                case 20: command.TargetTorque = 9; break;
+                case 21: command.TargetTorque = -9; break;
+                case 22: command.TargetTorque = 11; break;
+                case 23: command.TargetTorque = -11; break;
+                case 24: command.TargetTorque = INT16_MAX * 10 + 9; break;
+                case 25: command.TargetTorque = INT16_MAX * 10 + 10; break;
+                case 26: command.TargetTorque = INT16_MIN * 10 - 9; break;
+                case 27: command.TargetTorque = INT16_MIN * 10 - 10; break;
+                case 28: command.CurrentLimit = 0; break;
+                case 29: command.CurrentLimit = f.route.CurrentLimit; break;
+                case 30: command.CurrentLimit = f.route.CurrentLimit + 1; break;
+                case 31: command.CurrentLimit = 4095; break;
+                case 32: command.CurrentLimit = 4096; break;
+                case 33: command.Kp = 1700; break;
+                case 34: command.Kp = 1701; break;
+                case 35: command.Kp = 50000; break;
+                case 36: command.Kd = 5000; break;
+                case 37: command.Kd = 5001; break;
+                case 38: command.ControlWord = 15; break;
+                case 39: command.ControlWord = 16; break;
+                case 40: command.Flags = 1; break;
+                case 41: command.TargetVelocity = 1; break;
+                }
+                motor::CanFrame expected{}, actual{};
+                std::memset(&actual, 0x5A, sizeof(actual));
+                const auto before = actual;
+                const bool accepted = legacy_reference::encode(&command, &f.route, &f.profile, &expected);
+                CHECK(app::encode_motor_command(device, command, actual) == accepted);
+                if (accepted) {
+                    CHECK(actual.id == expected.id && actual.dlc == expected.dlc && actual.flags == expected.flags);
+                    CHECK(std::memcmp(actual.data, expected.data, sizeof(actual.data)) == 0);
+                } else {
+                    CHECK(std::memcmp(&actual, &before, sizeof(actual)) == 0);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static bool feedback_boundaries()
+{
+    const uint16_t positions[] = {0, 1, 32767, 32768, 65534, 65535};
+    for (unsigned variant = 0; variant < 3; ++variant) {
+        const auto f = boundary_fixture(variant);
+        const auto binding = f.bind();
+        CHECK(binding.driver != nullptr);
+        motor::MotorDevice device;
+        device.bind(*binding.driver);
+        for (uint16_t position : positions) {
+            for (unsigned raw = 0; raw < 4096; ++raw) {
+                motor::CanFrame frame{};
+                frame.id = f.route.CanId;
+                frame.flags = raw & 1 ? 24 : 0;
+                frame.dlc = 8;
+                frame.data[0] = 0x20 | (raw & 7);
+                frame.data[1] = position >> 8;
+                frame.data[2] = position;
+                frame.data[3] = raw >> 4;
+                frame.data[4] = (raw & 15) << 4 | raw >> 8;
+                frame.data[5] = raw;
+                frame.data[6] = raw;
+                frame.data[7] = 255 - frame.data[6];
+                mc_axis_tx_t expected;
+                std::memset(&expected, 0x5A, sizeof(expected));
+                expected.ValidFlags = raw & 1 ? 0xFF : 0;
+                const auto before = expected;
+                auto actual = before;
+                const bool accepted = legacy_reference::feedback(&frame, &f.profile, &expected);
+                CHECK(app::decode_motor_feedback(device, frame, actual) == accepted);
+                CHECK(std::memcmp(&actual, accepted ? &expected : &before, sizeof(actual)) == 0);
+            }
+        }
+    }
+    return true;
+}
+
 static bool axis_isolation()
 {
     Fixture first, second;
@@ -273,6 +409,7 @@ int main(int argc, char **argv)
         {"registry", registry}, {"validation", validation}, {"commands", command_bytes},
         {"reject_commands", rejected_commands}, {"feedback", feedback_bytes},
         {"reject_feedback", feedback_rejection}, {"axis_isolation", axis_isolation},
+        {"command_boundaries", command_boundaries}, {"feedback_boundaries", feedback_boundaries},
     };
     for (const auto &entry : cases)
         if (std::strcmp(argv[1], entry.name) == 0) return entry.run() ? 0 : 1;

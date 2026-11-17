@@ -11,8 +11,6 @@ extern "C" {
 #endif
 
 bool encos_profile(const mc_range_t *, const mc_basic_t *, encos_profile_t *);
-bool encos_encode(const mc_axis_rx_t *, const mc_routing_t *, const encos_profile_t *, encos_frame_t *);
-bool encos_feedback(const encos_frame_t *, const encos_profile_t *, mc_axis_tx_t *);
 bool encos_query(uint8_t code, uint8_t group, encos_frame_t *);
 bool encos_parameter(uint16_t parameter, const mc_basic_t *, const mc_range_t *, const mc_gain_t *, const mc_kt_t *, encos_frame_t *);
 uint8_t encos_parameter_query(uint16_t parameter);

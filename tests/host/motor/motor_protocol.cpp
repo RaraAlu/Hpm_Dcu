@@ -1,8 +1,11 @@
-#include "encos_motor.h"
+#include "encos_motor.hpp"
 #include "motor_application.h"
 
 #include <cstdio>
 #include <cstring>
+
+namespace motor = dcu::motor;
+namespace encos = dcu::encos;
 
 extern "C" size_t motor_c_layout(unsigned index);
 extern "C" bool motor_c_query(encos_frame_t *frame);
@@ -116,13 +119,13 @@ static bool commands()
         {0x65, 0xFF, 0x83, 0, 0, 0, 0, 0}
     };
     for (uint8_t mode = 1; mode <= 5; ++mode) {
-        mc_axis_rx_t command{};
-        command.Mode = mode;
-        command.CurrentLimit = mode <= 2 ? 100 : 0;
-        command.TargetCurrent = mode == 3 ? -125 : 0;
-        command.TargetTorque = mode == 5 ? -1250 : 0;
+        motor::Command command{};
+        command.mode = static_cast<motor::ControlMode>(mode);
+        command.current_limit_dA = mode <= 2 ? 100 : 0;
+        command.current_cA = mode == 3 ? -125 : 0;
+        command.torque_mNm = mode == 5 ? -1250 : 0;
         encos_frame_t frame{};
-        CHECK(encos_encode(&command, &motor.route, &motor.profile, &frame));
+        CHECK(encos::encode_motion(command, motor.route, motor.profile, frame));
         CHECK(frame.id == 1 && frame.flags == 0 && frame.dlc == sizes[mode - 1]);
         CHECK(std::memcmp(frame.data, golden[mode - 1], sizeof(frame.data)) == 0);
     }
@@ -132,30 +135,30 @@ static bool commands()
 static bool rejected_commands()
 {
     MotorFixture motor;
-    mc_axis_rx_t command{};
-    command.Mode = 3;
+    motor::Command command{};
+    command.mode = motor::ControlMode::Current;
     encos_frame_t frame{};
-    CHECK(encos_encode(&command, &motor.route, &motor.profile, &frame));
-    command.Flags = 1;
-    CHECK(!encos_encode(&command, &motor.route, &motor.profile, &frame));
-    command.Flags = 0;
-    command.ControlWord = 16;
-    CHECK(!encos_encode(&command, &motor.route, &motor.profile, &frame));
-    command.ControlWord = 0;
-    command.TargetCurrent = 1001;
-    CHECK(!encos_encode(&command, &motor.route, &motor.profile, &frame));
-    command.TargetCurrent = 0;
-    command.TargetPosition = 1;
-    CHECK(!encos_encode(&command, &motor.route, &motor.profile, &frame));
-    command.TargetPosition = 0;
+    CHECK(encos::encode_motion(command, motor.route, motor.profile, frame));
+    command.reserved_flags = 1;
+    CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
+    command.reserved_flags = 0;
+    command.control_bits = 16;
+    CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
+    command.control_bits = 0;
+    command.current_cA = 1001;
+    CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
+    command.current_cA = 0;
+    command.position_urad = 1;
+    CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
+    command.position_urad = 0;
     motor.route.CanId = 0;
-    CHECK(!encos_encode(&command, &motor.route, &motor.profile, &frame));
+    CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
     motor.route.CanId = 9;
-    CHECK(!encos_encode(&command, &motor.route, &motor.profile, &frame));
+    CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
     motor.route.CanId = 1;
-    command.Mode = 4;
-    command.TargetPosition = motor.route.PositionLimitMax + 1;
-    CHECK(!encos_encode(&command, &motor.route, &motor.profile, &frame));
+    command.mode = motor::ControlMode::Impedance;
+    command.position_urad = motor.route.PositionLimitMax + 1;
+    CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
     return true;
 }
 
@@ -167,20 +170,56 @@ static bool feedback()
     frame.data[0] = 0x20;
     frame.data[6] = 50;
     frame.data[7] = 70;
-    mc_axis_tx_t state{};
-    state.ValidFlags = 64;
-    CHECK(encos_feedback(&frame, &motor.profile, &state));
-    CHECK(state.ActualPosition == -10000000 && state.ActualVelocity == -20000000);
-    CHECK(state.ActualCurrent == -1000 && state.EstimatedTorque == -5000);
-    CHECK(state.MotorTemperature == 0 && state.MosTemperature == 100);
-    CHECK(state.ValidFlags == 0x7F && state.MotorFaultRaw == 0);
+    motor::Feedback state{};
+    CHECK(encos::decode_feedback(frame, motor.profile, state));
+    CHECK(state.position_urad == -10000000 && state.velocity_urad_s == -20000000);
+    CHECK(state.current_cA == -1000 && state.torque_mNm == -5000);
+    CHECK(state.motor_temperature_deciC == 0 && state.mos_temperature_deciC == 100);
+    CHECK(state.valid_fields == 0x3F && state.motor_fault == 0);
     frame.dlc = 7;
-    CHECK(!encos_feedback(&frame, &motor.profile, &state));
+    CHECK(!encos::decode_feedback(frame, motor.profile, state));
     frame.dlc = 8;
     frame.data[0] = 0x40;
-    CHECK(!encos_feedback(&frame, &motor.profile, &state));
+    CHECK(!encos::decode_feedback(frame, motor.profile, state));
     frame.data[0] = 0x28;
-    CHECK(!encos_feedback(&frame, &motor.profile, &state));
+    CHECK(!encos::decode_feedback(frame, motor.profile, state));
+    return true;
+}
+
+static bool transactional_outputs()
+{
+    MotorFixture fixture;
+    motor::CanFrame frame{};
+    std::memset(&frame, 0x5A, sizeof(frame));
+    const auto before = frame;
+    for (unsigned which = 0; which < 4; ++which) {
+        motor::Command command{};
+        command.mode = motor::ControlMode::Position;
+        command.current_limit_dA = 1;
+        switch (which) {
+        case 0: command.velocity_urad_s = -1; break;
+        case 1:
+            command.mode = motor::ControlMode::Impedance;
+            command.current_limit_dA = 0;
+            command.kd_milli = 5001;
+            break;
+        case 2: command.current_cA = 65536; break;
+        case 3: command.mode = static_cast<motor::ControlMode>(255); break;
+        }
+        CHECK(!encos::encode_motion(command, fixture.route, fixture.profile, frame));
+        CHECK(std::memcmp(&frame, &before, sizeof(frame)) == 0);
+    }
+    frame = {};
+    frame.dlc = 8;
+    frame.data[0] = 0x20;
+    fixture.profile.current[0] = -500;
+    fixture.profile.current[1] = 500;
+    motor::Feedback previous{};
+    previous.position_urad = 123;
+    previous.valid_fields = motor::Position;
+    auto state = previous;
+    CHECK(!encos::decode_feedback(frame, fixture.profile, state));
+    CHECK(std::memcmp(&state, &previous, sizeof(state)) == 0);
     return true;
 }
 
@@ -222,7 +261,8 @@ int main(int argc, char **argv)
     const struct { const char *name; bool (*run)(); } cases[] = {
         {"abi", c_abi}, {"layout", layout}, {"profile", profile},
         {"commands", commands}, {"reject", rejected_commands},
-        {"feedback", feedback}, {"parameters", parameters}, {"float", floats}
+        {"feedback", feedback}, {"parameters", parameters}, {"float", floats},
+        {"transactional", transactional_outputs}
     };
     if (argc != 2)
         return 2;

@@ -1,7 +1,7 @@
 #include "encos_driver.hpp"
+#include "encos_motor.hpp"
 
 #include <math.h>
-#include <climits>
 
 namespace dcu::motor {
 
@@ -44,24 +44,7 @@ Result EncosMotorDriver::encode(const Command &command, CanFrame &frame) const n
 {
     if (!configured_)
         return Result::NotConfigured;
-    if (command.current_cA < INT16_MIN || command.current_cA > INT16_MAX)
-        return Result::InvalidCommand;
-    mc_axis_rx_t wire{};
-    wire.Mode = static_cast<uint8_t>(command.mode);
-    wire.ControlWord = command.control_bits;
-    wire.Flags = command.reserved_flags;
-    wire.TargetPosition = command.position_urad;
-    wire.TargetVelocity = command.velocity_urad_s;
-    wire.TargetTorque = command.torque_mNm;
-    wire.TargetCurrent = static_cast<int16_t>(command.current_cA);
-    wire.CurrentLimit = command.current_limit_dA;
-    wire.Kp = command.kp_centi;
-    wire.Kd = command.kd_milli;
-    CanFrame candidate{};
-    if (!encos_encode(&wire, &route_, &profile_, &candidate))
-        return Result::InvalidCommand;
-    frame = candidate;
-    return Result::Ok;
+    return encos::encode_motion(command, route_, profile_, frame) ? Result::Ok : Result::InvalidCommand;
 }
 
 Result EncosMotorDriver::decode(const CanFrame &frame, Feedback &feedback) const noexcept
@@ -70,22 +53,7 @@ Result EncosMotorDriver::decode(const CanFrame &frame, Feedback &feedback) const
         return Result::NotConfigured;
     if (frame.id != route_.CanId || (frame.flags != 0 && frame.flags != 24))
         return Result::InvalidFrame;
-    mc_axis_tx_t wire{};
-    if (!encos_feedback(&frame, &profile_, &wire))
-        return Result::InvalidFrame;
-    Feedback candidate{};
-    candidate.valid_fields = Position | Velocity | Current | MotorTemperature | MosTemperature;
-    if (wire.ValidFlags & 8U)
-        candidate.valid_fields |= Torque;
-    candidate.position_urad = wire.ActualPosition;
-    candidate.velocity_urad_s = wire.ActualVelocity;
-    candidate.current_cA = wire.ActualCurrent;
-    candidate.torque_mNm = wire.EstimatedTorque;
-    candidate.motor_temperature_deciC = wire.MotorTemperature;
-    candidate.mos_temperature_deciC = wire.MosTemperature;
-    candidate.motor_fault = wire.MotorFaultRaw;
-    feedback = candidate;
-    return Result::Ok;
+    return encos::decode_feedback(frame, profile_, feedback) ? Result::Ok : Result::InvalidFrame;
 }
 
 }

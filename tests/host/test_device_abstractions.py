@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,8 @@ class DeviceAbstractionTest(unittest.TestCase):
         cls.core = Path(directory.name) / "device_contracts"
         cls.adapter = Path(directory.name) / "encos_adapter"
         flags = ["-std=c++17", "-fno-exceptions", "-fno-rtti", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
+        if os.environ.get("DCU_HOST_SANITIZE") == "1":
+            flags += ["-g", "-fsanitize=address,undefined,float-cast-overflow", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         for include in ("firmware/ports", "firmware/devices/motor", "firmware/devices/imu"):
             flags.extend(("-I", str(ROOT / include)))
         # No SDK, SSC, generated headers or EtherCAT includes for the common Interface.
@@ -33,6 +36,7 @@ class DeviceAbstractionTest(unittest.TestCase):
             flags.extend(("-I", str(ROOT / include)))
         cls.run_command([
             cxx, *flags, str(ROOT / "tests/host/devices/encos_adapter.cpp"),
+            str(ROOT / "tests/host/motor/encos_motion_reference.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),
             str(ROOT / "firmware/app/motor/motor_driver_binding.cpp"),
@@ -78,7 +82,7 @@ class DeviceAbstractionTest(unittest.TestCase):
     def test_encos_configuration_keeps_existing_constraints(self):
         self.run_command([str(self.adapter), "validation"])
 
-    def test_encos_command_bytes_match_the_existing_codec(self):
+    def test_encos_command_bytes_match_frozen_reference(self):
         self.run_command([str(self.adapter), "commands"])
 
     def test_encos_invalid_commands_do_not_replace_output(self):
@@ -89,6 +93,12 @@ class DeviceAbstractionTest(unittest.TestCase):
 
     def test_encos_invalid_feedback_does_not_damage_previous_state(self):
         self.run_command([str(self.adapter), "reject_feedback"])
+
+    def test_encos_command_boundaries_match_frozen_reference(self):
+        self.run_command([str(self.adapter), "command_boundaries"])
+
+    def test_encos_feedback_quantization_matches_frozen_reference(self):
+        self.run_command([str(self.adapter), "feedback_boundaries"])
 
     def test_motor_driver_configuration_is_isolated_per_axis(self):
         self.run_command([str(self.adapter), "axis_isolation"])

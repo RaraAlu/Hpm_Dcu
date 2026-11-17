@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import tempfile
@@ -18,9 +19,11 @@ class MotorProtocolTest(unittest.TestCase):
         work = Path(directory.name)
         includes = (
             "firmware/cfg", "firmware/ports", "firmware/generated/encos",
-            "firmware/protocols/encos", "firmware/app/motor",
+            "firmware/protocols/encos", "firmware/app/motor", "firmware/devices/motor",
         )
         flags = ["-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
+        if os.environ.get("DCU_HOST_SANITIZE") == "1":
+            flags += ["-g", "-fsanitize=address,undefined,float-cast-overflow", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         for include in includes:
             flags.extend(("-I", str(ROOT / include)))
         objects = []
@@ -59,6 +62,9 @@ class MotorProtocolTest(unittest.TestCase):
 
     def test_feedback_conversion(self):
         self.run_command([str(self.executable), "feedback"])
+
+    def test_failed_motion_codec_outputs_are_not_committed(self):
+        self.run_command([str(self.executable), "transactional"])
 
     def test_queries_and_parameters(self):
         self.run_command([str(self.executable), "parameters"])

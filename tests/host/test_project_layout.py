@@ -116,6 +116,19 @@ class ProjectLayoutTest(unittest.TestCase):
         self.assertNotIn("motor_dictionary.hpp", controller)
         self.assertNotRegex(controller, r"\b(?:mc_object|axis_feedback|axis_diagnostics)\s*\(")
 
+    def test_motor_motion_codec_has_no_retired_wire_api_or_driver_roundtrip(self):
+        for path in (ROOT / "firmware").rglob("*"):
+            if path.suffix in (".c", ".cpp", ".h", ".hpp"):
+                with self.subTest(path=path.relative_to(ROOT)):
+                    self.assertNotRegex(path.read_text(), r"\b(?:encos_encode|encos_feedback|motor_command_from_wire)\s*\(")
+        for name in (
+            "firmware/devices/motor/drivers/encos/encos_driver.cpp",
+            "firmware/protocols/encos/encos_motor.cpp",
+            "firmware/protocols/encos/encos_motor.hpp",
+        ):
+            with self.subTest(path=name):
+                self.assertNotRegex((ROOT / name).read_text(), r"\bmc_axis_(?:rx|tx)_t\b")
+
 
 if __name__ == "__main__":
     unittest.main()
