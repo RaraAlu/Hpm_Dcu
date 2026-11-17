@@ -18,6 +18,8 @@ void RawCanGateway::reset_session()
     seen_ = false;
     std::memset(full_seen_, 0, sizeof(full_seen_));
 }
+
+
 void RawCanGateway::receive(unsigned c, const dcu_can_frame_t &frame)
 {
     if (c >= ENCOS_CHANNEL_COUNT) return;
@@ -31,6 +33,8 @@ void RawCanGateway::receive(unsigned c, const dcu_can_frame_t &frame)
     q->frames[q->write] = *f;
     q->write = next;
 }
+
+
 bool RawCanGateway::take(unsigned c, dcu_can_frame_t &frame)
 {
     if (c >= ENCOS_CHANNEL_COUNT) return false;
@@ -41,6 +45,8 @@ bool RawCanGateway::take(unsigned c, dcu_can_frame_t &frame)
     q->read = (q->read + 1) & (motor_cfg::raw_queue_capacity - 1);
     return true;
 }
+
+
 bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, bool protect_ids, uint32_t now,
                          const RawCanPolicy &policy,
                          BusScheduler (&schedule)[ENCOS_CHANNEL_COUNT])
