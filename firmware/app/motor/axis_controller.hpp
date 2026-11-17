@@ -42,8 +42,6 @@ public:
 private:
     struct State {
         mc_routing_t route{};
-        mc_basic_t basic{};
-        mc_range_t range{};
         dcu::motor::MotorDevice device{};
         ParameterDialect parameter_dialect{};
         mc_axis_rx_t command{}, startup_command{};
@@ -52,7 +50,9 @@ private:
         uint32_t query_request_ms[config::motor_control::query_period_ms.size()]{};
         uint8_t query_requested_mask{};
         uint16_t previous_control{};
-        bool configured{}, active{}, armed{}, query_armed{}, control_sent{};
+        // A permitted ARM=0, STOP=0 command must precede a new ARM edge.
+        bool arm_edge_ready{};
+        bool configured{}, active{}, query_armed{}, control_sent{};
         bool feedback_seen{}, power_seen{}, online_seen{}, position_seen{}, velocity_seen{}, current_seen{};
         bool new_feedback{}, new_power{};
     } state_{};

@@ -53,7 +53,7 @@ private:
         uint16_t output_size{};
         bool operational{}, pending{}, session_armed{}, resume_pdo_owner{};
         bool seen_cycle{}, config_ready{};
-        uint32_t last_command_ms{}, last_cycle{}, rx_total{}, tx_total{}, last_process_us{};
+        uint32_t last_command_ms{}, last_cycle{}, tx_total{}, last_process_us{};
         uint8_t query_slot[ENCOS_CHANNEL_COUNT]{};
         uint16_t board_fault{};
         uint32_t channel_tx_drop[ENCOS_CHANNEL_COUNT]{};

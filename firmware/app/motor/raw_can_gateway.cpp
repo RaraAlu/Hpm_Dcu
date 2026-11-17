@@ -61,7 +61,8 @@ bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, const RawCanC
                          BusScheduler (&schedule)[ENCOS_CHANNEL_COUNT])
 {
     const auto *f = &frame;
-    if (c >= ENCOS_CHANNEL_COUNT || !(cycle.enabled_channels & (1u << c)) || (channels[c].Role != 2 && channels[c].Role != 3) || parameters::inspect(c).busy || (int32_t)(now - parameters::inspect(c).hold_until) < 0)
+    if (c >= ENCOS_CHANNEL_COUNT || !(cycle.enabled_channels & (1u << c)) ||
+        (channels[c].Role != 2 && channels[c].Role != 3) || !parameters::available(c, now))
         return false;
     if (cycle.profile != 2) {
         if (f->id == 0x7FF)
@@ -77,7 +78,8 @@ bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, const RawCanC
     if (budget_[c] >= channels[c].RawRateLimit) {
         return false;
     }
-    unsigned cost = ((f->flags & 8u) ? 48u + 2u * f->dlc : 50u + 11u * f->dlc) + BusScheduler::frame_cost(channels[c].FrameFormat != 0, 8);
+    unsigned cost = BusScheduler::frame_cost((f->flags & 8u) != 0, f->dlc) +
+                    BusScheduler::frame_cost(channels[c].FrameFormat != 0, 8);
     if (!schedule[c].can_afford(cost) || !ethercat_canfd_send(c, f, ENCOS_AXIS_COUNT))
         return false;
     schedule[c].charge(cost);

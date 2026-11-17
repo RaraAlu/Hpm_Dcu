@@ -36,10 +36,10 @@ bool AxisController::configure(bool enabled, uint8_t frame_format)
     const unsigned a = axis_;
     std::memset(axis_feedback(a), 0, sizeof(mc_axis_tx_t));
     x->route = *object<mc_routing_t>(axis_object_base(a));
-    x->basic = *object<mc_basic_t>(axis_object_base(a) + 1);
-    x->range = *object<mc_range_t>(axis_object_base(a) + 2);
     if (!enabled) return true;
-    const auto binding = configure_motor_driver(a, x->route, x->basic, x->range, frame_format);
+    const auto &basic = *object<mc_basic_t>(axis_object_base(a) + 1);
+    const auto &range = *object<mc_range_t>(axis_object_base(a) + 2);
+    const auto binding = configure_motor_driver(a, x->route, basic, range, frame_format);
     if (!binding.driver) return false;
     x->device.bind(*binding.driver);
     x->parameter_dialect = binding.parameter_dialect;
@@ -60,7 +60,7 @@ void AxisController::stop(uint16_t fault)
     if (x->active)
         ethercat_canfd_cancel_axis(a);
     x->active = false;
-    x->armed = false;
+    x->arm_edge_ready = false;
     x->query_armed = false;
     x->control_sent = false;
     x->feedback_seen = false;
@@ -93,7 +93,7 @@ bool AxisController::accept(const mc_axis_rx_t &intent, bool permit, uint32_t no
     if (!permit || (command->ControlWord & MC_AXIS_STOP) || !(command->ControlWord & MC_AXIS_ARM)) {
         stop(0);
         if (permit && !(command->ControlWord & MC_AXIS_ARM) && !(command->ControlWord & MC_AXIS_STOP)) {
-            x->armed = true;
+            x->arm_edge_ready = true;
             if ((command->ControlWord & MC_AXIS_RESET) && !(prev & MC_AXIS_RESET) && ethercat_canfd_bus_state(a / ENCOS_MOTORS_PER_CHANNEL) != 3 && !s->MotorFaultRaw) {
                 s->BridgeFaultCode = 0;
                 s->StatusWord &= ~((1u << 5) | (1u << 8) | (1u << 9));
@@ -108,10 +108,10 @@ bool AxisController::accept(const mc_axis_rx_t &intent, bool permit, uint32_t no
         return false;
     }
     if (!x->query_armed && !x->active) {
-        if (!x->configured || !x->armed || (prev & MC_AXIS_ARM) || (command->ControlWord & MC_AXIS_START_MOTION))
+        if (!x->configured || !x->arm_edge_ready || (prev & MC_AXIS_ARM) || (command->ControlWord & MC_AXIS_START_MOTION))
             return false;
         x->query_armed = true;
-        x->armed = false;
+        x->arm_edge_ready = false;
     }
     if (!(command->ControlWord & MC_AXIS_START_MOTION)) {
         if (x->active) {
@@ -140,11 +140,7 @@ bool AxisController::accept(const mc_axis_rx_t &intent, bool permit, uint32_t no
              fabs((double)command->TargetPosition - axis_diagnostics(a)->QueriedPosition) > 100000.0))
             return false;
         unsigned bus = a / ENCOS_MOTORS_PER_CHANNEL;
-        auto transaction = parameters::inspect(bus);
-        if (transaction.busy && transaction.internal) {
-            ethercat_canfd_cancel_service(bus);
-            parameters::abort_internal(bus);
-        }
+        parameters::abort_internal(bus);
         x->startup_command = *command;
         x->startup_command.ControlWord = MC_AXIS_ARM;
         x->startup_command.Mode = 1;

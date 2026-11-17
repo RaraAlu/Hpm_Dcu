@@ -91,6 +91,15 @@ class MotorApplicationTest(unittest.TestCase):
     def test_parameter_timeout_completes_and_releases_the_transaction(self):
         self.run_command([str(self.executable), "service_timeout"])
 
+    def test_transaction_owns_queued_and_sent_deadlines_including_clock_wrap(self):
+        self.run_command([str(self.executable), "transaction_deadlines"])
+
+    def test_transaction_cancellation_is_idempotent_isolated_and_preserves_user_requests(self):
+        self.run_command([str(self.executable), "transaction_cancellation"])
+
+    def test_parameter_parser_returns_observations_without_writing_axis_query_state(self):
+        self.run_command([str(self.executable), "transaction_observation"])
+
     def test_parameter_observations_update_axis_feedback(self):
         self.run_command([str(self.executable), "service_observations"])
 
@@ -106,6 +115,12 @@ class MotorApplicationTest(unittest.TestCase):
     def test_axis_objects_own_independent_configuration_and_startup_state(self):
         self.run_command([str(self.executable), "axis_objects"])
 
+    def test_axis_stop_requires_a_new_permitted_clear_and_arm_edge(self):
+        self.run_command([str(self.executable), "axis_rearm"])
+
+    def test_pending_configuration_changes_do_not_replace_applied_driver_settings(self):
+        self.run_command([str(self.executable), "axis_config_snapshot"])
+
     def test_preapply_maintenance_routes_to_a_nonzero_axis_on_another_bus(self):
         self.run_command([str(self.executable), "service_other_axis"])
 
@@ -117,6 +132,12 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_raw_filtering_gating_and_failed_send_do_not_consume_credit(self):
         self.run_command([str(self.executable), "raw_filter"])
+
+    def test_raw_classic_and_fd_frames_charge_the_exact_shared_bus_cost(self):
+        self.run_command([str(self.executable), "raw_costs"])
+
+    def test_raw_traffic_respects_cancelled_service_hold_until_deadline_or_session_reset(self):
+        self.run_command([str(self.executable), "raw_service_hold"])
 
     def test_raw_full_session_restarts_its_cycle_deduplication(self):
         self.run_command([str(self.executable), "raw_full_session"])

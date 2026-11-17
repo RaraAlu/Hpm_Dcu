@@ -278,23 +278,16 @@ void MotorApplication::process()
             if (state_.channels[c].Role >= 2)
                 raw_.receive(c, f);
         }
-        auto transaction = parameters::inspect(c);
         if (ethercat_canfd_bus_state(c) == 3) {
             state_.board_fault |= 8;
-            if (transaction.busy) {
-                ethercat_canfd_cancel_service(c);
-                parameters::cancel(c, RESULT_IO);
-            }
+            parameters::cancel(c, RESULT_IO);
             for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; a++)
                 if (axes_[a].configured())
                     axes_[a].stop(5);
             continue;
         }
-        if (transaction.busy && now - transaction.started >= motor_cfg::parameter_timeout_ms) {
-            ethercat_canfd_cancel_service(c);
-            parameters::cancel(c, RESULT_TIMEOUT);
-            transaction = parameters::inspect(c);
-        }
+        parameters::check_timeout(c, now);
+        const auto transaction = parameters::inspect(c);
         /* Do not queue a delayed start after its query snapshot has expired. */
         for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; a++)
             axes_[a].check_startup(now);
@@ -389,12 +382,12 @@ void MotorApplication::publish(uint32_t now)
     b->BoardStatus = state_.board_fault | (state_.config_ready ? 1 : 0) | (state_.operational ? 2 : 0) | (object<mc_owner_t>(0x2003)->Owner == OWNER_SDO ? 128 : 0);
     b->AxisOnlineMask = b->AxisFaultMask = 0;
     b->ChannelOnlineMask = b->ChannelFaultMask = 0;
-    state_.rx_total = 0;
+    uint32_t rx_drops_total = 0;
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
         mc_channel_tx_t *ch = object<mc_channel_tx_t>(0x6100 + c);
         memset(ch, 0, sizeof(*ch));
         uint32_t drops = ethercat_canfd_rx_drops(c) + raw_.rx_drops(c);
-        state_.rx_total += drops;
+        rx_drops_total += drops;
         ch->ChannelStatus = (state_.config_ready ? 1 : 0) | (channel_active(c) ? 2 : 0) | (ethercat_canfd_bus_state(c) == 3 ? 4 : 0) | (drops ? 8 : 0) | (state_.channel_tx_drop[c] ? 16 : 0);
         ch->RxDropCount = drops > 65535 ? 65535 : drops;
         ch->TxDropCount = state_.channel_tx_drop[c] > 65535 ? 65535 : state_.channel_tx_drop[c];
@@ -416,9 +409,9 @@ void MotorApplication::publish(uint32_t now)
             b->ChannelFaultMask |= 1u << c;
         }
     }
-    b->RxDropCount = state_.rx_total;
+    b->RxDropCount = rx_drops_total;
     b->TxDropCount = state_.tx_total;
-    if (state_.rx_total) {
+    if (rx_drops_total) {
         state_.board_fault |= 16;
         b->BoardStatus |= 16;
     }

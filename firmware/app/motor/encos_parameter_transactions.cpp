@@ -1,4 +1,5 @@
 #include "encos_parameter_transactions.hpp"
+#include "ethercat_canfd_gateway.h"
 #include "detail/encos_parameter_state.hpp"
 #include "motor_application.hpp"
 #include "motor_dictionary.hpp"
@@ -54,13 +55,11 @@ static bool cache_query(unsigned a, uint8_t code, const encos_frame_t *f, servic
         memcpy(&real, &bits, 4);
         memcpy((uint8_t *)q + 4 * (code - 1), &real, 4);
         if (code == 1) {
-            axis_diagnostics(a)->QueriedPosition = value;
             observation.field = Field::Position;
             observation.value = value;
             observation.update_actual = true;
         }
         if (code == 2) {
-            axis_diagnostics(a)->QueriedVelocity = value;
             observation.field = Field::Velocity;
             observation.value = value;
             observation.update_actual = true;
@@ -135,7 +134,12 @@ Status inspect(unsigned c)
 {
     const auto &t = transactions[c];
     return {t.phase != Phase::Idle, t.phase == Phase::AwaitingReply, t.internal,
-            t.axis, t.started, t.hold_until, t.request.id};
+            t.axis, t.request.id};
+}
+bool available(unsigned c, uint32_t now)
+{
+    const auto &t = transactions[c];
+    return t.phase == Phase::Idle && (int32_t)(now - t.hold_until) >= 0;
 }
 const dcu_can_frame_t *pending(unsigned c)
 {
@@ -150,9 +154,17 @@ void mark_sent(unsigned c, uint32_t now)
     if (t.purpose == Purpose::Maintenance || t.parameter == 2)
         t.hold_until = now + motor_cfg::parameter_hold_ms;
 }
+void check_timeout(unsigned c, uint32_t now)
+{
+    const auto &t = transactions[c];
+    if (t.phase != Phase::Idle && now - t.started >= motor_cfg::parameter_timeout_ms)
+        cancel(c, RESULT_TIMEOUT);
+}
 void cancel(unsigned c, uint16_t result)
 {
-    if (transactions[c].phase != Phase::Idle) finish(c, result);
+    if (transactions[c].phase == Phase::Idle) return;
+    ethercat_canfd_cancel_service(c);
+    finish(c, result);
 }
 void reset_session(uint16_t result)
 {
@@ -165,6 +177,7 @@ void abort_internal(unsigned c)
 {
     auto &t = transactions[c];
     if (t.phase != Phase::Idle && t.internal) {
+        ethercat_canfd_cancel_service(c);
         uint32_t hold = t.hold_until;
         t = {};
         t.hold_until = hold;
@@ -177,7 +190,7 @@ bool start_query(unsigned c, unsigned a, uint8_t code, uint8_t group, uint32_t n
         return false;
     if (dialect != ParameterDialect::EncosLegacy) return false;
     auto &t = transactions[c];
-    if (t.phase != Phase::Idle || (int32_t)(now - t.hold_until) < 0) return false;
+    if (!available(c, now)) return false;
     encos_frame_t request{};
     request.id = can_id;
     if (!encos_query(code, group, &request)) return false;
@@ -203,7 +216,7 @@ bool commit(unsigned a, bool maintenance, uint32_t now, bool permitted, bool cha
         return false;
     unsigned c = a / ENCOS_MOTORS_PER_CHANNEL;
     service_t *t = &transactions[c];
-    if (t->phase != Phase::Idle || (int32_t)(now - t->hold_until) < 0 || channel_is_active)
+    if (!available(c, now) || channel_is_active)
         return false;
     if (maintenance) {
         mc_maintenance_t *m = object<mc_maintenance_t>(axis_object_base(a) + 8);
