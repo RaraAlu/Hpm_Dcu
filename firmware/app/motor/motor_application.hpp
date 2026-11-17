@@ -24,6 +24,8 @@ bool select_profile(unsigned profile);
 void owner_changed();
 void commit_sdo_command(unsigned axis, mc_sdo_command_t &command, uint32_t now_ms);
 bool commit_parameter(unsigned axis, bool maintenance, uint32_t now_ms, bool preop);
+// Refresh the read-only EtherCAT mirror without consuming PDO event flags.
+void refresh_axis_feedback(unsigned axis);
 
 struct PdoPublication {
     unsigned profile;

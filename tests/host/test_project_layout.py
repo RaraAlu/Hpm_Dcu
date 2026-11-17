@@ -111,6 +111,11 @@ class ProjectLayoutTest(unittest.TestCase):
         self.assertNotIn('#include "motor_application.cpp"', fixture)
         self.assertNotIn("motor_application_impl.hpp", fixture)
 
+    def test_axis_controller_does_not_access_dictionary_storage(self):
+        controller = (ROOT / "firmware/app/motor/axis_controller.cpp").read_text()
+        self.assertNotIn("motor_dictionary.hpp", controller)
+        self.assertNotRegex(controller, r"\b(?:mc_object|axis_feedback|axis_diagnostics)\s*\(")
+
 
 if __name__ == "__main__":
     unittest.main()

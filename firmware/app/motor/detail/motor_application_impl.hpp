@@ -25,6 +25,7 @@ public:
     void owner_changed();
     void commit_sdo_command(unsigned axis, mc_sdo_command_t &command, uint32_t now_ms);
     bool commit_parameter(unsigned axis, bool maintenance, uint32_t now_ms, bool preop);
+    void refresh_axis_feedback(unsigned axis);
     PdoPublication prepare_publication();
     bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame);
 
@@ -37,6 +38,7 @@ private:
     void stop_all(uint16_t fault);
     void check_timeouts(uint32_t now_ms);
     void accept_candidate(uint32_t now_ms);
+    bool accept_axis_command(unsigned axis, const mc_axis_rx_t &command, bool permitted, uint32_t now_ms);
     void consume_feedback(unsigned bus, const dcu_can_frame_t &frame,
                           uint32_t timestamp_ms, uint32_t now_ms);
     void publish(uint32_t now_ms);

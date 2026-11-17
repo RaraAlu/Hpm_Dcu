@@ -64,6 +64,11 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
             return ABORTIDX_WRITE_ONLY_ENTRY;
         if (bytes != f->bytes)
             return ABORTIDX_PARAM_LENGTH_ERROR;
+        if (index >= 0x6200 && index < 0x6200 + ENCOS_AXIS_COUNT)
+            refresh_axis_feedback(index - 0x6200);
+        else if (index >= 0x2400 && index < 0x2400 + 16 * ENCOS_AXIS_COUNT &&
+                 (index - 0x2400) % 16 == 0)
+            refresh_axis_feedback((index - 0x2400) / 16);
         memcpy(data, o->data + f->offset, bytes);
         return 0;
     }

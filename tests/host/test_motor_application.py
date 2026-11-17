@@ -64,6 +64,15 @@ class MotorApplicationTest(unittest.TestCase):
     def test_mapping_is_read_only_and_preserves_snapshot_freshness(self):
         self.run_command([str(self.executable), "immutable"])
 
+    def test_sdo_reads_refresh_feedback_without_consuming_pdo_events_or_mutating_the_image(self):
+        self.run_command([str(self.executable), "sdo_publication"])
+
+    def test_pdo_accepted_command_mirror_does_not_change_on_stop(self):
+        self.run_command([str(self.executable), "accepted_pdo"])
+
+    def test_sdo_accepted_command_mirror_updates_only_for_valid_motion(self):
+        self.run_command([str(self.executable), "accepted_sdo"])
+
     def test_all_three_pdo_profiles_keep_their_input_boundaries(self):
         self.run_command([str(self.executable), "profiles"])
 
@@ -120,6 +129,15 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_pending_configuration_changes_do_not_replace_applied_driver_settings(self):
         self.run_command([str(self.executable), "axis_config_snapshot"])
+
+    def test_axis_safety_decisions_do_not_read_dictionary_or_snapshot_storage(self):
+        self.run_command([str(self.executable), "axis_runtime_authority"])
+
+    def test_axis_snapshot_reads_are_const_and_only_publication_acknowledges_events(self):
+        self.run_command([str(self.executable), "axis_publication"])
+
+    def test_apply_resets_runtime_freshness_but_preserves_diagnostic_history(self):
+        self.run_command([str(self.executable), "axis_history"])
 
     def test_preapply_maintenance_routes_to_a_nonzero_axis_on_another_bus(self):
         self.run_command([str(self.executable), "service_other_axis"])

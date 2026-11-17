@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = ROOT / "firmware"
 PRIVATE_HEADERS = {
+    "app/motor/detail/axis_state.hpp": "app/motor/axis_controller.hpp",
     "app/motor/detail/motor_application_impl.hpp": "app/motor/motor_application.cpp",
     "app/motor/detail/encos_parameter_state.hpp": "app/motor/encos_parameter_transactions.cpp",
     "app/cycle/detail/ethercat_cycle_state.h": "app/cycle/ethercat_cycle.c",

@@ -123,6 +123,13 @@ void MotorApplication::output(const void *p)
     memcpy(state_.candidate, p, state_.output_size);
     state_.pending = true;
 }
+bool MotorApplication::accept_axis_command(unsigned axis, const mc_axis_rx_t &command, bool permit, uint32_t now)
+{
+    const bool accepted = axes_[axis].accept(command, permit, now);
+    if (accepted && axes_[axis].active())
+        *object<mc_axis_rx_t>(0x7200 + axis) = command;
+    return accepted;
+}
 void MotorApplication::accept_candidate(uint32_t now)
 {
     if (!state_.pending) {
@@ -180,7 +187,7 @@ void MotorApplication::accept_candidate(uint32_t now)
                 continue;
             }
             if (object<mc_owner_t>(0x2003)->Owner == OWNER_PDO)
-                axes_[a].accept(cmd, permit, now);
+                accept_axis_command(a, cmd, permit, now);
         }
     }
     if (state_.config.ActivePdoProfile == 1) {
@@ -229,7 +236,10 @@ bool MotorApplication::apply_configuration()
     }
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++) {
         if (!axes_[a].configure((mask & (1u << a)) != 0,
-                                state_.channels[a / ENCOS_MOTORS_PER_CHANNEL].FrameFormat)) {
+                                state_.channels[a / ENCOS_MOTORS_PER_CHANNEL].FrameFormat,
+                                *object<mc_routing_t>(axis_object_base(a)),
+                                *object<mc_basic_t>(axis_object_base(a) + 1),
+                                *object<mc_range_t>(axis_object_base(a) + 2))) {
             axes_[a].stop(1);
             stop_all(1);
             state_.config_ready = false;
@@ -258,7 +268,9 @@ void MotorApplication::consume_feedback(unsigned c, const dcu_can_frame_t &frame
         a = transaction.axis;
     if (a == ENCOS_AXIS_COUNT)
         return;
-    axes_[a].consume_feedback(frame, stamp, now);
+    const auto service_dialect = transaction.busy && transaction.sent && transaction.axis == a ?
+        motor_parameter_dialect(object<mc_routing_t>(axis_object_base(a))->ModelProfileId) : ParameterDialect::None;
+    axes_[a].consume_feedback(frame, stamp, now, service_dialect);
 }
 void MotorApplication::process()
 {
@@ -392,7 +404,9 @@ void MotorApplication::publish(uint32_t now)
         ch->RxDropCount = drops > 65535 ? 65535 : drops;
         ch->TxDropCount = state_.channel_tx_drop[c] > 65535 ? 65535 : state_.channel_tx_drop[c];
         for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; a++) {
-            const auto status = axes_[a].publish(now, state_.config.FeedbackTimeoutMs);
+            const auto status = axes_[a].read_feedback(now, state_.config.FeedbackTimeoutMs,
+                                                       *axis_feedback(a), *axis_diagnostics(a));
+            axes_[a].acknowledge_publication();
             if (status.online) {
                 b->AxisOnlineMask |= 1u << a;
                 ch->OnlineMask |= 1u << (a % ENCOS_MOTORS_PER_CHANNEL);
@@ -442,6 +456,12 @@ PdoPublication MotorApplication::prepare_publication()
     return snapshot;
 }
 bool MotorApplication::take_raw_frame(unsigned bus, dcu_can_frame_t &frame) { return raw_.take(bus, frame); }
+void MotorApplication::refresh_axis_feedback(unsigned axis)
+{
+    if (axis >= ENCOS_AXIS_COUNT) return;
+    axes_[axis].read_feedback(ethercat_canfd_now_ms(), state_.config.FeedbackTimeoutMs,
+                             *axis_feedback(axis), *axis_diagnostics(axis));
+}
 void MotorApplication::owner_changed() { stop_all(0); state_.resume_pdo_owner = false; }
 void MotorApplication::commit_sdo_command(unsigned axis, mc_sdo_command_t &command, uint32_t now)
 {
@@ -460,7 +480,7 @@ void MotorApplication::commit_sdo_command(unsigned axis, mc_sdo_command_t &comma
     } else {
         mc_axis_rx_t intent;
         memcpy(&intent, &command, sizeof(intent));
-        bool ok = axes_[axis].accept(intent, true, now);
+        bool ok = accept_axis_command(axis, intent, true, now);
         command.CommandResult = ok ? RESULT_OK : RESULT_INVALID;
         if (ok) {
             command.AcceptedSeq = command.CommitSeq;
@@ -519,6 +539,7 @@ bool commit_parameter(unsigned axis, bool maintenance, uint32_t now_ms, bool pre
 {
     return application.commit_parameter(axis, maintenance, now_ms, preop);
 }
+void refresh_axis_feedback(unsigned axis) { application.refresh_axis_feedback(axis); }
 PdoPublication prepare_publication() { return application.prepare_publication(); }
 bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame) { return application.take_raw_frame(bus, frame); }
 }
