@@ -1,0 +1,2633 @@
+{
+  "schema_version": 1,
+  "constants": {
+    "MC_INTERFACE_VERSION": "0x00010002u",
+    "MC_AXIS_ARM": "0x0001u",
+    "MC_AXIS_STOP": "0x0002u",
+    "MC_AXIS_RESET": "0x0004u",
+    "MC_AXIS_START_MOTION": "0x0008u",
+    "MC_STATUS_QUERY_SOURCE": "0x1000u",
+    "MC_STATUS_ARMED_QUERY_ONLY": "0x2000u"
+  },
+  "types": {
+    "mc_board_rx_t": [
+      {
+        "name": "CycleSeq",
+        "type": "uint32_t",
+        "label": "Seq",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "BoardControl",
+        "type": "uint16_t",
+        "label": "Ctrl",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "ChannelEnableMask",
+        "type": "uint8_t",
+        "label": "ChEnable",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Reserved0",
+        "type": "uint8_t",
+        "label": "Reserved0",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CommandLeaseMs",
+        "type": "uint16_t",
+        "label": "LeaseMs",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Reserved1",
+        "type": "uint16_t",
+        "label": "Reserved1",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "InterfaceVersion",
+        "type": "uint32_t",
+        "label": "Version",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "AxisEnableMask",
+        "type": "uint32_t",
+        "label": "AxisEnable",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Reserved2",
+        "type": "uint32_t",
+        "label": "Reserved2",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Reserved3",
+        "type": "uint32_t",
+        "label": "Reserved3",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Reserved4",
+        "type": "uint32_t",
+        "label": "Reserved4",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_channel_rx_t": [
+      {
+        "name": "ChannelControl",
+        "type": "uint16_t",
+        "label": "Ctrl",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "ActiveMask",
+        "type": "uint8_t",
+        "label": "Active",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "ExpectedRole",
+        "type": "uint8_t",
+        "label": "Role",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Reserved",
+        "type": "uint32_t",
+        "label": "Reserved",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_axis_rx_t": [
+      {
+        "name": "ControlWord",
+        "type": "uint16_t",
+        "label": "Ctrl",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Mode",
+        "type": "uint8_t",
+        "label": "Mode",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Flags",
+        "type": "uint8_t",
+        "label": "Flags",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TargetPosition",
+        "type": "int32_t",
+        "label": "Pos",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TargetVelocity",
+        "type": "int32_t",
+        "label": "Vel",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TargetTorque",
+        "type": "int32_t",
+        "label": "Torque",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TargetCurrent",
+        "type": "int16_t",
+        "label": "Current",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Kp",
+        "type": "uint16_t",
+        "label": "Kp",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Kd",
+        "type": "uint16_t",
+        "label": "Kd",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CurrentLimit",
+        "type": "uint16_t",
+        "label": "CurrentLim",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_board_tx_t": [
+      {
+        "name": "PublishSeq",
+        "type": "uint32_t",
+        "label": "Seq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AcceptedCycleSeq",
+        "type": "uint32_t",
+        "label": "AckSeq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "BoardStatus",
+        "type": "uint16_t",
+        "label": "Status",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ChannelOnlineMask",
+        "type": "uint8_t",
+        "label": "ChOnline",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ChannelFaultMask",
+        "type": "uint8_t",
+        "label": "ChFault",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AxisOnlineMask",
+        "type": "uint32_t",
+        "label": "AxisOnline",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AxisFaultMask",
+        "type": "uint32_t",
+        "label": "AxisFault",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "RxDropCount",
+        "type": "uint32_t",
+        "label": "RxDrops",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "TxDropCount",
+        "type": "uint32_t",
+        "label": "TxDrops",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Reserved",
+        "type": "uint32_t",
+        "label": "Reserved",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_channel_tx_t": [
+      {
+        "name": "ChannelStatus",
+        "type": "uint16_t",
+        "label": "Status",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "OnlineMask",
+        "type": "uint8_t",
+        "label": "Online",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "FaultMask",
+        "type": "uint8_t",
+        "label": "Fault",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "RxDropCount",
+        "type": "uint16_t",
+        "label": "RxDrops",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "TxDropCount",
+        "type": "uint16_t",
+        "label": "TxDrops",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_axis_tx_t": [
+      {
+        "name": "StatusWord",
+        "type": "uint16_t",
+        "label": "Status",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ModeDisplay",
+        "type": "uint8_t",
+        "label": "Mode",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ValidFlags",
+        "type": "uint8_t",
+        "label": "Valid",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ActualPosition",
+        "type": "int32_t",
+        "label": "Pos",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ActualVelocity",
+        "type": "int32_t",
+        "label": "Vel",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "EstimatedTorque",
+        "type": "int32_t",
+        "label": "Torque",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ActualCurrent",
+        "type": "int16_t",
+        "label": "Current",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "MotorTemperature",
+        "type": "int16_t",
+        "label": "MotorTemp",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "MosTemperature",
+        "type": "int16_t",
+        "label": "MosTemp",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "MotorFaultRaw",
+        "type": "uint8_t",
+        "label": "MotorFault",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "BridgeFaultCode",
+        "type": "uint8_t",
+        "label": "BridgeFault",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ActualPower",
+        "type": "int32_t",
+        "label": "Power",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "FeedbackAgeMs",
+        "type": "uint16_t",
+        "label": "FbAgeMs",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "PowerAgeMs",
+        "type": "uint16_t",
+        "label": "PwrAgeMs",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_imu_t": [
+      {
+        "name": "SampleSeq",
+        "type": "uint32_t",
+        "label": "Seq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Status",
+        "type": "uint16_t",
+        "label": "Status",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ValidFlags",
+        "type": "uint16_t",
+        "label": "Valid",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "TimestampNs",
+        "type": "uint64_t",
+        "label": "TimeNs",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AccelX",
+        "type": "int32_t",
+        "label": "AccelX",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AccelY",
+        "type": "int32_t",
+        "label": "AccelY",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AccelZ",
+        "type": "int32_t",
+        "label": "AccelZ",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "GyroX",
+        "type": "int32_t",
+        "label": "GyroX",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "GyroY",
+        "type": "int32_t",
+        "label": "GyroY",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "GyroZ",
+        "type": "int32_t",
+        "label": "GyroZ",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "QuaternionW",
+        "type": "int32_t",
+        "label": "QuatW",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "QuaternionX",
+        "type": "int32_t",
+        "label": "QuatX",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "QuaternionY",
+        "type": "int32_t",
+        "label": "QuatY",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "QuaternionZ",
+        "type": "int32_t",
+        "label": "QuatZ",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Temperature",
+        "type": "int16_t",
+        "label": "Temp",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Reserved0",
+        "type": "uint16_t",
+        "label": "Reserved0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Reserved1",
+        "type": "uint32_t",
+        "label": "Reserved1",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_raw_t": [
+      {
+        "name": "BatchSeq",
+        "type": "uint32_t",
+        "label": "Seq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ValidMask",
+        "type": "uint8_t",
+        "label": "Valid",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "SlotCount",
+        "type": "uint8_t",
+        "label": "Count",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags",
+        "type": "uint16_t",
+        "label": "Flags",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "DropCount",
+        "type": "uint32_t",
+        "label": "Drops",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Reserved",
+        "type": "uint32_t",
+        "label": "Reserved",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId0",
+        "type": "uint32_t",
+        "label": "CanId0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Channel0",
+        "type": "uint8_t",
+        "label": "Ch0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags0",
+        "type": "uint8_t",
+        "label": "Flags0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc0",
+        "type": "uint8_t",
+        "label": "Dlc0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Reserved1",
+        "type": "uint8_t",
+        "label": "Reserved1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_0",
+        "type": "uint8_t",
+        "label": "Data0_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_1",
+        "type": "uint8_t",
+        "label": "Data0_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_2",
+        "type": "uint8_t",
+        "label": "Data0_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_3",
+        "type": "uint8_t",
+        "label": "Data0_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_4",
+        "type": "uint8_t",
+        "label": "Data0_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_5",
+        "type": "uint8_t",
+        "label": "Data0_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_6",
+        "type": "uint8_t",
+        "label": "Data0_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_7",
+        "type": "uint8_t",
+        "label": "Data0_7",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId1",
+        "type": "uint32_t",
+        "label": "CanId1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Channel1",
+        "type": "uint8_t",
+        "label": "Ch1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags1",
+        "type": "uint8_t",
+        "label": "Flags1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc1",
+        "type": "uint8_t",
+        "label": "Dlc1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Reserved2",
+        "type": "uint8_t",
+        "label": "Reserved2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_0",
+        "type": "uint8_t",
+        "label": "Data1_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_1",
+        "type": "uint8_t",
+        "label": "Data1_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_2",
+        "type": "uint8_t",
+        "label": "Data1_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_3",
+        "type": "uint8_t",
+        "label": "Data1_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_4",
+        "type": "uint8_t",
+        "label": "Data1_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_5",
+        "type": "uint8_t",
+        "label": "Data1_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_6",
+        "type": "uint8_t",
+        "label": "Data1_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_7",
+        "type": "uint8_t",
+        "label": "Data1_7",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_full_t": [
+      {
+        "name": "CycleSeq",
+        "type": "uint16_t",
+        "label": "Seq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ValidMask",
+        "type": "uint8_t",
+        "label": "Valid",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Mode",
+        "type": "uint8_t",
+        "label": "Mode",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "DeadlineUs",
+        "type": "uint16_t",
+        "label": "DeadlineUs",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "BusState",
+        "type": "uint16_t",
+        "label": "BusState",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Counter0",
+        "type": "uint32_t",
+        "label": "Counter0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Counter1",
+        "type": "uint32_t",
+        "label": "Counter1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId0",
+        "type": "uint32_t",
+        "label": "CanId0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags0",
+        "type": "uint8_t",
+        "label": "Flags0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc0",
+        "type": "uint8_t",
+        "label": "Dlc0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Seq0",
+        "type": "uint16_t",
+        "label": "Seq0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_0",
+        "type": "uint8_t",
+        "label": "Data0_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_1",
+        "type": "uint8_t",
+        "label": "Data0_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_2",
+        "type": "uint8_t",
+        "label": "Data0_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_3",
+        "type": "uint8_t",
+        "label": "Data0_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_4",
+        "type": "uint8_t",
+        "label": "Data0_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_5",
+        "type": "uint8_t",
+        "label": "Data0_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_6",
+        "type": "uint8_t",
+        "label": "Data0_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data0_7",
+        "type": "uint8_t",
+        "label": "Data0_7",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId1",
+        "type": "uint32_t",
+        "label": "CanId1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags1",
+        "type": "uint8_t",
+        "label": "Flags1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc1",
+        "type": "uint8_t",
+        "label": "Dlc1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Seq1",
+        "type": "uint16_t",
+        "label": "Seq1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_0",
+        "type": "uint8_t",
+        "label": "Data1_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_1",
+        "type": "uint8_t",
+        "label": "Data1_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_2",
+        "type": "uint8_t",
+        "label": "Data1_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_3",
+        "type": "uint8_t",
+        "label": "Data1_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_4",
+        "type": "uint8_t",
+        "label": "Data1_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_5",
+        "type": "uint8_t",
+        "label": "Data1_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_6",
+        "type": "uint8_t",
+        "label": "Data1_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data1_7",
+        "type": "uint8_t",
+        "label": "Data1_7",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId2",
+        "type": "uint32_t",
+        "label": "CanId2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags2",
+        "type": "uint8_t",
+        "label": "Flags2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc2",
+        "type": "uint8_t",
+        "label": "Dlc2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Seq2",
+        "type": "uint16_t",
+        "label": "Seq2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data2_0",
+        "type": "uint8_t",
+        "label": "Data2_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data2_1",
+        "type": "uint8_t",
+        "label": "Data2_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data2_2",
+        "type": "uint8_t",
+        "label": "Data2_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data2_3",
+        "type": "uint8_t",
+        "label": "Data2_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data2_4",
+        "type": "uint8_t",
+        "label": "Data2_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data2_5",
+        "type": "uint8_t",
+        "label": "Data2_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data2_6",
+        "type": "uint8_t",
+        "label": "Data2_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data2_7",
+        "type": "uint8_t",
+        "label": "Data2_7",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId3",
+        "type": "uint32_t",
+        "label": "CanId3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags3",
+        "type": "uint8_t",
+        "label": "Flags3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc3",
+        "type": "uint8_t",
+        "label": "Dlc3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Seq3",
+        "type": "uint16_t",
+        "label": "Seq3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data3_0",
+        "type": "uint8_t",
+        "label": "Data3_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data3_1",
+        "type": "uint8_t",
+        "label": "Data3_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data3_2",
+        "type": "uint8_t",
+        "label": "Data3_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data3_3",
+        "type": "uint8_t",
+        "label": "Data3_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data3_4",
+        "type": "uint8_t",
+        "label": "Data3_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data3_5",
+        "type": "uint8_t",
+        "label": "Data3_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data3_6",
+        "type": "uint8_t",
+        "label": "Data3_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data3_7",
+        "type": "uint8_t",
+        "label": "Data3_7",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId4",
+        "type": "uint32_t",
+        "label": "CanId4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags4",
+        "type": "uint8_t",
+        "label": "Flags4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc4",
+        "type": "uint8_t",
+        "label": "Dlc4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Seq4",
+        "type": "uint16_t",
+        "label": "Seq4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data4_0",
+        "type": "uint8_t",
+        "label": "Data4_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data4_1",
+        "type": "uint8_t",
+        "label": "Data4_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data4_2",
+        "type": "uint8_t",
+        "label": "Data4_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data4_3",
+        "type": "uint8_t",
+        "label": "Data4_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data4_4",
+        "type": "uint8_t",
+        "label": "Data4_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data4_5",
+        "type": "uint8_t",
+        "label": "Data4_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data4_6",
+        "type": "uint8_t",
+        "label": "Data4_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data4_7",
+        "type": "uint8_t",
+        "label": "Data4_7",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId5",
+        "type": "uint32_t",
+        "label": "CanId5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags5",
+        "type": "uint8_t",
+        "label": "Flags5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc5",
+        "type": "uint8_t",
+        "label": "Dlc5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Seq5",
+        "type": "uint16_t",
+        "label": "Seq5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data5_0",
+        "type": "uint8_t",
+        "label": "Data5_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data5_1",
+        "type": "uint8_t",
+        "label": "Data5_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data5_2",
+        "type": "uint8_t",
+        "label": "Data5_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data5_3",
+        "type": "uint8_t",
+        "label": "Data5_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data5_4",
+        "type": "uint8_t",
+        "label": "Data5_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data5_5",
+        "type": "uint8_t",
+        "label": "Data5_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data5_6",
+        "type": "uint8_t",
+        "label": "Data5_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data5_7",
+        "type": "uint8_t",
+        "label": "Data5_7",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId6",
+        "type": "uint32_t",
+        "label": "CanId6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags6",
+        "type": "uint8_t",
+        "label": "Flags6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc6",
+        "type": "uint8_t",
+        "label": "Dlc6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Seq6",
+        "type": "uint16_t",
+        "label": "Seq6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data6_0",
+        "type": "uint8_t",
+        "label": "Data6_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data6_1",
+        "type": "uint8_t",
+        "label": "Data6_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data6_2",
+        "type": "uint8_t",
+        "label": "Data6_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data6_3",
+        "type": "uint8_t",
+        "label": "Data6_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data6_4",
+        "type": "uint8_t",
+        "label": "Data6_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data6_5",
+        "type": "uint8_t",
+        "label": "Data6_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data6_6",
+        "type": "uint8_t",
+        "label": "Data6_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data6_7",
+        "type": "uint8_t",
+        "label": "Data6_7",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_board_info_t": [
+      {
+        "name": "InterfaceVersion",
+        "type": "uint32_t",
+        "label": "InterfaceVersion",
+        "access": "ro",
+        "default": "MC_INTERFACE_VERSION"
+      },
+      {
+        "name": "FirmwareVersion",
+        "type": "uint32_t",
+        "label": "FirmwareVersion",
+        "access": "ro",
+        "default": 65536
+      },
+      {
+        "name": "BoardRole",
+        "type": "uint16_t",
+        "label": "BoardRole",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ConfigGeneration",
+        "type": "uint32_t",
+        "label": "ConfigGeneration",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Capabilities",
+        "type": "uint32_t",
+        "label": "Capabilities",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_board_config_t": [
+      {
+        "name": "AxisConfiguredMask",
+        "type": "uint32_t",
+        "label": "AxisConfiguredMask",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "MaxCommandLeaseMs",
+        "type": "uint16_t",
+        "label": "MaxCommandLeaseMs",
+        "access": "rw",
+        "default": 10
+      },
+      {
+        "name": "FeedbackTimeoutMs",
+        "type": "uint16_t",
+        "label": "FeedbackTimeoutMs",
+        "access": "rw",
+        "default": 20
+      },
+      {
+        "name": "ActivePdoProfile",
+        "type": "uint8_t",
+        "label": "ActivePdoProfile",
+        "access": "ro",
+        "default": 1
+      }
+    ],
+    "mc_channel_config_t": [
+      {
+        "name": "Role",
+        "type": "uint8_t",
+        "label": "Role",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "FrameFormat",
+        "type": "uint8_t",
+        "label": "FrameFormat",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "NominalBitrate",
+        "type": "uint32_t",
+        "label": "NominalBitrate",
+        "access": "rw",
+        "default": 1000000
+      },
+      {
+        "name": "DataBitrate",
+        "type": "uint32_t",
+        "label": "DataBitrate",
+        "access": "rw",
+        "default": 5000000
+      },
+      {
+        "name": "ScheduleUs",
+        "type": "uint32_t",
+        "label": "ScheduleUs",
+        "access": "rw",
+        "default": 2000
+      },
+      {
+        "name": "RawRateLimit",
+        "type": "uint16_t",
+        "label": "RawRateLimit",
+        "access": "rw",
+        "default": 2
+      },
+      {
+        "name": "MotorConfiguredMask",
+        "type": "uint8_t",
+        "label": "MotorConfiguredMask",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_action_t": [
+      {
+        "name": "ApplyGeneration",
+        "type": "uint32_t",
+        "label": "ApplyGeneration",
+        "access": "wo",
+        "default": 0
+      },
+      {
+        "name": "SaveToken",
+        "type": "uint32_t",
+        "label": "SaveToken",
+        "access": "wo",
+        "default": 0
+      },
+      {
+        "name": "Result",
+        "type": "uint16_t",
+        "label": "Result",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AppliedGeneration",
+        "type": "uint32_t",
+        "label": "AppliedGeneration",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_board_identity_t": [
+      {
+        "name": "BoardRole",
+        "type": "uint16_t",
+        "label": "BoardRole",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "ExplicitDeviceId",
+        "type": "uint16_t",
+        "label": "ExplicitDeviceId",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_owner_t": [
+      {
+        "name": "Owner",
+        "type": "uint8_t",
+        "label": "Owner",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "RequestedOwner",
+        "type": "uint8_t",
+        "label": "RequestedOwner",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Result",
+        "type": "uint16_t",
+        "label": "Result",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_sdo_command_t": [
+      {
+        "name": "ControlWord",
+        "type": "uint16_t",
+        "label": "ControlWord",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Mode",
+        "type": "uint8_t",
+        "label": "Mode",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Flags",
+        "type": "uint8_t",
+        "label": "Flags",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TargetPosition",
+        "type": "int32_t",
+        "label": "TargetPosition",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TargetVelocity",
+        "type": "int32_t",
+        "label": "TargetVelocity",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TargetTorque",
+        "type": "int32_t",
+        "label": "TargetTorque",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TargetCurrent",
+        "type": "int16_t",
+        "label": "TargetCurrent",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Kp",
+        "type": "uint16_t",
+        "label": "Kp",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Kd",
+        "type": "uint16_t",
+        "label": "Kd",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CurrentLimit",
+        "type": "uint16_t",
+        "label": "CurrentLimit",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CommitSeq",
+        "type": "uint32_t",
+        "label": "CommitSeq",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "LeaseMs",
+        "type": "uint16_t",
+        "label": "LeaseMs",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "AcceptedSeq",
+        "type": "uint32_t",
+        "label": "AcceptedSeq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CommandResult",
+        "type": "uint16_t",
+        "label": "CommandResult",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_diag_t": [
+      {
+        "name": "TxEnqueueCount",
+        "type": "uint32_t",
+        "label": "TxEnqueueCount",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "TxCompleteCount",
+        "type": "uint32_t",
+        "label": "TxCompleteCount",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "TxDropCount",
+        "type": "uint32_t",
+        "label": "TxDropCount",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "RxValidCount",
+        "type": "uint32_t",
+        "label": "RxValidCount",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ProtocolErrorCount",
+        "type": "uint32_t",
+        "label": "ProtocolErrorCount",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ActiveFaultBits",
+        "type": "uint32_t",
+        "label": "ActiveFaultBits",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "LastServiceError",
+        "type": "uint32_t",
+        "label": "LastServiceError",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "QueriedPosition",
+        "type": "int32_t",
+        "label": "QueriedPosition",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "PositionQueryAgeUs",
+        "type": "uint32_t",
+        "label": "PositionQueryAgeUs",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "QueriedVelocity",
+        "type": "int32_t",
+        "label": "QueriedVelocity",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "VelocityQueryAgeUs",
+        "type": "uint32_t",
+        "label": "VelocityQueryAgeUs",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_routing_t": [
+      {
+        "name": "CanId",
+        "type": "uint16_t",
+        "label": "CanId",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "ModelProfileId",
+        "type": "uint16_t",
+        "label": "ModelProfileId",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "PositionLimitMin",
+        "type": "int32_t",
+        "label": "PositionLimitMin",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "PositionLimitMax",
+        "type": "int32_t",
+        "label": "PositionLimitMax",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "VelocityLimit",
+        "type": "uint32_t",
+        "label": "VelocityLimit",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CurrentLimit",
+        "type": "uint32_t",
+        "label": "CurrentLimit",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TorqueLimit",
+        "type": "uint32_t",
+        "label": "TorqueLimit",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "StopPolicy",
+        "type": "uint8_t",
+        "label": "StopPolicy",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "FeedbackPolicy",
+        "type": "uint8_t",
+        "label": "FeedbackPolicy",
+        "access": "rw",
+        "default": 1
+      },
+      {
+        "name": "PowerQueryPeriodMs",
+        "type": "uint16_t",
+        "label": "PowerQueryPeriodMs",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_basic_t": [
+      {
+        "name": "AccelerationRaw",
+        "type": "uint16_t",
+        "label": "AccelerationRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CommunicationMode",
+        "type": "uint8_t",
+        "label": "CommunicationMode",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TorqueConstantRaw",
+        "type": "uint16_t",
+        "label": "TorqueConstantRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CanTimeoutMs",
+        "type": "uint16_t",
+        "label": "CanTimeoutMs",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "ZeroOffsetRaw",
+        "type": "int16_t",
+        "label": "ZeroOffsetRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "BrakeEnable",
+        "type": "uint8_t",
+        "label": "BrakeEnable",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_range_t": [
+      {
+        "name": "KpMin",
+        "type": "uint16_t",
+        "label": "KpMin",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "KpMax",
+        "type": "uint16_t",
+        "label": "KpMax",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "KdMin",
+        "type": "uint16_t",
+        "label": "KdMin",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "KdMax",
+        "type": "uint16_t",
+        "label": "KdMax",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "PosMinRaw",
+        "type": "int16_t",
+        "label": "PosMinRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "PosMaxRaw",
+        "type": "int16_t",
+        "label": "PosMaxRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "SpdMinRaw",
+        "type": "int16_t",
+        "label": "SpdMinRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "SpdMaxRaw",
+        "type": "int16_t",
+        "label": "SpdMaxRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TorMinRaw",
+        "type": "int16_t",
+        "label": "TorMinRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "TorMaxRaw",
+        "type": "int16_t",
+        "label": "TorMaxRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CurMinRaw",
+        "type": "int16_t",
+        "label": "CurMinRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CurMaxRaw",
+        "type": "int16_t",
+        "label": "CurMaxRaw",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_gain_t": [
+      {
+        "name": "CurrentKpRaw",
+        "type": "uint16_t",
+        "label": "CurrentKpRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CurrentKiRaw",
+        "type": "uint16_t",
+        "label": "CurrentKiRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "SpeedKpRaw",
+        "type": "uint16_t",
+        "label": "SpeedKpRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "SpeedKiRaw",
+        "type": "uint16_t",
+        "label": "SpeedKiRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "PositionKpRaw",
+        "type": "uint16_t",
+        "label": "PositionKpRaw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "PositionKdRaw",
+        "type": "uint16_t",
+        "label": "PositionKdRaw",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_kt_t": [
+      {
+        "name": "Group",
+        "type": "uint8_t",
+        "label": "Group",
+        "access": "rw",
+        "default": 1
+      },
+      {
+        "name": "Kt1Raw",
+        "type": "uint16_t",
+        "label": "Kt1Raw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Kt2Raw",
+        "type": "uint16_t",
+        "label": "Kt2Raw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Kt3Raw",
+        "type": "uint16_t",
+        "label": "Kt3Raw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Kt4Raw",
+        "type": "uint16_t",
+        "label": "Kt4Raw",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "CalibrationMode",
+        "type": "uint8_t",
+        "label": "CalibrationMode",
+        "access": "rw",
+        "default": 0
+      }
+    ],
+    "mc_query_t": [
+      {
+        "name": "PositionDeg",
+        "type": "float",
+        "label": "PositionDeg",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "SpeedRpm",
+        "type": "float",
+        "label": "SpeedRpm",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "PhaseCurrentA",
+        "type": "float",
+        "label": "PhaseCurrentA",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "PowerW",
+        "type": "float",
+        "label": "PowerW",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AccelerationRaw",
+        "type": "uint16_t",
+        "label": "AccelerationRaw",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "BrakeState",
+        "type": "uint8_t",
+        "label": "BrakeState",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "EncoderOutputEnabled",
+        "type": "uint8_t",
+        "label": "EncoderOutputEnabled",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "EncoderOriginalRaw",
+        "type": "int16_t",
+        "label": "EncoderOriginalRaw",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "EncoderCalibratedRaw",
+        "type": "int16_t",
+        "label": "EncoderCalibratedRaw",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ZeroOffsetRaw",
+        "type": "int16_t",
+        "label": "ZeroOffsetRaw",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ValidBits",
+        "type": "uint32_t",
+        "label": "ValidBits",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "SnapshotSeq",
+        "type": "uint32_t",
+        "label": "SnapshotSeq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "AgeMs",
+        "type": "uint32_t",
+        "label": "AgeMs",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_identity_t": [
+      {
+        "name": "UuidPart1",
+        "type": "uint32_t",
+        "label": "UuidPart1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "UuidPart2",
+        "type": "uint32_t",
+        "label": "UuidPart2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "UuidPart3",
+        "type": "uint32_t",
+        "label": "UuidPart3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "HardwareVersion0",
+        "type": "uint8_t",
+        "label": "HardwareVersion0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "HardwareVersion1",
+        "type": "uint8_t",
+        "label": "HardwareVersion1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "HardwareVersion2",
+        "type": "uint8_t",
+        "label": "HardwareVersion2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "SoftwareVersion0",
+        "type": "uint8_t",
+        "label": "SoftwareVersion0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "SoftwareVersion1",
+        "type": "uint8_t",
+        "label": "SoftwareVersion1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "SoftwareVersion2",
+        "type": "uint8_t",
+        "label": "SoftwareVersion2",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_transaction_t": [
+      {
+        "name": "ParameterId",
+        "type": "uint16_t",
+        "label": "ParameterId",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Operation",
+        "type": "uint8_t",
+        "label": "Operation",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "RequestSeq",
+        "type": "uint32_t",
+        "label": "RequestSeq",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "DoneSeq",
+        "type": "uint32_t",
+        "label": "DoneSeq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Result",
+        "type": "uint16_t",
+        "label": "Result",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "DirtyBits",
+        "type": "uint32_t",
+        "label": "DirtyBits",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "RawResponseLength",
+        "type": "uint8_t",
+        "label": "RawResponseLength",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "RawResponse",
+        "type": "uint8_t",
+        "count": 8,
+        "label": "RawResponse",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_maintenance_t": [
+      {
+        "name": "Opcode",
+        "type": "uint16_t",
+        "label": "Opcode",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Argument0",
+        "type": "int32_t",
+        "label": "Argument0",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "Argument1",
+        "type": "int32_t",
+        "label": "Argument1",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "RequestSeq",
+        "type": "uint32_t",
+        "label": "RequestSeq",
+        "access": "rw",
+        "default": 0
+      },
+      {
+        "name": "DoneSeq",
+        "type": "uint32_t",
+        "label": "DoneSeq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Result",
+        "type": "uint16_t",
+        "label": "Result",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "RawResponse",
+        "type": "uint8_t",
+        "count": 8,
+        "label": "RawResponse",
+        "access": "ro",
+        "default": 0
+      }
+    ]
+  },
+  "families": [
+    {
+      "index": "0x2000",
+      "type": "mc_board_info_t",
+      "name": "Board.Info",
+      "count": 1,
+      "stride": 0
+    },
+    {
+      "index": "0x2001",
+      "type": "mc_board_config_t",
+      "name": "Board.Config",
+      "count": 1,
+      "stride": 0
+    },
+    {
+      "index": "0x2002",
+      "type": "mc_action_t",
+      "name": "Board.ConfigAction",
+      "count": 1,
+      "stride": 0
+    },
+    {
+      "index": "0x2003",
+      "type": "mc_owner_t",
+      "name": "Board.ControlOwner",
+      "count": 1,
+      "stride": 0
+    },
+    {
+      "index": "0x2004",
+      "type": "mc_board_identity_t",
+      "name": "Board.InstanceConfig",
+      "count": 1,
+      "stride": 0
+    },
+    {
+      "index": "0x2010",
+      "type": "mc_channel_config_t",
+      "name": "CAN{bus}.Config",
+      "count": 4,
+      "stride": 1
+    },
+    {
+      "index": "0x2200",
+      "type": "mc_sdo_command_t",
+      "name": "CAN{bus}.Motor{motor}.SdoCommand",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x2400",
+      "type": "mc_diag_t",
+      "name": "CAN{bus}.Motor{motor}.Diag",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3000",
+      "type": "mc_routing_t",
+      "name": "CAN{bus}.Motor{motor}.routing",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3001",
+      "type": "mc_basic_t",
+      "name": "CAN{bus}.Motor{motor}.basic",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3002",
+      "type": "mc_range_t",
+      "name": "CAN{bus}.Motor{motor}.range",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3003",
+      "type": "mc_gain_t",
+      "name": "CAN{bus}.Motor{motor}.gain",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3004",
+      "type": "mc_kt_t",
+      "name": "CAN{bus}.Motor{motor}.kt",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3005",
+      "type": "mc_query_t",
+      "name": "CAN{bus}.Motor{motor}.query",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3006",
+      "type": "mc_identity_t",
+      "name": "CAN{bus}.Motor{motor}.identity",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3007",
+      "type": "mc_transaction_t",
+      "name": "CAN{bus}.Motor{motor}.transaction",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x3008",
+      "type": "mc_maintenance_t",
+      "name": "CAN{bus}.Motor{motor}.maintenance",
+      "count": 28,
+      "stride": 16
+    },
+    {
+      "index": "0x6000",
+      "type": "mc_board_tx_t",
+      "name": "Board.Inputs",
+      "count": 1,
+      "stride": 0,
+      "pdo": {
+        "index": "0x1A00",
+        "direction": "tx",
+        "default": true,
+        "stride": 0
+      }
+    },
+    {
+      "index": "0x6100",
+      "type": "mc_channel_tx_t",
+      "name": "CAN{bus}.Inputs",
+      "count": 4,
+      "stride": 1,
+      "pdo": {
+        "index": "0x1A01",
+        "direction": "tx",
+        "default": true,
+        "stride": 1
+      }
+    },
+    {
+      "index": "0x6200",
+      "type": "mc_axis_tx_t",
+      "name": "CAN{bus}.Motor{motor}.State",
+      "count": 28,
+      "stride": 1,
+      "pdo": {
+        "index": "0x1A20",
+        "direction": "tx",
+        "default": true,
+        "stride": 1
+      }
+    },
+    {
+      "index": "0x6300",
+      "type": "mc_imu_t",
+      "name": "IMU",
+      "count": 1,
+      "stride": 0,
+      "pdo": {
+        "index": "0x1A40",
+        "direction": "tx",
+        "default": true,
+        "stride": 0
+      }
+    },
+    {
+      "index": "0x6400",
+      "type": "mc_raw_t",
+      "name": "SharedRaw.Inputs",
+      "count": 1,
+      "stride": 0,
+      "pdo": {
+        "index": "0x1A41",
+        "direction": "tx",
+        "default": true,
+        "stride": 0
+      }
+    },
+    {
+      "index": "0x6500",
+      "type": "mc_full_t",
+      "name": "CAN{bus}.GatewayInputs",
+      "count": 4,
+      "stride": 16,
+      "pdo": {
+        "index": "0x1A50",
+        "direction": "tx",
+        "default": false,
+        "stride": 1
+      }
+    },
+    {
+      "index": "0x7000",
+      "type": "mc_board_rx_t",
+      "name": "Board.Outputs",
+      "count": 1,
+      "stride": 0,
+      "pdo": {
+        "index": "0x1600",
+        "direction": "rx",
+        "default": true,
+        "stride": 0
+      }
+    },
+    {
+      "index": "0x7100",
+      "type": "mc_channel_rx_t",
+      "name": "CAN{bus}.Outputs",
+      "count": 4,
+      "stride": 1,
+      "pdo": {
+        "index": "0x1601",
+        "direction": "rx",
+        "default": true,
+        "stride": 1
+      }
+    },
+    {
+      "index": "0x7200",
+      "type": "mc_axis_rx_t",
+      "name": "CAN{bus}.Motor{motor}.Command",
+      "count": 28,
+      "stride": 1,
+      "pdo": {
+        "index": "0x1620",
+        "direction": "rx",
+        "default": true,
+        "stride": 1
+      }
+    },
+    {
+      "index": "0x7300",
+      "type": "mc_raw_t",
+      "name": "SharedRaw.Outputs",
+      "count": 1,
+      "stride": 0,
+      "access": "rw",
+      "pdo": {
+        "index": "0x1640",
+        "direction": "rx",
+        "default": true,
+        "stride": 0
+      }
+    },
+    {
+      "index": "0x7400",
+      "type": "mc_full_t",
+      "name": "CAN{bus}.GatewayOutputs",
+      "count": 4,
+      "stride": 16,
+      "access": "rw",
+      "pdo": {
+        "index": "0x1650",
+        "direction": "rx",
+        "default": false,
+        "stride": 1
+      }
+    }
+  ],
+  "profiles": [
+    {
+      "name": "motor",
+      "rx": [
+        "0x1600",
+        "0x1601:0x1604",
+        "0x1620:0x163B"
+      ],
+      "tx": [
+        "0x1A00",
+        "0x1A01:0x1A04",
+        "0x1A20:0x1A3B",
+        "0x1A40"
+      ]
+    },
+    {
+      "name": "motor_raw",
+      "rx": [
+        "0x1600",
+        "0x1601:0x1604",
+        "0x1620:0x163B",
+        "0x1640"
+      ],
+      "tx": [
+        "0x1A00",
+        "0x1A01:0x1A04",
+        "0x1A20:0x1A3B",
+        "0x1A40",
+        "0x1A41"
+      ]
+    },
+    {
+      "name": "raw",
+      "rx": [
+        "0x1600",
+        "0x1650:0x1653"
+      ],
+      "tx": [
+        "0x1A00",
+        "0x1A50:0x1A53"
+      ]
+    }
+  ],
+  "default_profile": 1,
+  "sii": {
+    "short_type": "HPM_28AXIS",
+    "general_flags": 12
+  },
+  "modular_profile": {
+    "index_distance": 16,
+    "maximum_modules": 0
+  }
+}

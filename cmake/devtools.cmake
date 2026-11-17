@@ -13,6 +13,10 @@ add_custom_target(check-image
     VERBATIM)
 
 enable_testing()
+add_custom_target(check-protocol
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/protocol/generate.py
+    COMMENT "Checking generated protocol files against their source definitions"
+    VERBATIM)
 add_test(NAME devtools-offline
     COMMAND ${PYTHON_EXECUTABLE} -m unittest discover -s tests/host -v)
 set_tests_properties(devtools-offline PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
