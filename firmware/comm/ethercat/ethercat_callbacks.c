@@ -29,8 +29,6 @@
 
 #include "ecat_config.h"
 #include "hpm_gpio_drv.h"
-#include "ethercat_canfd_gateway.h"
-#include "motor_application.h"
 #include "motor_ethercat.h"
 #include "ethercat_cycle.h"
 #include "encos_interface.h"
@@ -195,7 +193,7 @@ UINT16 APPL_StopOutputHandler(void)
 
 UINT16 APPL_GenerateMapping(UINT16 *pInputSize, UINT16 *pOutputSize)
 {
-    /* 固定映射：四路 × 128 字节，禁止运行时改变过程映像大小。 */
+    /* 按已应用的产品 PDO 档位生成大小；运行会话内禁止切换档位。 */
     return motor_control_mapping(pInputSize,pOutputSize);
 }
 
@@ -229,7 +227,7 @@ void APPL_OutputMapping(UINT16 *pData)
 */
 void APPL_Application(void)
 {
-    /* 1 ms CAN 调度在主循环执行，不受 EtherCAT PDO/Sync0 周期限制。 */
+    /* 周期任务负责 CAN 调度与 SSC 工作；Sync0 只交接周期事件。 */
 }
 
 #if EXPLICIT_DEVICE_ID

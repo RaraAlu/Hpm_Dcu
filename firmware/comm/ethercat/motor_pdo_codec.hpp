@@ -4,6 +4,7 @@
 #include <cstring>
 #include "motor_pdo_layout.hpp"
 #include "raw_can_gateway.hpp"
+#include "motor_application.hpp"
 
 namespace dcu::ethercat::motor_pdo {
 namespace layout = dcu::ethercat::pdo_layout;
@@ -52,6 +53,8 @@ inline void write_raw_bus(void *image, unsigned bus, const canfd_bus_pdo_t &valu
 unsigned mapping_indices(unsigned profile, bool input, uint16_t *indices);
 void decode_raw_sideband(const mc_raw_t &raw, app::RawCanBatch &batch);
 void decode_raw_bus(const canfd_bus_pdo_t &raw, unsigned bus, app::RawCanBatch &batch);
+void decode_cycle(const void *image, app::motor_application::OperatingMode mode,
+                  app::motor_application::CycleCommand &command);
 
 }
 #endif

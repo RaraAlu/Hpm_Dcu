@@ -7,19 +7,24 @@
 #include "ecat_def.h"
 #include "ecatappl.h"
 #include "ecatslv.h"
-#include "ethercat_canfd_gateway.h"
+#include "can_transport.h"
+#include "device_config.h"
 #include "hpm_ecat_hw.h"
-#include "motor_application.h"
 #include "motor_ethercat.h"
 #include "pdo_pipeline.h"
 #include "realtime_port.h"
 
-volatile dcu_cycle_diagnostics_t g_dcu_cycle_diagnostics;
+static volatile dcu_cycle_diagnostics_t cycle_diagnostics;
 static pdo_pipeline_t pipeline __attribute__((section(".fast_ram.bss")));
 
 /* These fields alone cross ISR/task ownership; every access is atomic. */
 static dcu_cycle_handoff_t handoff;
 static dcu_cycle_runtime_t runtime;
+
+void dcu_cycle_read_diagnostics(dcu_cycle_diagnostics_t *snapshot)
+{
+    *snapshot = cycle_diagnostics;
+}
 
 static bool dc_configuration_matches(uint32_t period_ns)
 {
@@ -62,7 +67,7 @@ uint16_t dcu_cycle_configure(void)
     runtime.configured = pdo_pipeline_configure(&pipeline, period_ns,
                                                 DCU_TX_PUBLISH_ADVANCE_US, nPdOutputSize);
     intc_m_enable_irq_with_priority(IRQn_ESC_SYNC0, DCU_IRQ_SYNC0_PRIORITY);
-    g_dcu_cycle_diagnostics.configured_period_ns = runtime.configured ? period_ns : 0;
+    cycle_diagnostics.configured_period_ns = runtime.configured ? period_ns : 0;
     if (!runtime.configured)
         return ALSTATUSCODE_DCSYNC0CYCLETIME;
     motor_control_prepare_input();
@@ -86,10 +91,10 @@ uint16_t dcu_cycle_start_outputs(void)
     (void)take(&handoff.sync0_pending);
     (void)take(&handoff.sync1_pending);
     __atomic_store_n(&handoff.stage_sequence, 0U, __ATOMIC_RELAXED);
-    g_dcu_cycle_diagnostics.faults = 0;
-    g_dcu_cycle_diagnostics.latched_sequence = 0;
-    g_dcu_cycle_diagnostics.published_epoch = 0;
-    g_dcu_cycle_diagnostics.worker_max_us = 0;
+    cycle_diagnostics.faults = 0;
+    cycle_diagnostics.latched_sequence = 0;
+    cycle_diagnostics.published_epoch = 0;
+    cycle_diagnostics.worker_max_us = 0;
     runtime.outputs_running = true;
     dcu_tx_allow();
     pdo_pipeline_enable(&pipeline, true);
@@ -137,7 +142,7 @@ static bool check_faults(uint32_t now_us)
     uint32_t faults = pdo_pipeline_check(&pipeline, now_us);
     if (!runtime.outputs_running || !faults)
         return false;
-    g_dcu_cycle_diagnostics.faults |= faults;
+    cycle_diagnostics.faults |= faults;
     dcu_tx_inhibit();
     dcu_cycle_stop_outputs();
     motor_control_cycle_fault();
@@ -154,7 +159,7 @@ static void publish_due(void)
     motor_control_prepare_input();
     PDO_InputMapping();
     if (pdo_pipeline_mark_published(&pipeline, epoch, dcu_time_now_us()))
-        g_dcu_cycle_diagnostics.published_epoch = epoch;
+        cycle_diagnostics.published_epoch = epoch;
     (void)check_faults(dcu_time_now_us());
 }
 
@@ -164,7 +169,7 @@ void dcu_cycle_step(void)
     if (runtime.outputs_running && !dc_configuration_matches(pipeline.period_ns))
         pdo_pipeline_fault(&pipeline, PDO_PIPELINE_CONFIG_CHANGED);
     uint32_t count = take(&handoff.sync0_pending);
-    g_dcu_cycle_diagnostics.sync0_count += count;
+    cycle_diagnostics.sync0_count += count;
     if (count) {
         if (count > 1 && runtime.outputs_running)
             pdo_pipeline_fault(&pipeline, PDO_PIPELINE_RX_OVERRUN);
@@ -179,7 +184,7 @@ void dcu_cycle_step(void)
     if (pdo_pipeline_acquire(&pipeline, &view)) {
         if (runtime.outputs_running && view.epoch == __atomic_load_n(&pipeline.epoch, __ATOMIC_ACQUIRE)) {
             motor_control_output(view.data);
-            g_dcu_cycle_diagnostics.latched_sequence = view.sequence;
+            cycle_diagnostics.latched_sequence = view.sequence;
         }
         pdo_pipeline_release(&pipeline, &view);
     }
@@ -207,8 +212,8 @@ void dcu_cycle_step(void)
     }
     (void)check_faults(dcu_time_now_us());
     uint32_t duration = dcu_time_now_us() - start;
-    if (duration > g_dcu_cycle_diagnostics.worker_max_us)
-        g_dcu_cycle_diagnostics.worker_max_us = duration;
+    if (duration > cycle_diagnostics.worker_max_us)
+        cycle_diagnostics.worker_max_us = duration;
 }
 
 void dcu_cycle_watchdog_isr(void)
@@ -217,7 +222,7 @@ void dcu_cycle_watchdog_isr(void)
     if (__atomic_load_n(&pipeline.enabled, __ATOMIC_ACQUIRE) &&
         pdo_pipeline_check(&pipeline, dcu_time_now_us())) {
         dcu_tx_inhibit();
-        for (unsigned c = 0; c < CANFD_GATEWAY_BUS_COUNT; ++c)
-            ethercat_canfd_cancel(c);
+        for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
+            dcu_can_cancel(c);
     }
 }

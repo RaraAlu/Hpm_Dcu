@@ -1,14 +1,15 @@
 #include "axis_controller.hpp"
 #include "encos_parameter_transactions.hpp"
-#include "ethercat_canfd_gateway.h"
-#include "motor_application.hpp"
+#include "can_transport.h"
+#include "motor_result.hpp"
+#include "device_config.h"
 #include <climits>
 #include <cmath>
-#include <cstring>
 
 namespace dcu::app {
 namespace motor_cfg = config::motor_control;
 using namespace motor_application;
+using detail::AxisPhase;
 
 namespace {
 uint32_t age(uint32_t now, uint32_t then, bool seen)
@@ -21,12 +22,12 @@ uint16_t age_ms(uint32_t now, uint32_t then, bool seen)
     uint32_t d = now - then;
     return !seen || d > UINT16_MAX ? UINT16_MAX : (uint16_t)d;
 }
-bool estimate_torque(mc_axis_tx_t &feedback, double torque_constant)
+bool estimate_torque(AxisFeedback &feedback, double torque_constant)
 {
     if (!(torque_constant > 0)) return false;
-    const double torque = double(feedback.ActualCurrent) * torque_constant * 10;
+    const double torque = double(feedback.sample.current_cA) * torque_constant * 10;
     if (!(torque >= INT32_MIN && torque <= INT32_MAX)) return false;
-    feedback.EstimatedTorque = static_cast<int32_t>(torque);
+    feedback.sample.torque_mNm = static_cast<int32_t>(torque);
     return true;
 }
 }
@@ -35,15 +36,15 @@ void AxisController::initialize(unsigned axis)
 {
     axis_ = axis;
 }
-bool AxisController::configure(bool enabled, uint8_t frame_format, const mc_routing_t &route,
-                               const mc_basic_t &basic, const mc_range_t &range)
+bool AxisController::configure(bool enabled, uint8_t frame_format, const AxisConfiguration &configuration)
 {
     state_ = {};
     auto *x = &state_;
     const unsigned a = axis_;
-    x->route = route;
+    x->route = configuration.route;
+    x->power_query_period_ms = configuration.power_query_period_ms;
     if (!enabled) return true;
-    const auto binding = configure_motor_driver(a, x->route, basic, range, frame_format);
+    const auto binding = configure_motor_driver(a, configuration, frame_format);
     if (!binding.driver) return false;
     x->device.bind(*binding.driver);
     x->parameter_dialect = binding.parameter_dialect;
@@ -60,24 +61,20 @@ void AxisController::stop(uint16_t fault)
 {
     const unsigned a = axis_;
     auto *x = &state_;
-    mc_axis_tx_t *s = &x->feedback;
-    if (x->active)
-        ethercat_canfd_cancel_axis(a);
-    x->active = false;
-    x->arm_edge_ready = false;
-    x->query_armed = false;
-    x->control_sent = false;
-    x->feedback_seen = false;
-    if (fault && !s->BridgeFaultCode)
-        s->BridgeFaultCode = fault;
+    AxisFeedback *s = &x->feedback;
+    if (active())
+        dcu_can_cancel_axis(a);
+    x->phase = AxisPhase::Stopped;
+    if (fault && !s->bridge_fault)
+        s->bridge_fault = fault;
     if (fault)
-        s->StatusWord |= (1u << 5) | (1u << 9);
+        s->status_word |= (1u << 5) | (1u << 9);
     if (fault < 32 && fault)
         history_.active_fault_bits |= 1u << fault;
 }
 void AxisController::reset_session()
 {
-    std::memset(&state_.command, 0, sizeof(state_.command));
+    state_.command = {};
     state_.previous_control = 0;
 }
 bool AxisController::query_ready(uint32_t now) const
@@ -88,120 +85,119 @@ bool AxisController::query_ready(uint32_t now) const
         x->position_seen && now - x->position_ms <= motor_cfg::query_position_ms &&
         x->velocity_seen && now - x->velocity_ms <= motor_cfg::query_velocity_ms &&
         x->current_seen && now - x->current_ms <= motor_cfg::query_current_ms &&
-        fabs((double)x->feedback.ActualCurrent) <= x->route.CurrentLimit * 10.0 &&
-        !x->feedback.MotorFaultRaw && !x->feedback.BridgeFaultCode &&
-        ethercat_canfd_bus_state(a / ENCOS_MOTORS_PER_CHANNEL) != 3;
+        fabs((double)x->feedback.sample.current_cA) <= x->route.current_limit_dA * 10.0 &&
+        !x->feedback.sample.motor_fault && !x->feedback.bridge_fault &&
+        dcu_can_bus_state(a / ENCOS_MOTORS_PER_CHANNEL) != 3;
 }
-bool AxisController::accept(const mc_axis_rx_t &intent, bool permit, uint32_t now)
+bool AxisController::accept(const motor::Command &intent, bool permit, uint32_t now)
 {
     const unsigned a = axis_;
     const auto *command = &intent;
     auto *x = &state_;
-    mc_axis_tx_t *s = &x->feedback;
+    AxisFeedback *s = &x->feedback;
     uint16_t prev = x->previous_control;
-    x->previous_control = command->ControlWord;
-    if (!permit || (command->ControlWord & MC_AXIS_STOP) || !(command->ControlWord & MC_AXIS_ARM)) {
+    x->previous_control = command->control_bits;
+    if (!permit || (command->control_bits & motor::Stop) || !(command->control_bits & motor::Arm)) {
         stop(0);
-        if (permit && !(command->ControlWord & MC_AXIS_ARM) && !(command->ControlWord & MC_AXIS_STOP)) {
-            x->arm_edge_ready = true;
-            if ((command->ControlWord & MC_AXIS_RESET) && !(prev & MC_AXIS_RESET) && ethercat_canfd_bus_state(a / ENCOS_MOTORS_PER_CHANNEL) != 3 && !s->MotorFaultRaw) {
-                s->BridgeFaultCode = 0;
-                s->StatusWord &= ~((1u << 5) | (1u << 8) | (1u << 9));
+        if (permit && !(command->control_bits & motor::Arm) && !(command->control_bits & motor::Stop)) {
+            x->phase = AxisPhase::ReadyForArm;
+            if ((command->control_bits & motor::ResetFault) && !(prev & motor::ResetFault) && dcu_can_bus_state(a / ENCOS_MOTORS_PER_CHANNEL) != 3 && !s->sample.motor_fault) {
+                s->bridge_fault = 0;
+                s->status_word &= ~((1u << 5) | (1u << 8) | (1u << 9));
                 history_.active_fault_bits = 0;
             }
         }
-        memset(&x->command, 0, sizeof(x->command));
+        x->command = {};
         return true;
     }
-    if ((command->ControlWord & ~15u) || command->Flags) {
+    if ((command->control_bits & ~15u) || command->reserved_flags) {
         stop(2);
         return false;
     }
-    if (!x->query_armed && !x->active) {
-        if (!x->configured || !x->arm_edge_ready || (prev & MC_AXIS_ARM) || (command->ControlWord & MC_AXIS_START_MOTION))
+    if (x->phase == AxisPhase::Stopped || x->phase == AxisPhase::ReadyForArm) {
+        if (!x->configured || x->phase != AxisPhase::ReadyForArm || (prev & motor::Arm) || (command->control_bits & motor::StartMotion))
             return false;
-        x->query_armed = true;
-        x->arm_edge_ready = false;
+        x->phase = AxisPhase::QueryOnly;
     }
-    if (!(command->ControlWord & MC_AXIS_START_MOTION)) {
-        if (x->active) {
+    if (!(command->control_bits & motor::StartMotion)) {
+        if (active()) {
             stop(0);
-            x->query_armed = true;
+            x->phase = AxisPhase::QueryOnly;
         }
-        memset(&x->command, 0, sizeof(x->command));
+        x->command = {};
         return true;
     }
     dcu_can_frame_t f;
-    if (!x->configured || !dcu::app::encode_motor_command(x->device, *command, f)) {
+    if (!x->configured || x->device.encode(*command, f) != motor::Result::Ok) {
         stop(x->configured ? 2 : 1);
-        s->StatusWord |= 1u << 8;
+        s->status_word |= 1u << 8;
         return false;
     }
-    if (x->active && x->command.Mode != command->Mode) {
+    if (active() && x->command.mode != command->mode) {
         stop(8);
-        s->StatusWord |= 1u << 8;
+        s->status_word |= 1u << 8;
         return false;
     }
-    if (!x->active) {
+    if (!active()) {
         /* StartMotion needs a fresh edge after a separate query-only cycle. */
-        if ((prev & MC_AXIS_START_MOTION) || !query_ready(now) ||
+        if ((prev & motor::StartMotion) || !query_ready(now) ||
             fabs((double)history_.queried_velocity) > 20000.0 ||
-            ((command->Mode == 1 || command->Mode == 4) &&
-             fabs((double)command->TargetPosition - history_.queried_position) > 100000.0))
+            ((command->mode == motor::ControlMode::Position || command->mode == motor::ControlMode::Impedance) &&
+             fabs((double)command->position_urad - history_.queried_position) > 100000.0))
             return false;
         unsigned bus = a / ENCOS_MOTORS_PER_CHANNEL;
         parameters::abort_internal(bus);
         x->startup_command = *command;
-        x->startup_command.ControlWord = MC_AXIS_ARM;
-        x->startup_command.Mode = 1;
-        x->startup_command.TargetPosition = history_.queried_position;
-        x->startup_command.TargetVelocity = 0;
-        x->startup_command.TargetTorque = 0;
-        x->startup_command.TargetCurrent = 0;
-        x->startup_command.Kp = 0;
-        x->startup_command.Kd = 0;
-        x->startup_command.CurrentLimit = x->route.CurrentLimit < 4095 ? x->route.CurrentLimit : 4095;
-        if (!dcu::app::encode_motor_command(x->device, x->startup_command, f))
+        x->startup_command.control_bits = motor::Arm;
+        x->startup_command.mode = motor::ControlMode::Position;
+        x->startup_command.position_urad = history_.queried_position;
+        x->startup_command.velocity_urad_s = 0;
+        x->startup_command.torque_mNm = 0;
+        x->startup_command.current_cA = 0;
+        x->startup_command.kp_centi = 0;
+        x->startup_command.kd_milli = 0;
+        x->startup_command.current_limit_dA = x->route.current_limit_dA < 4095 ? x->route.current_limit_dA : 4095;
+        if (x->device.encode(x->startup_command, f) != motor::Result::Ok)
             return false;
         x->active_ms = now;
-        x->control_sent = false;
-        x->feedback_seen = false;
+        x->phase = AxisPhase::StartupQueued;
         x->new_feedback = false;
-        s->ValidFlags &= 64u;
+        s->sample.valid_fields = 0;
     }
-    x->active = true;
     x->command = *command;
-    s->ModeDisplay = x->feedback_seen ? command->Mode : 1;
-    s->StatusWord &= ~(1u << 8);
+    s->mode = x->phase == AxisPhase::Running ? command->mode : motor::ControlMode::Position;
+    s->status_word &= ~(1u << 8);
     return true;
 }
 void AxisController::check_timeouts(uint32_t now, bool sdo_owner, uint16_t feedback_timeout_ms)
 {
     auto *x = &state_;
-    if (x->active || x->query_armed) {
+    if (active() || x->phase == AxisPhase::QueryOnly) {
         if (sdo_owner && uint32_t(now - x->commit_ms) >= x->lease_ms)
             stop(3);
         // First feedback is timed only after the first successful CAN submission.
-        if (x->control_sent && uint32_t(now - (x->feedback_seen ? x->feedback_ms : x->active_ms)) >= feedback_timeout_ms)
+        if (control_sent() && uint32_t(now - (x->phase == AxisPhase::Running ? x->feedback_ms : x->active_ms)) >= feedback_timeout_ms)
             stop(4);
     }
 }
 void AxisController::check_startup(uint32_t now)
 {
-    if (state_.active && !state_.control_sent && !query_ready(now))
+    if (state_.phase == AxisPhase::StartupQueued && !query_ready(now))
         stop(8);
 }
 bool AxisController::encode_control(dcu_can_frame_t &frame) const
 {
-    return encode_motor_command(state_.device, state_.feedback_seen ? state_.command : state_.startup_command, frame);
+    return active() && state_.device.encode(
+        state_.phase == AxisPhase::Running ? state_.command : state_.startup_command, frame) == motor::Result::Ok;
 }
 void AxisController::control_submitted(uint32_t now)
 {
-    if (!state_.control_sent) {
-        state_.control_sent = true;
+    if (!active()) return;
+    if (state_.phase == AxisPhase::StartupQueued) {
+        state_.phase = AxisPhase::AwaitingFeedback;
         state_.active_ms = now;
     }
-    state_.feedback.ModeDisplay = state_.feedback_seen ? state_.command.Mode : 1;
+    state_.feedback.mode = state_.phase == AxisPhase::Running ? state_.command.mode : motor::ControlMode::Position;
     ++history_.tx_enqueue_count;
 }
 void AxisController::set_sdo_lease(uint16_t lease_ms, uint32_t now)
@@ -212,16 +208,16 @@ void AxisController::set_sdo_lease(uint16_t lease_ms, uint32_t now)
 bool AxisController::start_query(uint32_t now, uint8_t owner, uint8_t frame_format)
 {
     auto *x = &state_;
-    if (!x->configured || (!x->active && owner == OWNER_SDO && !x->query_armed) ||
-        (x->active && (owner != OWNER_PDO || !x->route.PowerQueryPeriodMs)))
+    if (!x->configured || (!active() && owner == OWNER_SDO && x->phase != AxisPhase::QueryOnly) ||
+        (active() && (owner != OWNER_PDO || !x->power_query_period_ms)))
         return false;
-    unsigned first = x->active ? 3u : 0u;
+    unsigned first = active() ? 3u : 0u;
     for (unsigned k = first; k < motor_cfg::query_period_ms.size(); ++k) {
-        unsigned period_ms = k == 3 ? x->route.PowerQueryPeriodMs : motor_cfg::query_period_ms[k];
+        unsigned period_ms = k == 3 ? x->power_query_period_ms : motor_cfg::query_period_ms[k];
         if (!period_ms || ((x->query_requested_mask & (1u << k)) && now - x->query_request_ms[k] < period_ms))
             continue;
         if (!parameters::start_query(axis_ / ENCOS_MOTORS_PER_CHANNEL, axis_, k + 1, 1, now,
-                                     x->parameter_dialect, x->route.CanId, frame_format))
+                                     x->parameter_dialect, x->route.can_id, frame_format))
             return false;
         x->query_request_ms[k] = now;
         x->query_requested_mask |= 1u << k;
@@ -239,19 +235,21 @@ void AxisController::consume_feedback(const dcu_can_frame_t &frame, uint32_t sta
     uint8_t type = f->data[0] >> 5;
     bool valid = false;
     bool cyclic_feedback = false;
-    if (x->active && x->control_sent && x->configured &&
-        dcu::app::decode_motor_feedback(x->device, *f, x->feedback)) {
+    motor::Feedback sample{};
+    constexpr uint32_t required = motor::Position | motor::Velocity | motor::Current;
+    if (control_sent() && x->configured && x->device.decode(*f, sample) == motor::Result::Ok &&
+        (sample.valid_fields & required) == required) {
+        x->feedback.sample = sample;
         cyclic_feedback = true;
-        if (!x->feedback_seen) {
+        if (x->phase != AxisPhase::Running) {
             x->position_seen = x->velocity_seen = x->current_seen = false;
         }
-        x->feedback_seen = true;
+        x->phase = AxisPhase::Running;
         x->feedback_ms = stamp;
         x->new_feedback = true;
-        x->query_armed = false;
         valid = true;
         ++x->type1_count;
-        if (fabs((double)x->feedback.ActualCurrent) > x->route.CurrentLimit * 10.0)
+        if (fabs((double)x->feedback.sample.current_cA) > x->route.current_limit_dA * 10.0)
             stop(2);
     }
     else {
@@ -268,24 +266,24 @@ void AxisController::consume_feedback(const dcu_can_frame_t &frame, uint32_t sta
                 history_.queried_position = observation.value;
                 x->position_ms = stamp;
                 x->position_seen = true;
-                if (observation.update_actual && !x->active) x->feedback.ActualPosition = observation.value;
+                if (observation.update_actual && !active()) x->feedback.sample.position_urad = observation.value;
                 break;
             case parameters::Field::Velocity:
                 history_.queried_velocity = observation.value;
                 x->velocity_ms = stamp;
                 x->velocity_seen = true;
-                if (observation.update_actual && !x->active) x->feedback.ActualVelocity = observation.value;
+                if (observation.update_actual && !active()) x->feedback.sample.velocity_urad_s = observation.value;
                 break;
             case parameters::Field::Current:
                 x->current_ms = stamp;
                 x->current_seen = true;
-                if (!x->active) {
-                    x->feedback.ActualCurrent = static_cast<int16_t>(observation.value);
+                if (!active()) {
+                    x->feedback.sample.current_cA = static_cast<int16_t>(observation.value);
                     estimate_torque(x->feedback, x->device.capabilities().torque_constant_Nm_A);
                 }
                 break;
             case parameters::Field::Power:
-                x->feedback.ActualPower = observation.value;
+                x->feedback.power_mW = observation.value;
                 x->power_ms = stamp;
                 x->power_seen = x->new_power = true;
                 break;
@@ -300,68 +298,67 @@ void AxisController::consume_feedback(const dcu_can_frame_t &frame, uint32_t sta
         ++history_.rx_valid_count;
         if (cyclic_feedback || (type >= 1 && type <= 5)) {
             if (!cyclic_feedback)
-                x->feedback.MotorFaultRaw = f->data[0] & 31;
-            if (x->feedback.MotorFaultRaw)
+                x->feedback.sample.motor_fault = f->data[0] & 31;
+            if (x->feedback.sample.motor_fault)
                 stop(0);
         }
     } else
         ++history_.protocol_error_count;
 }
 AxisPublication AxisController::read_feedback(uint32_t now, uint16_t feedback_timeout_ms,
-                                              mc_axis_tx_t &feedback, mc_diag_t &diagnostics) const
+                                              AxisFeedback &feedback, AxisDiagnostics &diagnostics) const
 {
     const unsigned a = axis_, c = axis_ / ENCOS_MOTORS_PER_CHANNEL;
     const auto *x = &state_;
     feedback = x->feedback;
-    mc_axis_tx_t *s = &feedback;
-    bool type1 = x->active && x->feedback_seen;
+    AxisFeedback *s = &feedback;
+    bool type1 = x->phase == AxisPhase::Running;
     bool online = x->online_seen && now - x->online_ms <= (type1 ? unsigned(feedback_timeout_ms) : unsigned(motor_cfg::query_online_ms));
-    bool power_stale = !x->route.PowerQueryPeriodMs || !x->power_seen || now - x->power_ms >= x->route.PowerQueryPeriodMs * 3u;
-    s->PowerAgeMs = age_ms(now, x->power_ms, x->power_seen);
+    bool power_stale = !x->power_query_period_ms || !x->power_seen || now - x->power_ms >= x->power_query_period_ms * 3u;
+    s->power_age_ms = age_ms(now, x->power_ms, x->power_seen);
     bool stale;
     if (type1) {
-        s->FeedbackAgeMs = age_ms(now, x->feedback_ms, true);
-        stale = s->FeedbackAgeMs >= feedback_timeout_ms;
+        s->feedback_age_ms = age_ms(now, x->feedback_ms, true);
+        stale = s->feedback_age_ms >= feedback_timeout_ms;
         if (stale)
-            s->ValidFlags &= 64;
+            s->sample.valid_fields = 0;
     } else {
         bool pos = x->position_seen && now - x->position_ms <= motor_cfg::query_position_ms;
         bool vel = x->velocity_seen && now - x->velocity_ms <= motor_cfg::query_velocity_ms;
         bool current = x->current_seen && now - x->current_ms <= motor_cfg::query_current_ms;
-        s->ValidFlags = (pos ? 1 : 0) | (vel ? 2 : 0) | (current ? 4 : 0);
+        s->sample.valid_fields = (pos ? uint32_t(motor::Position) : 0U) |
+            (vel ? uint32_t(motor::Velocity) : 0U) | (current ? uint32_t(motor::Current) : 0U);
         const double torque_constant = x->device.capabilities().torque_constant_Nm_A;
         if (current && estimate_torque(*s, torque_constant))
-            s->ValidFlags |= 8;
-        s->MotorTemperature = 0;
-        s->MosTemperature = 0;
+            s->sample.valid_fields |= motor::Torque;
+        s->sample.motor_temperature_deciC = 0;
+        s->sample.mos_temperature_deciC = 0;
         stale = !(pos && vel && current);
         if (stale)
-            s->FeedbackAgeMs = UINT16_MAX;
+            s->feedback_age_ms = UINT16_MAX;
         else {
             uint32_t oldest = now - x->position_ms;
             if (now - x->velocity_ms > oldest)
                 oldest = now - x->velocity_ms;
             if (now - x->current_ms > oldest)
                 oldest = now - x->current_ms;
-            s->FeedbackAgeMs = oldest > UINT16_MAX ? UINT16_MAX : (uint16_t)oldest;
+            s->feedback_age_ms = oldest > UINT16_MAX ? UINT16_MAX : (uint16_t)oldest;
         }
     }
-    if (power_stale)
-        s->ValidFlags &= 63;
-    else
-        s->ValidFlags |= 64;
-    bool ready = type1 ? (!stale && !s->BridgeFaultCode && !s->MotorFaultRaw && ethercat_canfd_bus_state(c) != 3) : query_ready(now);
-    s->StatusWord = (s->StatusWord & 0x320) | (x->configured ? 1 : 0) | (online ? 2 : 0) | (ready ? 4 : 0) | (type1 ? 8 : 0) | (x->new_feedback ? 16 : 0) | (s->BridgeFaultCode ? 32 : 0) | (s->MotorFaultRaw ? 64 : 0) | (stale ? 128 : 0) | (x->new_power ? 1024 : 0) | (power_stale ? 2048 : 0) | (!type1 && (x->position_seen || x->velocity_seen || x->current_seen) ? MC_STATUS_QUERY_SOURCE : 0) | (x->query_armed && !type1 ? MC_STATUS_ARMED_QUERY_ONLY : 0);
-    diagnostics.TxEnqueueCount = history_.tx_enqueue_count;
-    diagnostics.RxValidCount = history_.rx_valid_count;
-    diagnostics.ProtocolErrorCount = history_.protocol_error_count;
-    diagnostics.ActiveFaultBits = history_.active_fault_bits;
-    diagnostics.QueriedPosition = history_.queried_position;
-    diagnostics.QueriedVelocity = history_.queried_velocity;
-    diagnostics.PositionQueryAgeUs = age(now, x->position_ms, x->position_seen);
-    diagnostics.VelocityQueryAgeUs = age(now, x->velocity_ms, x->velocity_seen);
-    diagnostics.TxCompleteCount = ethercat_canfd_completions(a);
-    return {online, bool(s->BridgeFaultCode || s->MotorFaultRaw)};
+    s->power_valid = !power_stale;
+    bool ready = type1 ? (!stale && !s->bridge_fault && !s->sample.motor_fault && dcu_can_bus_state(c) != 3) : query_ready(now);
+    s->status_word = (s->status_word & 0x320) | (x->configured ? 1 : 0) | (online ? 2 : 0) | (ready ? 4 : 0) | (type1 ? 8 : 0) | (x->new_feedback ? 16 : 0) | (s->bridge_fault ? 32 : 0) | (s->sample.motor_fault ? 64 : 0) | (stale ? 128 : 0) | (x->new_power ? 1024 : 0) | (power_stale ? 2048 : 0) | (!type1 && (x->position_seen || x->velocity_seen || x->current_seen) ? QuerySource : 0) | (!type1 && (x->phase == AxisPhase::QueryOnly || active()) ? ArmedQueryOnly : 0);
+    diagnostics.tx_enqueue_count = history_.tx_enqueue_count;
+    diagnostics.tx_drop_count = history_.tx_drop_count;
+    diagnostics.rx_valid_count = history_.rx_valid_count;
+    diagnostics.protocol_error_count = history_.protocol_error_count;
+    diagnostics.active_fault_bits = history_.active_fault_bits;
+    diagnostics.queried_position_urad = history_.queried_position;
+    diagnostics.queried_velocity_urad_s = history_.queried_velocity;
+    diagnostics.position_query_age_us = age(now, x->position_ms, x->position_seen);
+    diagnostics.velocity_query_age_us = age(now, x->velocity_ms, x->velocity_seen);
+    diagnostics.tx_complete_count = dcu_can_completions(a);
+    return {online, bool(s->bridge_fault || s->sample.motor_fault)};
 }
 void AxisController::acknowledge_publication()
 {

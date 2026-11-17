@@ -1,14 +1,15 @@
 #include "encos_motor.hpp"
-#include "motor_application.h"
+#include "encos_interface.h"
 
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 
 namespace motor = dcu::motor;
 namespace encos = dcu::encos;
 
 extern "C" size_t motor_c_layout(unsigned index);
-extern "C" bool motor_c_query(encos_frame_t *frame);
+extern "C" bool motor_c_query(dcu_can_frame_t *frame);
 
 #define CHECK(expression) do { \
     if (!(expression)) { \
@@ -18,23 +19,8 @@ extern "C" bool motor_c_query(encos_frame_t *frame);
 } while (false)
 
 struct MotorFixture {
-    mc_range_t range{0, 500, 0, 5, -1000, 1000, -2000, 2000, -100, 100, -100, 100};
-    mc_basic_t basic{};
-    mc_routing_t route{};
-    encos_profile_t profile{};
-
-    MotorFixture()
-    {
-        basic.TorqueConstantRaw = 50;
-        basic.CanTimeoutMs = 100;
-        route.CanId = 1;
-        route.PositionLimitMin = -10000000;
-        route.PositionLimitMax = 10000000;
-        route.VelocityLimit = 20000000;
-        route.CurrentLimit = 100;
-        route.TorqueLimit = 10000;
-        encos_profile(&range, &basic, &profile);
-    }
+    motor::Routing route{1, -10000000, 10000000, 20000000, 10000, 100};
+    encos_profile_t profile{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5};
 };
 
 static mc_object_t *object(uint16_t index)
@@ -47,7 +33,7 @@ static mc_object_t *object(uint16_t index)
 
 static bool c_abi()
 {
-    encos_frame_t frame{};
+    dcu_can_frame_t frame{};
     frame.id = 0x123;
     frame.flags = 24;
     CHECK(motor_c_query(&frame));
@@ -59,7 +45,7 @@ static bool c_abi()
 static bool layout()
 {
     const size_t expected[] = {
-        sizeof(encos_frame_t), alignof(encos_frame_t),
+        sizeof(dcu_can_frame_t), alignof(dcu_can_frame_t),
         sizeof(mc_axis_rx_t), alignof(mc_axis_rx_t),
         sizeof(mc_axis_tx_t), alignof(mc_axis_tx_t),
         sizeof(mc_imu_t), alignof(mc_imu_t),
@@ -95,15 +81,12 @@ static bool layout()
 static bool profile()
 {
     MotorFixture motor;
-    CHECK(encos_profile(&motor.range, &motor.basic, &motor.profile));
+    CHECK(encos_profile_valid(&motor.profile));
     CHECK(motor.profile.kp[1] == 500 && motor.profile.kd[1] == 5);
     CHECK(motor.profile.pos[0] == -10 && motor.profile.vel[1] == 20);
     CHECK(motor.profile.current[0] == -10 && motor.profile.kt == 0.5);
-    motor.basic.CanTimeoutMs = 0;
-    CHECK(!encos_profile(&motor.range, &motor.basic, &motor.profile));
-    motor.basic.CanTimeoutMs = 100;
-    motor.range.KpMax = motor.range.KpMin;
-    CHECK(!encos_profile(&motor.range, &motor.basic, &motor.profile));
+    motor.profile.kp[1] = motor.profile.kp[0];
+    CHECK(!encos_profile_valid(&motor.profile));
     return true;
 }
 
@@ -124,7 +107,7 @@ static bool commands()
         command.current_limit_dA = mode <= 2 ? 100 : 0;
         command.current_cA = mode == 3 ? -125 : 0;
         command.torque_mNm = mode == 5 ? -1250 : 0;
-        encos_frame_t frame{};
+        dcu_can_frame_t frame{};
         CHECK(encos::encode_motion(command, motor.route, motor.profile, frame));
         CHECK(frame.id == 1 && frame.flags == 0 && frame.dlc == sizes[mode - 1]);
         CHECK(std::memcmp(frame.data, golden[mode - 1], sizeof(frame.data)) == 0);
@@ -137,7 +120,7 @@ static bool rejected_commands()
     MotorFixture motor;
     motor::Command command{};
     command.mode = motor::ControlMode::Current;
-    encos_frame_t frame{};
+    dcu_can_frame_t frame{};
     CHECK(encos::encode_motion(command, motor.route, motor.profile, frame));
     command.reserved_flags = 1;
     CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
@@ -151,13 +134,13 @@ static bool rejected_commands()
     command.position_urad = 1;
     CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
     command.position_urad = 0;
-    motor.route.CanId = 0;
+    motor.route.can_id = 0;
     CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
-    motor.route.CanId = 9;
+    motor.route.can_id = 9;
     CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
-    motor.route.CanId = 1;
+    motor.route.can_id = 1;
     command.mode = motor::ControlMode::Impedance;
-    command.position_urad = motor.route.PositionLimitMax + 1;
+    command.position_urad = motor.route.position_max_urad + 1;
     CHECK(!encos::encode_motion(command, motor.route, motor.profile, frame));
     return true;
 }
@@ -165,7 +148,7 @@ static bool rejected_commands()
 static bool feedback()
 {
     MotorFixture motor;
-    encos_frame_t frame{};
+    dcu_can_frame_t frame{};
     frame.dlc = 8;
     frame.data[0] = 0x20;
     frame.data[6] = 50;
@@ -220,13 +203,20 @@ static bool transactional_outputs()
     auto state = previous;
     CHECK(!encos::decode_feedback(frame, fixture.profile, state));
     CHECK(std::memcmp(&state, &previous, sizeof(state)) == 0);
+    for (unsigned which = 0; which < 3; ++which) {
+        auto profile = MotorFixture{}.profile;
+        if (which == 0) profile.pos[0] = -3000;
+        if (which == 1) profile.vel[0] = -3000;
+        if (which == 2) profile.current[0] = NAN;
+        CHECK(!encos::decode_feedback(frame, profile, state));
+        CHECK(std::memcmp(&state, &previous, sizeof(state)) == 0);
+    }
     return true;
 }
 
 static bool parameters()
 {
-    MotorFixture motor;
-    encos_frame_t frame{};
+    dcu_can_frame_t frame{};
     CHECK(encos_query(36, 10, &frame));
     CHECK(frame.dlc == 2 && frame.data[0] == 0xEA && frame.data[1] == 36);
     CHECK(!encos_query(36, 0, &frame) && !encos_query(36, 11, &frame));
@@ -234,12 +224,11 @@ static bool parameters()
     CHECK(encos_parameter_query(1) == 5 && encos_parameter_query(2) == 0);
     CHECK(encos_parameter_query(0x101) == 1 && encos_parameter_query(0x127) == 39);
     CHECK(encos_parameter_query(0x128) == 0);
-    mc_gain_t gain{};
-    mc_kt_t kt{};
-    CHECK(encos_parameter(3, &motor.basic, &motor.range, &gain, &kt, &frame));
+    encos_parameter_values_t values{{50, 0, 0, 0}, 0};
+    CHECK(encos_parameter(3, &values, &frame));
     CHECK(frame.dlc == 4 && frame.data[0] == 0xC0 && frame.data[1] == 4);
     CHECK(frame.data[2] == 0 && frame.data[3] == 50);
-    CHECK(!encos_parameter(1, &motor.basic, &motor.range, &gain, &kt, &frame));
+    CHECK(!encos_parameter(1, &values, &frame));
     return true;
 }
 

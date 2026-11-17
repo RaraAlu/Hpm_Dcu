@@ -1,5 +1,5 @@
 #include "raw_can_gateway.hpp"
-#include "ethercat_canfd_gateway.h"
+#include "can_transport.h"
 #include <cstring>
 
 namespace dcu::app {
@@ -71,7 +71,7 @@ bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, bool protect_
     }
     unsigned cost = BusScheduler::frame_cost((f->flags & 8u) != 0, f->dlc) +
                     BusScheduler::frame_cost(bus.fd_response, 8);
-    if (!schedule[c].can_afford(cost) || !ethercat_canfd_send(c, f, ENCOS_AXIS_COUNT))
+    if (!schedule[c].can_afford(cost) || !dcu_can_send(c, f, ENCOS_AXIS_COUNT))
         return false;
     schedule[c].charge(cost);
     ++budget_[c];

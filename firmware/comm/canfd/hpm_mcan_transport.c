@@ -1,4 +1,6 @@
-#include "ethercat_canfd_gateway.h"
+#include "hpm_mcan_transport.h"
+#include "can_transport.h"
+#include "device_config.h"
 #include "cfg/can_bus_config.h"
 #include "detail/can_gateway_state.h"
 #include "realtime_port.h"
@@ -18,7 +20,7 @@
 #endif
 
 /* 每路依次为 TX、RX、ERR，使用自研板上已有的 12 个低电平点亮 LED。 */
-static const canfd_led_t s_led[CANFD_GATEWAY_BUS_COUNT][CANFD_LED_KIND_COUNT] = {
+static const canfd_led_t s_led[ENCOS_CHANNEL_COUNT][CANFD_LED_KIND_COUNT] = {
     {
         { BOARD_CAN0_TX_LED_CTRL, BOARD_CAN0_TX_LED_INDEX, BOARD_CAN0_TX_LED_PIN, BOARD_CAN0_TX_LED_ON_LEVEL, BOARD_CAN0_TX_LED_OFF_LEVEL },
         { BOARD_CAN0_RX_LED_CTRL, BOARD_CAN0_RX_LED_INDEX, BOARD_CAN0_RX_LED_PIN, BOARD_CAN0_RX_LED_ON_LEVEL, BOARD_CAN0_RX_LED_OFF_LEVEL },
@@ -42,28 +44,27 @@ static const canfd_led_t s_led[CANFD_GATEWAY_BUS_COUNT][CANFD_LED_KIND_COUNT] = 
 };
 
 /* 物理 CANFD1～4 与 MCAN0～3 一一对应。 */
-static MCAN_Type *const s_mcan[CANFD_GATEWAY_BUS_COUNT] = {
+static MCAN_Type *const s_mcan[ENCOS_CHANNEL_COUNT] = {
     HPM_MCAN0, HPM_MCAN1, HPM_MCAN2, HPM_MCAN3
 };
 
-static const uint32_t s_irq[CANFD_GATEWAY_BUS_COUNT] = {
+static const uint32_t s_irq[ENCOS_CHANNEL_COUNT] = {
     IRQn_MCAN0, IRQn_MCAN1, IRQn_MCAN2, IRQn_MCAN3
 };
 
 #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && MCAN_SOC_MSG_BUF_IN_AHB_RAM
 /* HPM5E31 的 MCAN Message RAM 位于专用 AHB SRAM，四路必须各自独立。 */
-ATTR_PLACE_AT(".ahb_sram") static uint32_t s_mcan_ram[CANFD_GATEWAY_BUS_COUNT][MCAN_MSG_BUF_SIZE_IN_WORDS];
+ATTR_PLACE_AT(".ahb_sram") static uint32_t s_mcan_ram[ENCOS_CHANNEL_COUNT][MCAN_MSG_BUF_SIZE_IN_WORDS];
 #endif
 
-/* 下行使用完整快照；上行每路使用两个接收窗口，避免 ISR 改写正在发布的 PDO。 */
+/* One ISR producer and one worker consumer per bus. */
 static rx_queue_t s_rx[4];
 static volatile uint32_t s_rx_lost[4];
 static volatile uint32_t s_tx_complete[ENCOS_CHANNEL_COUNT][ENCOS_MOTORS_PER_CHANNEL];
-static volatile uint32_t s_tx_progress[CANFD_GATEWAY_BUS_COUNT];
+static volatile uint32_t s_tx_progress[ENCOS_CHANNEL_COUNT];
 static uint8_t s_tx_axis[4][8];
-static volatile uint8_t s_led_ticks[CANFD_GATEWAY_BUS_COUNT][CANFD_LED_KIND_COUNT];
+static volatile uint8_t s_led_ticks[ENCOS_CHANNEL_COUNT][CANFD_LED_KIND_COUNT];
 static uint16_t s_heartbeat_ticks;
-static volatile uint32_t s_now_ms;
 static bool s_initialized;
 
 static void led_pulse(uint32_t bus, uint32_t kind)
@@ -74,10 +75,9 @@ static void led_pulse(uint32_t bus, uint32_t kind)
     s_led_ticks[bus][kind] = CANFD_LED_PULSE_TICKS;
 }
 
-void ethercat_canfd_gateway_led_tick(void)
+void dcu_mcan_led_tick(void)
 {
-    ++s_now_ms;
-    for (uint32_t bus = 0; bus < CANFD_GATEWAY_BUS_COUNT; bus++) {
+    for (uint32_t bus = 0; bus < ENCOS_CHANNEL_COUNT; bus++) {
         for (uint32_t kind = 0; kind < CANFD_LED_KIND_COUNT; kind++) {
             if (s_led_ticks[bus][kind] != 0U && --s_led_ticks[bus][kind] == 0U) {
                 const canfd_led_t *led = &s_led[bus][kind];
@@ -93,23 +93,23 @@ void ethercat_canfd_gateway_led_tick(void)
     }
 }
 
-uint16_t ethercat_canfd_bus_state(uint32_t bus)
+uint16_t dcu_can_bus_state(uint32_t bus)
 {
     mcan_protocol_status_t status = {0};
 
     if (mcan_get_protocol_status(s_mcan[bus], &status) != status_success) {
-        return CANFD_BUS_ERROR_WARNING;
+        return DCU_CAN_BUS_ERROR_WARNING;
     }
     if (status.in_bus_off_state) {
-        return CANFD_BUS_OFF;
+        return DCU_CAN_BUS_OFF;
     }
     if (status.in_error_passive_state) {
-        return CANFD_BUS_ERROR_PASSIVE;
+        return DCU_CAN_BUS_ERROR_PASSIVE;
     }
     if (status.in_warning_state) {
-        return CANFD_BUS_ERROR_WARNING;
+        return DCU_CAN_BUS_ERROR_WARNING;
     }
-    return CANFD_BUS_ERROR_ACTIVE;
+    return DCU_CAN_BUS_ERROR_ACTIVE;
 }
 
 static void receive_isr(uint32_t bus)
@@ -125,7 +125,7 @@ static void receive_isr(uint32_t bus)
         rx_item_t *item=&q->item[q->write];
         item->frame=(dcu_can_frame_t){.id=f.use_ext_id?f.ext_id:f.std_id,.dlc=f.dlc,
             .flags=(f.use_ext_id?2:0)|(f.canfd_frame?8:0)|(f.bitrate_switch?16:0)};
-        memcpy(item->frame.data,f.data_8,f.dlc);item->timestamp=s_now_ms;
+        memcpy(item->frame.data,f.data_8,f.dlc);item->timestamp=dcu_time_now_ms();
         __asm__ volatile("" ::: "memory");q->write=next;
     }
     if(flags & MCAN_EVENT_TRANSMIT) {
@@ -150,13 +150,13 @@ SDK_DECLARE_EXT_ISR_M(IRQn_MCAN1, mcan1_isr);
 SDK_DECLARE_EXT_ISR_M(IRQn_MCAN2, mcan2_isr);
 SDK_DECLARE_EXT_ISR_M(IRQn_MCAN3, mcan3_isr);
 
-hpm_stat_t ethercat_canfd_gateway_init(void)
+hpm_stat_t dcu_mcan_init(void)
 {
     /*
      * PinMux 生成代码会在切换为 GPIO 时短暂写低，而这些 LED 为低电平点亮。
      * 在启用 MCAN 中断前再次显式写 OFF，保证上电且无报文时 12 个灯全部熄灭。
      */
-    for (uint32_t bus = 0; bus < CANFD_GATEWAY_BUS_COUNT; bus++) {
+    for (uint32_t bus = 0; bus < ENCOS_CHANNEL_COUNT; bus++) {
         for (uint32_t kind = 0; kind < CANFD_LED_KIND_COUNT; kind++) {
             const canfd_led_t *led = &s_led[bus][kind];
             s_led_ticks[bus][kind] = 0U;
@@ -165,7 +165,7 @@ hpm_stat_t ethercat_canfd_gateway_init(void)
     }
 
     /* 四路统一使用 1 Mbit/s 仲裁段、5 Mbit/s 数据段和 CAN FD+BRS 能力。 */
-    for (uint32_t bus = 0; bus < CANFD_GATEWAY_BUS_COUNT; bus++) {
+    for (uint32_t bus = 0; bus < ENCOS_CHANNEL_COUNT; bus++) {
         mcan_config_t config;
         uint32_t clock_hz;
         hpm_stat_t status;
@@ -231,22 +231,17 @@ hpm_stat_t ethercat_canfd_gateway_init(void)
 }
 
 
-uint32_t ethercat_canfd_now_ms(void) { return s_now_ms; }
-uint32_t ethercat_canfd_now_us(void)
-{
-    return dcu_time_now_us();
-}
-uint32_t ethercat_canfd_rx_drops(unsigned bus) { return s_rx_lost[bus]; }
-uint32_t ethercat_canfd_completions(unsigned axis) { return s_tx_complete[axis/ENCOS_MOTORS_PER_CHANNEL][axis%ENCOS_MOTORS_PER_CHANNEL]; }
-bool ethercat_canfd_receive(unsigned bus, dcu_can_frame_t *f, uint32_t *stamp)
+uint32_t dcu_can_rx_drops(unsigned bus) { return s_rx_lost[bus]; }
+uint32_t dcu_can_completions(unsigned axis) { return s_tx_complete[axis/ENCOS_MOTORS_PER_CHANNEL][axis%ENCOS_MOTORS_PER_CHANNEL]; }
+bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, uint32_t *stamp)
 {
     rx_queue_t *q=&s_rx[bus];intc_m_disable_irq(s_irq[bus]);
     bool available=q->read!=q->write;
     if(available){*f=q->item[q->read].frame;*stamp=q->item[q->read].timestamp;q->read=(q->read+1)&31;}
     intc_m_enable_irq(s_irq[bus]);return available;
 }
-bool ethercat_canfd_pending(unsigned bus) { return s_mcan[bus]->TXBRP!=0; }
-bool ethercat_canfd_axis_pending(unsigned axis)
+bool dcu_can_pending(unsigned bus) { return s_mcan[bus]->TXBRP!=0; }
+bool dcu_can_axis_pending(unsigned axis)
 {
     if(axis>=ENCOS_AXIS_COUNT)return false;
     unsigned bus=axis/ENCOS_MOTORS_PER_CHANNEL;
@@ -258,32 +253,32 @@ bool ethercat_canfd_axis_pending(unsigned axis)
     intc_m_enable_irq(s_irq[bus]);
     return found;
 }
-unsigned ethercat_canfd_tx_free(unsigned bus)
+unsigned dcu_can_tx_free(unsigned bus)
 {
-    return bus<CANFD_GATEWAY_BUS_COUNT?MCAN_TXFQS_TFFL_GET(s_mcan[bus]->TXFQS):0;
+    return bus<ENCOS_CHANNEL_COUNT?MCAN_TXFQS_TFFL_GET(s_mcan[bus]->TXFQS):0;
 }
-uint32_t ethercat_canfd_tx_progress(unsigned bus)
+uint32_t dcu_can_tx_progress(unsigned bus)
 {
-    return bus<CANFD_GATEWAY_BUS_COUNT?s_tx_progress[bus]:0;
+    return bus<ENCOS_CHANNEL_COUNT?s_tx_progress[bus]:0;
 }
-void ethercat_canfd_cancel(unsigned bus) { for(unsigned i=0;i<8;i++)mcan_cancel_tx_buf_send_request(s_mcan[bus],i); }
+void dcu_can_cancel(unsigned bus) { for(unsigned i=0;i<8;i++)mcan_cancel_tx_buf_send_request(s_mcan[bus],i); }
 static void cancel_tag(unsigned bus,uint8_t tag)
 {
-    if(bus>=CANFD_GATEWAY_BUS_COUNT)return;
+    if(bus>=ENCOS_CHANNEL_COUNT)return;
     intc_m_disable_irq(s_irq[bus]);uint32_t pending=s_mcan[bus]->TXBRP;
     for(unsigned i=0;i<CANFD_TX_FIFO_DEPTH;i++)if((pending&(1u<<i))&&s_tx_axis[bus][i]==tag)mcan_cancel_tx_buf_send_request(s_mcan[bus],i);
     intc_m_enable_irq(s_irq[bus]);
 }
-void ethercat_canfd_cancel_axis(unsigned axis)
+void dcu_can_cancel_axis(unsigned axis)
 {
     if(axis<ENCOS_AXIS_COUNT)cancel_tag(axis/ENCOS_MOTORS_PER_CHANNEL,axis%ENCOS_MOTORS_PER_CHANNEL);
 }
-void ethercat_canfd_cancel_service(unsigned bus) { cancel_tag(bus,254); }
-bool ethercat_canfd_send(unsigned bus,const dcu_can_frame_t *f,unsigned axis)
+void dcu_can_cancel_service(unsigned bus) { cancel_tag(bus,254); }
+bool dcu_can_send(unsigned bus,const dcu_can_frame_t *f,unsigned axis)
 {
-    if(bus>=CANFD_GATEWAY_BUS_COUNT||f==NULL)return false;
+    if(bus>=ENCOS_CHANNEL_COUNT||f==NULL)return false;
     if(dcu_tx_inhibited())return false;
-    if(f->dlc>8||(f->flags&~26u)||((f->flags&16)&&!(f->flags&8))||f->id>((f->flags&2)?0x1FFFFFFFu:0x7FFu)||ethercat_canfd_bus_state(bus)==3)return false;
+    if(f->dlc>8||(f->flags&~26u)||((f->flags&16)&&!(f->flags&8))||f->id>((f->flags&2)?0x1FFFFFFFu:0x7FFu)||dcu_can_bus_state(bus)==3)return false;
     mcan_tx_frame_t tx={0};uint32_t index;
     tx.use_ext_id=(f->flags&2)!=0;if(tx.use_ext_id)tx.ext_id=f->id;else tx.std_id=f->id;
     tx.dlc=f->dlc;tx.canfd_frame=(f->flags&8)!=0;tx.bitrate_switch=(f->flags&16)!=0;memcpy(tx.data_8,f->data,f->dlc);

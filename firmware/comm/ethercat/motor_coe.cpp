@@ -2,7 +2,9 @@
 #include "motor_dictionary.hpp"
 #include "motor_pdo_layout.hpp"
 #include "motor_application.hpp"
-#include "ethercat_canfd_gateway.h"
+#include "motor_services.hpp"
+#include "motor_adapter.hpp"
+#include "realtime_port.h"
 extern "C" {
 #include "digital_io.h"
 #include "ecatslv.h"
@@ -13,6 +15,7 @@ extern "C" {
 using namespace dcu::ethercat::motor_dictionary;
 using namespace dcu::app::motor_application;
 namespace pdo_layout = dcu::ethercat::pdo_layout;
+namespace adapter = dcu::ethercat::motor_adapter;
 
 static bool preop()
 {
@@ -65,10 +68,10 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         if (bytes != f->bytes)
             return ABORTIDX_PARAM_LENGTH_ERROR;
         if (index >= 0x6200 && index < 0x6200 + ENCOS_AXIS_COUNT)
-            refresh_axis_feedback(index - 0x6200);
+            adapter::refresh_axis_feedback(index - 0x6200);
         else if (index >= 0x2400 && index < 0x2400 + 16 * ENCOS_AXIS_COUNT &&
                  (index - 0x2400) % 16 == 0)
-            refresh_axis_feedback((index - 0x2400) / 16);
+            adapter::refresh_axis_feedback((index - 0x2400) / 16);
         memcpy(data, o->data + f->offset, bytes);
         return 0;
     }
@@ -103,7 +106,7 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
     if (index >= 0x3000 && index <= 0x31B8 && transaction_busy((index - 0x3000) / 16))
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     memcpy(o->data + field->offset, data, bytes);
-    uint32_t now = ethercat_canfd_now_ms();
+    uint32_t now = dcu_time_now_ms();
     UINT8 result = 0;
     if (index == 0x2003) {
         mc_owner_t *v = object<mc_owner_t>(index);
@@ -111,15 +114,16 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
             result = ABORTIDX_VALUE_EXCEEDED;
             v->Result = RESULT_INVALID;
         } else {
-            owner_changed();
-            v->Owner = v->RequestedOwner;
-            v->Result = 0;
+            const bool accepted = set_owner(static_cast<Owner>(v->RequestedOwner));
+            v->Owner = dcu::app::motor_application::owner();
+            v->Result = accepted ? RESULT_OK : RESULT_STATE;
+            if (!accepted) result = ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
         }
     } else if (index == 0x2002) {
         mc_action_t *v = object<mc_action_t>(index);
         if (sub == 1) {
             v->Result = RESULT_BUSY;
-            if (apply_configuration()) {
+            if (adapter::apply_configuration()) {
                 v->AppliedGeneration = v->ApplyGeneration;
                 v->Result = 0;
                 object<mc_board_info_t>(0x2000)->ConfigGeneration = v->AppliedGeneration;
@@ -130,13 +134,11 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
             v->Result = RESULT_UNSUPPORTED;
     } else if (command && sub == 11) {
         unsigned a = (index - 0x2200) / 16;
-        mc_sdo_command_t *v = object<mc_sdo_command_t>(index);
-        if (v->CommitSeq != v->AcceptedSeq)
-            commit_sdo_command(a, *v, now);
+        adapter::commit_sdo_command(a, now);
     } else if (index >= 0x3000) {
         unsigned a = (index - 0x3000) / 16, part = (index - 0x3000) % 16;
         if ((part == 7 && sub == 3) || (part == 8 && sub == 4))
-            result = commit_parameter(a, part == 8, now, preop()) ? 0 : ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+            result = dcu::ethercat::motor_services::commit(a, part == 8, now, preop()) ? 0 : ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     }
     return result;
 }

@@ -45,8 +45,11 @@ class MotorApplicationTest(unittest.TestCase):
             str(ROOT / "firmware/app/motor/can_bus_scheduler.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_dictionary.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_coe.cpp"),
+            str(ROOT / "firmware/comm/ethercat/motor_adapter.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_pdo.cpp"),
+            str(ROOT / "firmware/comm/ethercat/motor_services.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
+            str(ROOT / "firmware/protocols/encos/encos_service.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),
             str(storage), "-lm", "-o", str(cls.executable),
@@ -60,6 +63,15 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_preparing_each_cycle_does_not_reuse_the_old_two_ms_cache(self):
         self.run_command([str(self.executable), "same_ms"])
+
+    def test_input_adapter_owns_the_candidate_until_the_worker_consumes_it(self):
+        self.run_command([str(self.executable), "input_staging"])
+
+    def test_application_uses_private_owner_mode_configuration_and_counters(self):
+        self.run_command([str(self.executable), "application_authority"])
+
+    def test_sdo_acceptance_does_not_trust_the_dictionary_sequence_mirror(self):
+        self.run_command([str(self.executable), "sdo_sequence_mirror"])
 
     def test_mapping_is_read_only_and_preserves_snapshot_freshness(self):
         self.run_command([str(self.executable), "immutable"])
@@ -112,6 +124,15 @@ class MotorApplicationTest(unittest.TestCase):
     def test_parameter_observations_update_axis_feedback(self):
         self.run_command([str(self.executable), "service_observations"])
 
+    def test_parameter_adapter_maps_all_supported_cache_fields_and_rejects_partial_updates(self):
+        self.run_command([str(self.executable), "service_cache"])
+
+    def test_kt_readback_and_encoder_queries_update_only_defined_cache_fields(self):
+        self.run_command([str(self.executable), "service_extended"])
+
+    def test_inflight_service_uses_captured_route_dialect_and_frame_format(self):
+        self.run_command([str(self.executable), "service_snapshot"])
+
     def test_maintenance_before_apply_matches_the_sent_can_id_and_holds_off(self):
         self.run_command([str(self.executable), "service_maintenance"])
 
@@ -126,6 +147,12 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_axis_stop_requires_a_new_permitted_clear_and_arm_edge(self):
         self.run_command([str(self.executable), "axis_rearm"])
+
+    def test_axis_startup_has_distinct_query_submission_feedback_and_running_phases(self):
+        self.run_command([str(self.executable), "axis_phases"])
+
+    def test_axis_startup_expiration_and_first_feedback_deadline_across_wrap(self):
+        self.run_command([str(self.executable), "axis_startup_deadlines"])
 
     def test_pending_configuration_changes_do_not_replace_applied_driver_settings(self):
         self.run_command([str(self.executable), "axis_config_snapshot"])

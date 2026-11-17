@@ -15,12 +15,11 @@ typedef struct {
     uint32_t published_epoch;
     uint32_t faults;
     uint32_t worker_max_us;
-    uint32_t worker_stack_free_words;
-    uint32_t fatal_line;
-    const char *fatal_file;
 } dcu_cycle_diagnostics_t;
 
-extern volatile dcu_cycle_diagnostics_t g_dcu_cycle_diagnostics;
+/* Copy on the sole SSC/worker task, not from an ISR or a concurrent task.
+ * A debugger may inspect the private instance only while the CPU is halted. */
+void dcu_cycle_read_diagnostics(dcu_cycle_diagnostics_t *snapshot);
 
 void dcu_cycle_init(void);
 void dcu_cycle_step(void);

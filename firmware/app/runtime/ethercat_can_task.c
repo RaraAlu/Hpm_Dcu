@@ -5,12 +5,19 @@
 #include "cfg/cycle_timer_map.h"
 #include "cfg/ethercat_can_task_config.h"
 #include "cycle_config.h"
-#include "ethercat_canfd_gateway.h"
+#include "can_transport.h"
+#include "device_config.h"
 #include "realtime_port.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
 static dcu_ethercat_can_task_state_t worker_task;
+static volatile dcu_rtos_diagnostics_t rtos_diagnostics;
+
+void dcu_rtos_read_diagnostics(dcu_rtos_diagnostics_t *snapshot)
+{
+    *snapshot = rtos_diagnostics;
+}
 
 _Static_assert(DCU_WORKER_TASK_PRIORITY < configMAX_PRIORITIES,
                "Worker task priority exceeds the FreeRTOS ready lists");
@@ -33,10 +40,10 @@ static void worker(void *argument)
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         dcu_cycle_step();
-        uint32_t now = ethercat_canfd_now_ms();
+        uint32_t now = dcu_time_now_ms();
         if ((uint32_t)(now - worker_task.last_stack_check_ms) >= DCU_STACK_CHECK_PERIOD_MS) {
             worker_task.last_stack_check_ms = now;
-            g_dcu_cycle_diagnostics.worker_stack_free_words = uxTaskGetStackHighWaterMark(NULL);
+            rtos_diagnostics.worker_stack_free_words = uxTaskGetStackHighWaterMark(NULL);
         }
     }
 }
@@ -50,11 +57,11 @@ void dcu_rtos_start(void)
 }
 void dcu_rtos_assert(const char *file, unsigned long line)
 {
-    g_dcu_cycle_diagnostics.fatal_file = file;
-    g_dcu_cycle_diagnostics.fatal_line = line;
     (void)disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    rtos_diagnostics.fatal_file = file;
+    rtos_diagnostics.fatal_line = line;
     dcu_tx_inhibit();
-    for (unsigned c = 0; c < CANFD_GATEWAY_BUS_COUNT; ++c) ethercat_canfd_cancel(c);
+    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) dcu_can_cancel(c);
     for (;;) __asm volatile("nop");
 }
 void vApplicationStackOverflowHook(TaskHandle_t task, char *name)

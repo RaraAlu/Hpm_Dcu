@@ -5,6 +5,10 @@
 typedef struct { struct { uint32_t CNT; } CHANNEL[4]; } test_gptmr_t;
 extern test_gptmr_t test_timebase;
 #define HPM_GPTMR1 (&test_timebase)
+typedef struct { volatile uint64_t MTIME; } test_machine_timer_t;
+extern test_machine_timer_t test_machine_timer;
+#define HPM_MCHTMR (&test_machine_timer)
+#define clock_mchtmr0 3U
 #define IRQn_ESC_SYNC0 10U
 #define IRQn_GPTMR2 11U
 #define clock_gptmr2 2U

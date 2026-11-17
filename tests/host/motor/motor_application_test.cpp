@@ -5,14 +5,17 @@
 #include <deque>
 #include <tuple>
 #include <vector>
-#include "motor_application.h"
 #include "motor_application.hpp"
 #include "axis_controller.hpp"
 #include "raw_can_gateway.hpp"
 #include "encos_parameter_transactions.hpp"
 #include "motor_dictionary.hpp"
 #include "motor_pdo_codec.hpp"
+#include "motor_axis_codec.hpp"
+#include "motor_adapter.hpp"
 #include "motor_ethercat.h"
+#include "can_transport.h"
+#include "realtime_port.h"
 extern "C" {
 #include "digital_io.h"
 #include "ecatslv.h"
@@ -28,6 +31,8 @@ TMC_ASSIGN gRxAssign{}, gTxAssign{};
 namespace parameters = dcu::app::parameters;
 namespace motor_cfg = dcu::app::config::motor_control;
 namespace motor_pdo = dcu::ethercat::motor_pdo;
+namespace axis_codec = dcu::ethercat::motor_axis_codec;
+namespace adapter = dcu::ethercat::motor_adapter;
 using namespace dcu::app::motor_application;
 using namespace dcu::ethercat::motor_dictionary;
 
@@ -39,12 +44,18 @@ static bool allow_send = true;
 static uint16_t bus_states[ENCOS_CHANNEL_COUNT];
 static unsigned service_cancellations[ENCOS_CHANNEL_COUNT];
 
-uint32_t ethercat_canfd_now_ms(void) { return test_ms; }
-uint32_t ethercat_canfd_now_us(void) { return test_us; }
-uint32_t ethercat_canfd_rx_drops(unsigned) { return 0; }
-uint32_t ethercat_canfd_completions(unsigned) { return 0; }
-uint16_t ethercat_canfd_bus_state(uint32_t bus) { return bus_states[bus]; }
-bool ethercat_canfd_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stamp)
+static void select_owner(Owner owner)
+{
+    uint16_t value = owner;
+    CHECK(MC_OD_Write(0x2003, 2, 1, &value, 0) == 0);
+}
+
+uint32_t dcu_time_now_ms(void) { return test_ms; }
+uint32_t dcu_time_now_us(void) { return test_us; }
+uint32_t dcu_can_rx_drops(unsigned) { return 0; }
+uint32_t dcu_can_completions(unsigned) { return 0; }
+uint16_t dcu_can_bus_state(uint32_t bus) { return bus_states[bus]; }
+bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stamp)
 {
     if (incoming[bus].empty()) return false;
     *frame = incoming[bus].front().first;
@@ -52,20 +63,20 @@ bool ethercat_canfd_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stam
     incoming[bus].pop_front();
     return true;
 }
-bool ethercat_canfd_pending(unsigned) { return false; }
-bool ethercat_canfd_axis_pending(unsigned) { return false; }
-unsigned ethercat_canfd_tx_free(unsigned) { return 8; }
-uint32_t ethercat_canfd_tx_progress(unsigned) { return 0; }
-void ethercat_canfd_cancel(unsigned) { ++cancellations; }
-void ethercat_canfd_cancel_axis(unsigned) { ++cancellations; }
-void ethercat_canfd_cancel_service(unsigned bus)
+bool dcu_can_pending(unsigned) { return false; }
+bool dcu_can_axis_pending(unsigned) { return false; }
+unsigned dcu_can_tx_free(unsigned) { return 8; }
+uint32_t dcu_can_tx_progress(unsigned) { return 0; }
+void dcu_can_cancel(unsigned) { ++cancellations; }
+void dcu_can_cancel_axis(unsigned) { ++cancellations; }
+void dcu_can_cancel_service(unsigned bus)
 {
     CHECK(bus < ENCOS_CHANNEL_COUNT);
     CHECK(parameters::inspect(bus).busy);
     ++service_cancellations[bus];
     ++cancellations;
 }
-bool ethercat_canfd_send(unsigned bus, const dcu_can_frame_t *frame, unsigned axis)
+bool dcu_can_send(unsigned bus, const dcu_can_frame_t *frame, unsigned axis)
 {
     if (!allow_send) return false;
     sent.emplace_back(bus, *frame, axis);
@@ -116,9 +127,14 @@ void configure_axis(unsigned a)
 }
 bool configure_controller(dcu::app::AxisController &controller, unsigned a, bool enabled = true, uint8_t format = 0)
 {
-    return controller.configure(enabled, format, *object<mc_routing_t>(axis_object_base(a)),
+    return controller.configure(enabled, format, axis_codec::configuration(*object<mc_routing_t>(axis_object_base(a)),
                                 *object<mc_basic_t>(axis_object_base(a) + 1),
-                                *object<mc_range_t>(axis_object_base(a) + 2));
+                                *object<mc_range_t>(axis_object_base(a) + 2)));
+}
+static bool same_feedback(const dcu::app::AxisFeedback &a, const dcu::app::AxisFeedback &b)
+{
+    const auto x = axis_codec::feedback(a), y = axis_codec::feedback(b);
+    return std::memcmp(&x, &y, sizeof(x)) == 0;
 }
 template <typename T> T read_sdo(uint16_t index, uint8_t sub)
 {
@@ -178,8 +194,8 @@ dcu_can_frame_t type1_feedback()
 void start_axis()
 {
     configure_axis(0);
-    CHECK(apply_configuration());
-    object<mc_owner_t>(0x2003)->Owner = OWNER_PDO;
+    CHECK(adapter::apply_configuration());
+    select_owner(OWNER_PDO);
     motor_control_operational(true);
     command_axis(0, false);
     command_axis(0);
@@ -261,7 +277,7 @@ struct RawPdoFixture {
     }
     void start()
     {
-        CHECK(apply_configuration());
+        CHECK(adapter::apply_configuration());
         motor_control_operational(true);
         submit(false);
         sent.clear();
@@ -300,6 +316,83 @@ int main(int argc, char **argv)
     motor_control_init();
     select_wire_profile(1);
     uint8_t first[1072], second[1072];
+    if (!std::strcmp(argv[1], "input_staging")) {
+        motor_control_operational(true);
+        uint8_t wire[784]{};
+        mc_board_rx_t board{};
+        board.InterfaceVersion = MC_INTERFACE_VERSION;
+        board.CycleSeq = 1;
+        board.CommandLeaseMs = 10;
+        std::memcpy(wire, &board, sizeof(board));
+        motor_control_output(wire);
+        std::memset(wire, 0xFF, sizeof(wire));
+        motor_control_process();
+        CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 0);
+        run_cycle();
+        CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 1);
+        CHECK(!std::memcmp(object<mc_board_rx_t>(0x7000), &board, sizeof(board)));
+        std::memset(wire, 0, sizeof(wire));
+        ++board.CycleSeq;
+        std::memcpy(wire, &board, sizeof(board));
+        motor_control_output(wire);
+        motor_control_process();
+        CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 1);
+        run_cycle();
+        CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 2);
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "application_authority")) {
+        start_axis();
+        const auto published = object<mc_board_tx_t>(0x6000)->PublishSeq;
+        const auto accepted = object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq;
+        object<mc_board_tx_t>(0x6000)->PublishSeq = UINT32_MAX;
+        object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq = 0x80000000;
+        object<mc_owner_t>(0x2003)->Owner = OWNER_NONE;
+        auto *config = object<mc_board_config_t>(0x2001);
+        config->ActivePdoProfile = 2;
+        config->MaxCommandLeaseMs = 1;
+        config->AxisConfiguredMask = 0;
+        object<mc_channel_config_t>(0x2010)->Role = 2;
+        CHECK(owner() == OWNER_PDO && mode() == OperatingMode::MotorWithRaw);
+        CHECK(!adapter::apply_configuration());
+        motor_control_prepare_input();
+        CHECK(object<mc_board_tx_t>(0x6000)->PublishSeq == published + 1);
+        CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == accepted);
+        command_axis(MC_AXIS_ARM | MC_AXIS_START_MOTION);
+        motor_control_prepare_input();
+        CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == accepted + 1);
+        CHECK(axis_feedback(0)->StatusWord & 8U);
+        CHECK(!axis_feedback(0)->BridgeFaultCode);
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "sdo_sequence_mirror")) {
+        configure_axis(0);
+        CHECK(adapter::apply_configuration());
+        select_owner(OWNER_SDO);
+        motor_control_operational(true);
+        command_axis(0, false);
+        command_axis(0);
+        auto *command = object<mc_sdo_command_t>(0x2200);
+        command->LeaseMs = 10;
+        command->Mode = 1;
+        command->AcceptedSeq = 1;
+        command->CommandResult = RESULT_INVALID;
+        uint32_t sequence = 1;
+        CHECK(MC_OD_Write(0x2200, 11, sizeof(sequence), reinterpret_cast<uint16_t *>(&sequence), 0) == 0);
+        CHECK(command->CommandResult == RESULT_OK && command->AcceptedSeq == 1);
+        command->ControlWord = MC_AXIS_ARM;
+        command->AcceptedSeq = UINT32_MAX;
+        ++sequence;
+        CHECK(MC_OD_Write(0x2200, 11, sizeof(sequence), reinterpret_cast<uint16_t *>(&sequence), 0) == 0);
+        CHECK(command->CommandResult == RESULT_OK && command->AcceptedSeq == 2);
+        command->ControlWord = MC_AXIS_STOP;
+        command->AcceptedSeq = 0;
+        CHECK(MC_OD_Write(0x2200, 11, sizeof(sequence), reinterpret_cast<uint16_t *>(&sequence), 0) == 0);
+        CHECK(command->CommandResult == RESULT_OK && command->AcceptedSeq == 2);
+        adapter::refresh_axis_feedback(0);
+        CHECK(axis_feedback(0)->StatusWord & MC_STATUS_ARMED_QUERY_ONLY);
+        return 0;
+    }
     if (!std::strcmp(argv[1], "transaction_deadlines")) {
         const auto dialect = dcu::app::ParameterDialect::EncosLegacy;
         CHECK(parameters::start_query(1, 7, 1, 1, 20, dialect, 1, 0));
@@ -332,7 +425,19 @@ int main(int argc, char **argv)
         transaction->Operation = 2;
         transaction->ParameterId = 3;
         transaction->RequestSeq = 1;
-        CHECK(parameters::commit(7, false, 500, true, false));
+        parameters::Request request{};
+        request.axis = 7;
+        request.dialect = dialect;
+        request.can_id = 1;
+        request.sequence = 1;
+        request.parameter = 3;
+        request.opcode = 2;
+        request.write_valid = true;
+        request.write.dlc = 4;
+        request.write.data[0] = 0xC0;
+        request.write.data[1] = 4;
+        request.write.data[3] = 50;
+        CHECK(parameters::commit(request, 500, true, false).accepted);
         parameters::mark_sent(1, 550);
         dcu_can_frame_t acknowledgement{};
         acknowledgement.id = 1;
@@ -360,7 +465,14 @@ int main(int argc, char **argv)
         transaction->Operation = 1;
         transaction->ParameterId = 0x101;
         transaction->RequestSeq = 9;
-        CHECK(parameters::commit(7, false, 0, true, false));
+        parameters::Request request{};
+        request.axis = 7;
+        request.dialect = dialect;
+        request.can_id = 1;
+        request.sequence = 9;
+        request.parameter = 0x101;
+        request.opcode = 1;
+        CHECK(parameters::commit(request, 0, true, false).accepted);
         parameters::abort_internal(1);
         CHECK(parameters::inspect(1).busy && service_cancellations[1] == 0);
         parameters::mark_sent(1, 2);
@@ -387,7 +499,8 @@ int main(int argc, char **argv)
             CHECK(axis_diagnostics(0)->LastServiceError == 123);
         }
         transaction->RequestSeq = 10;
-        CHECK(parameters::commit(7, false, 10, true, false));
+        request.sequence = 10;
+        CHECK(parameters::commit(request, 10, true, false).accepted);
         CHECK(parameters::start_query(2, 14, 1, 1, 10, dialect, 1, 0));
         parameters::reset_session(RESULT_STATE);
         CHECK(transaction->DoneSeq == 10 && transaction->Result == RESULT_STATE);
@@ -471,7 +584,7 @@ int main(int argc, char **argv)
         const unsigned axis = 7;
         auto *route = object<mc_routing_t>(axis_object_base(axis));
         route->ModelProfileId = 0x8000;
-        object<mc_owner_t>(0x2003)->Owner = OWNER_SDO;
+        select_owner(OWNER_SDO);
         auto *maintenance = object<mc_maintenance_t>(axis_object_base(axis) + 8);
         maintenance->Opcode = 3;
         uint32_t sequence = 1;
@@ -495,10 +608,147 @@ int main(int argc, char **argv)
         auto *route = object<mc_routing_t>(0x3000);
         route->ModelProfileId = 0x8000;
         route->CanId = 1;
-        object<mc_owner_t>(0x2003)->Owner = OWNER_SDO;
+        select_owner(OWNER_SDO);
         auto *transaction = object<mc_transaction_t>(0x3007);
         transaction->Operation = 2;
         uint32_t sequence = 1;
+        if (!std::strcmp(argv[1], "service_extended")) {
+            auto *kt = object<mc_kt_t>(0x3004);
+            auto *snapshot = object<mc_query_t>(0x3005);
+            kt->Group = 10;
+            kt->CalibrationMode = 1;
+            kt->Kt1Raw = 0; kt->Kt2Raw = 4095; kt->Kt3Raw = 0x123; kt->Kt4Raw = 0xABC;
+            transaction->ParameterId = 15;
+            CHECK(MC_OD_Write(0x3007, 3, sizeof(sequence), reinterpret_cast<uint16_t *>(&sequence), 0) == 0);
+            test_ms = 1;
+            run_cycle();
+            CHECK(parameters::inspect(0).sent && sent.size() == 1);
+            auto response = std::get<1>(sent.back());
+            CHECK(response.data[0] == 0xCA && response.data[1] == 16 && response.dlc == 8);
+            response.data[0] = 0xEE;
+            response.data[1] = 0x2A;
+            deliver(0, response);
+            CHECK(transaction->Result == RESULT_BUSY && transaction->DoneSeq == 0);
+            ++test_ms;
+            run_cycle();
+            CHECK(parameters::inspect(0).sent && sent.size() == 2);
+            CHECK(std::get<1>(sent.back()).data[0] == 0xEA && std::get<1>(sent.back()).data[1] == 36);
+            kt->Group = 1;
+            kt->Kt1Raw = kt->Kt2Raw = kt->Kt3Raw = kt->Kt4Raw = 99;
+            deliver(0, response);
+            CHECK(transaction->Result == RESULT_OK && transaction->DoneSeq == sequence);
+            CHECK(kt->Group == 10 && kt->CalibrationMode == 1);
+            CHECK(kt->Kt1Raw == 0 && kt->Kt2Raw == 4095 && kt->Kt3Raw == 0x123 && kt->Kt4Raw == 0xABC);
+            CHECK(snapshot->SnapshotSeq == 1 && transaction->RawResponse[1] == 0x2A);
+            transaction->Operation = 1;
+            transaction->ParameterId = 0x127;
+            ++sequence;
+            CHECK(MC_OD_Write(0x3007, 3, sizeof(sequence), reinterpret_cast<uint16_t *>(&sequence), 0) == 0);
+            ++test_ms;
+            run_cycle();
+            response.dlc = 7;
+            response.data[0] = 0xA0; response.data[1] = 39; response.data[2] = 2;
+            response.data[3] = 0xFE; response.data[4] = 0xDC;
+            response.data[5] = 0x12; response.data[6] = 0x34;
+            deliver(0, response);
+            CHECK(snapshot->SnapshotSeq == 1 && !(snapshot->ValidBits & 0x1C0));
+            response.data[2] = 1;
+            deliver(0, response);
+            CHECK(transaction->Result == RESULT_OK && transaction->DoneSeq == sequence);
+            CHECK(snapshot->SnapshotSeq == 2 && (snapshot->ValidBits & 0x1C0) == 0x1C0);
+            CHECK(snapshot->EncoderOutputEnabled == 1 && snapshot->EncoderOriginalRaw == -292);
+            CHECK(snapshot->EncoderCalibratedRaw == 0x1234);
+            return 0;
+        }
+        if (!std::strcmp(argv[1], "service_snapshot")) {
+            transaction->Operation = 1;
+            transaction->ParameterId = 0x101;
+            CHECK(MC_OD_Write(0x3007, 3, sizeof(sequence), reinterpret_cast<uint16_t *>(&sequence), 0) == 0);
+            test_ms = 1;
+            run_cycle();
+            CHECK(parameters::inspect(0).sent);
+            route->CanId = 2;
+            route->ModelProfileId = 0;
+            object<mc_channel_config_t>(0x2010)->FrameFormat = 1;
+            dcu_can_frame_t response{};
+            response.id = 1;
+            response.dlc = 6;
+            response.data[0] = 0xA0;
+            response.data[1] = 1;
+            response.data[2] = 0x3F;
+            response.data[3] = 0x80;
+            deliver(0, response);
+            CHECK(transaction->DoneSeq == sequence && transaction->Result == RESULT_OK);
+            CHECK(object<mc_query_t>(0x3005)->PositionDeg == 1.0F);
+            CHECK(read_sdo<int32_t>(0x6200, 4) == 17453);
+            return 0;
+        }
+        if (!std::strcmp(argv[1], "service_cache")) {
+            transaction->Operation = 1;
+            const auto begin_query = [&](uint8_t code) {
+                transaction->ParameterId = 0x100 + code;
+                ++sequence;
+                CHECK(MC_OD_Write(0x3007, 3, sizeof(sequence), reinterpret_cast<uint16_t *>(&sequence), 0) == 0);
+                ++test_ms;
+                run_cycle();
+                CHECK(parameters::inspect(0).sent);
+            };
+            dcu_can_frame_t response{};
+            response.id = 1;
+            response.data[0] = 0xA0;
+            for (uint8_t code : {5, 22, 23, 24, 25, 26, 27, 28, 31, 32, 33, 34, 35, 37, 38}) {
+                begin_query(code);
+                const bool pair = (code >= 23 && code <= 28) || (code >= 32 && code <= 34);
+                const bool choice = code == 35 || code == 37;
+                response.dlc = pair ? 6 : choice ? 3 : 4;
+                response.data[1] = code;
+                response.data[2] = choice ? 1 : 0xFE;
+                response.data[3] = 0xDC;
+                response.data[4] = 0x12;
+                response.data[5] = 0x34;
+                deliver(0, response);
+                CHECK(transaction->DoneSeq == sequence && transaction->Result == RESULT_OK);
+                if (pair) {
+                    const uint16_t index = code <= 28 ? 0x3002 : 0x3003;
+                    const uint8_t sub = 1 + 2 * (code <= 28 ? code - 23 : code - 32);
+                    CHECK(read_sdo<uint16_t>(index, sub) == 0xFEDC);
+                    CHECK(read_sdo<uint16_t>(index, sub + 1) == 0x1234);
+                } else if (code == 35) {
+                    CHECK(object<mc_kt_t>(0x3004)->CalibrationMode == 1);
+                } else if (code == 37) {
+                    CHECK(object<mc_query_t>(0x3005)->BrakeState == 1);
+                } else {
+                    const uint8_t sub = code == 5 ? 1 : code == 22 ? 3 : code == 31 ? 4 : 5;
+                    CHECK(read_sdo<uint16_t>(0x3001, sub) == 0xFEDC);
+                }
+            }
+            begin_query(29);
+            auto *identity = object<mc_identity_t>(0x3006);
+            for (uint8_t part : {2, 1, 3}) {
+                response.dlc = 7;
+                response.data[1] = 29;
+                response.data[2] = part;
+                response.data[3] = response.data[4] = response.data[5] = response.data[6] = part;
+                deliver(0, response);
+                if (part != 3) CHECK(!identity->UuidPart1 && parameters::inspect(0).busy);
+            }
+            CHECK(identity->UuidPart1 == 0x01010101 && identity->UuidPart2 == 0x02020202 && identity->UuidPart3 == 0x03030303);
+            begin_query(30);
+            response.dlc = 8; response.data[1] = 30;
+            for (uint8_t i = 0; i < 6; ++i) response.data[i + 2] = i + 1;
+            deliver(0, response);
+            for (uint8_t i = 0; i < 6; ++i) CHECK(read_sdo<uint8_t>(0x3006, i + 4) == i + 1);
+            auto *cache = object<mc_query_t>(0x3005);
+            cache->PhaseCurrentA = 1;
+            const auto before = *cache;
+            begin_query(3);
+            response.dlc = 6; response.data[1] = 3;
+            response.data[2] = 0x44; response.data[3] = 0x7A; response.data[4] = response.data[5] = 0;
+            deliver(0, response);
+            CHECK(!std::memcmp(cache, &before, sizeof(before)));
+            CHECK(parameters::inspect(0).busy && transaction->Result == RESULT_BUSY);
+            return 0;
+        }
         if (!std::strcmp(argv[1], "service_observations")) {
             const int32_t expected[] = {17453, 104719, 100, 1000};
             for (unsigned k = 1; k <= 4; ++k) {
@@ -613,7 +863,7 @@ int main(int argc, char **argv)
     }
     if (!std::strcmp(argv[1], "raw_queue")) {
         object<mc_channel_config_t>(0x2010)->Role = 2;
-        CHECK(apply_configuration());
+        CHECK(adapter::apply_configuration());
         dcu_can_frame_t frame{};
         for (unsigned i = 0; i < motor_cfg::raw_queue_capacity + 3; ++i) {
             frame.id = i;
@@ -621,7 +871,9 @@ int main(int argc, char **argv)
         }
         run_cycle();
         run_cycle();
-        CHECK(prepare_publication().raw_drops[0] == 4);
+        Publication snapshot{};
+        prepare_publication(snapshot);
+        CHECK(snapshot.channels[0].raw_drops == 4);
         for (unsigned i = 0; i < motor_cfg::raw_queue_capacity - 1; ++i) {
             CHECK(take_raw_frame(0, frame) && frame.id == i);
         }
@@ -715,8 +967,8 @@ int main(int argc, char **argv)
     }
     if (!std::strcmp(argv[1], "accepted_sdo")) {
         configure_axis(0);
-        CHECK(apply_configuration());
-        object<mc_owner_t>(0x2003)->Owner = OWNER_SDO;
+        CHECK(adapter::apply_configuration());
+        select_owner(OWNER_SDO);
         motor_control_operational(true);
         command_axis(0, false);
         command_axis(0);
@@ -797,23 +1049,113 @@ int main(int argc, char **argv)
         first_axis.initialize(0);
         second_axis.initialize(7);
         CHECK(configure_controller(first_axis, 0) && configure_controller(second_axis, 7));
-        mc_axis_rx_t intent{};
+        dcu::motor::Command intent{};
         CHECK(first_axis.accept(intent, true, 0) && second_axis.accept(intent, true, 0));
-        intent.ControlWord = MC_AXIS_ARM;
+        intent.control_bits = MC_AXIS_ARM;
         CHECK(first_axis.accept(intent, true, 0) && second_axis.accept(intent, true, 0));
         first_axis.stop(3);
-        mc_axis_tx_t first_feedback{}, second_feedback{};
-        mc_diag_t first_diagnostics{}, second_diagnostics{};
+        dcu::app::AxisFeedback first_feedback{}, second_feedback{};
+        dcu::app::AxisDiagnostics first_diagnostics{}, second_diagnostics{};
         first_axis.read_feedback(0, 20, first_feedback, first_diagnostics);
         second_axis.read_feedback(0, 20, second_feedback, second_diagnostics);
-        CHECK(!(first_feedback.StatusWord & MC_STATUS_ARMED_QUERY_ONLY));
-        CHECK(second_feedback.StatusWord & MC_STATUS_ARMED_QUERY_ONLY);
-        CHECK(first_feedback.BridgeFaultCode == 3 && !second_feedback.BridgeFaultCode);
+        CHECK(!(first_feedback.status_word & MC_STATUS_ARMED_QUERY_ONLY));
+        CHECK(second_feedback.status_word & MC_STATUS_ARMED_QUERY_ONLY);
+        CHECK(first_feedback.bridge_fault == 3 && !second_feedback.bridge_fault);
         CHECK(configure_controller(first_axis, 0, false));
         CHECK(!first_axis.configured() && second_axis.configured());
         CHECK(!configure_controller(first_axis, 0, true, 2));
         CHECK(!first_axis.configured());
-        CHECK(!commit_parameter(ENCOS_AXIS_COUNT, false, 0, true));
+        parameters::Request invalid{};
+        invalid.axis = ENCOS_AXIS_COUNT;
+        CHECK(!commit_parameter(invalid, 0, true).accepted);
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "axis_phases")) {
+        configure_axis(0);
+        dcu::app::AxisController axis;
+        axis.initialize(0);
+        CHECK(configure_controller(axis, 0));
+        dcu::motor::Command command{};
+        command.mode = dcu::motor::ControlMode::Velocity;
+        command.current_limit_dA = 50;
+        dcu::app::AxisFeedback feedback{};
+        dcu::app::AxisDiagnostics diagnostics{};
+        dcu_can_frame_t frame{};
+        const auto status = [&]() {
+            axis.read_feedback(1, 20, feedback, diagnostics);
+            return feedback.status_word;
+        };
+        CHECK(!axis.active() && !axis.control_sent() && !axis.encode_control(frame));
+        axis.control_submitted(1);
+        CHECK(!axis.control_sent() && !(status() & MC_STATUS_ARMED_QUERY_ONLY));
+        command.control_bits = MC_AXIS_ARM;
+        CHECK(!axis.accept(command, true, 1));
+        command.control_bits = 0;
+        CHECK(axis.accept(command, true, 1));
+        command.control_bits = MC_AXIS_ARM | MC_AXIS_START_MOTION;
+        CHECK(!axis.accept(command, true, 1)); // ARM and StartMotion cannot share an edge.
+        command.control_bits = 0;
+        CHECK(axis.accept(command, true, 1));
+        command.control_bits = MC_AXIS_ARM;
+        CHECK(axis.accept(command, true, 1));
+        CHECK(!axis.active() && !axis.control_sent() && (status() & MC_STATUS_ARMED_QUERY_ONLY));
+        for (uint8_t code = 1; code <= 3; ++code) query_observation(axis, code, 0);
+        command.control_bits |= MC_AXIS_START_MOTION;
+        CHECK(axis.accept(command, true, 1));
+        CHECK(axis.active() && !axis.control_sent() && axis.encode_control(frame));
+        axis.consume_feedback(type1_feedback(), 1, 1, dcu::app::ParameterDialect::None);
+        CHECK(!(status() & 8U)); // No first submission yet: unsolicited Type-1 cannot start motion.
+        axis.check_timeouts(21, false, 20);
+        CHECK(axis.active() && !axis.control_sent());
+        axis.control_submitted(21);
+        CHECK(axis.control_sent() && feedback.mode == dcu::motor::ControlMode::Position);
+        axis.check_timeouts(40, false, 20);
+        CHECK(axis.active());
+        axis.consume_feedback(type1_feedback(), 40, 40, dcu::app::ParameterDialect::None);
+        axis.control_submitted(40);
+        axis.read_feedback(40, 20, feedback, diagnostics);
+        CHECK((feedback.status_word & 8U) && !(feedback.status_word & MC_STATUS_ARMED_QUERY_ONLY));
+        CHECK(feedback.mode == dcu::motor::ControlMode::Velocity);
+        command.control_bits = MC_AXIS_ARM;
+        CHECK(axis.accept(command, true, 40));
+        CHECK(!axis.active() && !axis.control_sent() && (status() & MC_STATUS_ARMED_QUERY_ONLY));
+        command.control_bits |= MC_AXIS_START_MOTION;
+        CHECK(!axis.accept(command, true, 40)); // Running cleared the old query sample validity.
+        axis.stop(0);
+        CHECK(!axis.encode_control(frame));
+        CHECK(!(status() & (8U | MC_STATUS_ARMED_QUERY_ONLY)));
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "axis_startup_deadlines")) {
+        configure_axis(0);
+        dcu::app::AxisController axis;
+        axis.initialize(0);
+        dcu::app::AxisFeedback feedback{};
+        dcu::app::AxisDiagnostics diagnostics{};
+        for (unsigned variant = 0; variant < 2; ++variant) {
+            CHECK(configure_controller(axis, 0));
+            dcu::motor::Command command{};
+            command.mode = dcu::motor::ControlMode::Position;
+            command.current_limit_dA = 50;
+            CHECK(axis.accept(command, true, 1));
+            command.control_bits = MC_AXIS_ARM;
+            CHECK(axis.accept(command, true, 1));
+            for (uint8_t code = 1; code <= 3; ++code) query_observation(axis, code, 0);
+            command.control_bits |= MC_AXIS_START_MOTION;
+            CHECK(axis.accept(command, true, 1));
+            if (variant == 0) {
+                axis.check_startup(1001);
+            } else {
+                axis.control_submitted(UINT32_MAX - 5);
+                axis.check_timeouts(13, false, 20);
+                CHECK(axis.active());
+                axis.check_timeouts(14, false, 20);
+            }
+            axis.read_feedback(1001, 20, feedback, diagnostics);
+            CHECK(!axis.active() && !axis.control_sent());
+            CHECK(feedback.bridge_fault == (variant == 0 ? 8 : 4));
+            CHECK(!axis.accept(command, true, 1001));
+        }
         return 0;
     }
     if (!std::strcmp(argv[1], "axis_rearm")) {
@@ -821,28 +1163,28 @@ int main(int argc, char **argv)
         dcu::app::AxisController axis;
         axis.initialize(0);
         CHECK(configure_controller(axis, 0));
-        mc_axis_rx_t command{};
+        dcu::motor::Command command{};
         CHECK(axis.accept(command, true, 0));
-        command.ControlWord = MC_AXIS_ARM;
+        command.control_bits = MC_AXIS_ARM;
         CHECK(axis.accept(command, true, 0));
         axis.stop(0);
         CHECK(!axis.accept(command, true, 0));
-        command.ControlWord = MC_AXIS_STOP;
+        command.control_bits = MC_AXIS_STOP;
         CHECK(axis.accept(command, true, 0));
-        command.ControlWord = MC_AXIS_ARM;
+        command.control_bits = MC_AXIS_ARM;
         CHECK(!axis.accept(command, true, 0));
-        command.ControlWord = 0;
+        command.control_bits = 0;
         CHECK(axis.accept(command, false, 0));
-        command.ControlWord = MC_AXIS_ARM;
+        command.control_bits = MC_AXIS_ARM;
         CHECK(!axis.accept(command, true, 0));
-        command.ControlWord = 0;
+        command.control_bits = 0;
         CHECK(axis.accept(command, true, 0));
-        command.ControlWord = MC_AXIS_ARM;
+        command.control_bits = MC_AXIS_ARM;
         CHECK(axis.accept(command, true, 0));
-        mc_axis_tx_t feedback{};
-        mc_diag_t diagnostics{};
+        dcu::app::AxisFeedback feedback{};
+        dcu::app::AxisDiagnostics diagnostics{};
         axis.read_feedback(0, 20, feedback, diagnostics);
-        CHECK(feedback.StatusWord & MC_STATUS_ARMED_QUERY_ONLY);
+        CHECK(feedback.status_word & MC_STATUS_ARMED_QUERY_ONLY);
         CHECK(!axis.active() && !axis.control_sent());
         return 0;
     }
@@ -861,19 +1203,19 @@ int main(int argc, char **argv)
         response.data[2] = 0x3F;
         response.data[3] = 0x80;
         axis.consume_feedback(response, 1, 1, dcu::app::ParameterDialect::EncosLegacy);
-        mc_axis_tx_t feedback{};
-        mc_diag_t diagnostics{};
+        dcu::app::AxisFeedback feedback{};
+        dcu::app::AxisDiagnostics diagnostics{};
         axis.read_feedback(1, 20, feedback, diagnostics);
-        const auto torque = feedback.EstimatedTorque;
-        CHECK(torque > 0 && feedback.ActualCurrent == 100);
+        const auto torque = feedback.sample.torque_mNm;
+        CHECK(torque > 0 && feedback.sample.current_cA == 100);
         object<mc_basic_t>(0x3001)->TorqueConstantRaw = 100;
         *object<mc_range_t>(0x3002) = {};
         object<mc_routing_t>(0x3000)->CanId = 2;
         axis.read_feedback(1, 20, feedback, diagnostics);
-        CHECK(feedback.EstimatedTorque == torque);
+        CHECK(feedback.sample.torque_mNm == torque);
         CHECK(axis.matches(1) && !axis.matches(2));
         axis.read_feedback(2 + motor_cfg::query_current_ms, 20, feedback, diagnostics);
-        CHECK(feedback.EstimatedTorque == torque && !(feedback.ValidFlags & 8U));
+        CHECK(feedback.sample.torque_mNm == torque && !(feedback.sample.valid_fields & 8U));
         CHECK(!configure_controller(axis, 0));
         CHECK(!axis.configured());
         return 0;
@@ -883,42 +1225,42 @@ int main(int argc, char **argv)
         dcu::app::AxisController axis;
         axis.initialize(0);
         CHECK(configure_controller(axis, 0));
-        mc_axis_rx_t command{};
-        command.Mode = 1;
-        command.CurrentLimit = 50;
+        dcu::motor::Command command{};
+        command.mode = dcu::motor::ControlMode::Position;
+        command.current_limit_dA = 50;
         CHECK(axis.accept(command, true, 1));
-        command.ControlWord = MC_AXIS_ARM;
+        command.control_bits = MC_AXIS_ARM;
         CHECK(axis.accept(command, true, 1));
         query_observation(axis, 1, 0x3F800000);
         query_observation(axis, 2, 0);
         query_observation(axis, 3, 0);
-        mc_axis_tx_t feedback{};
-        mc_diag_t diagnostics{};
+        dcu::app::AxisFeedback feedback{};
+        dcu::app::AxisDiagnostics diagnostics{};
         CHECK(axis.read_feedback(1, 20, feedback, diagnostics).online);
-        CHECK(diagnostics.QueriedPosition == 17453 && !diagnostics.QueriedVelocity);
+        CHECK(diagnostics.queried_position_urad == 17453 && !diagnostics.queried_velocity_urad_s);
         CHECK(axis.query_ready(1));
         axis_feedback(0)->ActualCurrent = INT16_MAX;
         axis_feedback(0)->MotorFaultRaw = 7;
         axis_feedback(0)->BridgeFaultCode = 9;
         axis_diagnostics(0)->QueriedPosition = INT32_MAX;
         axis_diagnostics(0)->QueriedVelocity = INT32_MAX;
-        feedback = *axis_feedback(0);
-        diagnostics = *axis_diagnostics(0);
+        feedback.sample.current_cA = INT16_MAX;
+        diagnostics.queried_position_urad = INT32_MAX;
         CHECK(axis.query_ready(1));
-        command.ControlWord |= MC_AXIS_START_MOTION;
-        command.TargetPosition = 17453;
+        command.control_bits |= MC_AXIS_START_MOTION;
+        command.position_urad = 17453;
         CHECK(axis.accept(command, true, 1) && axis.active());
         axis.stop(3);
         axis_feedback(0)->BridgeFaultCode = 0;
         axis_diagnostics(0)->ActiveFaultBits = 0;
         CHECK(!axis.query_ready(1));
         CHECK(axis.read_feedback(1, 20, feedback, diagnostics).fault);
-        CHECK(feedback.BridgeFaultCode == 3 && diagnostics.ActiveFaultBits == (1U << 3));
-        CHECK(diagnostics.QueriedPosition == 17453 && !diagnostics.QueriedVelocity);
-        command.ControlWord = MC_AXIS_RESET;
+        CHECK(feedback.bridge_fault == 3 && diagnostics.active_fault_bits == (1U << 3));
+        CHECK(diagnostics.queried_position_urad == 17453 && !diagnostics.queried_velocity_urad_s);
+        command.control_bits = MC_AXIS_RESET;
         CHECK(axis.accept(command, true, 1));
         CHECK(!axis.read_feedback(1, 20, feedback, diagnostics).fault);
-        CHECK(!feedback.BridgeFaultCode && !diagnostics.ActiveFaultBits);
+        CHECK(!feedback.bridge_fault && !diagnostics.active_fault_bits);
         CHECK(axis.query_ready(1));
         return 0;
     }
@@ -928,41 +1270,41 @@ int main(int argc, char **argv)
         dcu::app::AxisController axis;
         axis.initialize(0);
         CHECK(configure_controller(axis, 0));
-        mc_axis_rx_t command{};
-        command.Mode = 1;
-        command.CurrentLimit = 50;
+        dcu::motor::Command command{};
+        command.mode = dcu::motor::ControlMode::Position;
+        command.current_limit_dA = 50;
         CHECK(axis.accept(command, true, 1));
-        command.ControlWord = MC_AXIS_ARM;
+        command.control_bits = MC_AXIS_ARM;
         CHECK(axis.accept(command, true, 1));
         for (uint8_t code = 1; code <= 4; ++code) query_observation(axis, code, 0);
-        command.ControlWord |= MC_AXIS_START_MOTION;
+        command.control_bits |= MC_AXIS_START_MOTION;
         CHECK(axis.accept(command, true, 1));
         axis.control_submitted(1);
         axis.consume_feedback(type1_feedback(), 1, 1, dcu::app::ParameterDialect::None);
-        mc_axis_tx_t feedback{}, repeated{};
-        mc_diag_t diagnostics{};
-        diagnostics.TxDropCount = 88;
-        diagnostics.LastServiceError = 123;
+        dcu::app::AxisFeedback feedback{}, repeated{};
+        dcu::app::AxisDiagnostics diagnostics{};
+        diagnostics.tx_drop_count = 88;
+        axis.record_tx_drop();
         const dcu::app::AxisController &view = axis;
         view.read_feedback(1, 20, feedback, diagnostics);
         view.read_feedback(1, 20, repeated, diagnostics);
-        CHECK(!std::memcmp(&feedback, &repeated, sizeof(feedback)));
-        CHECK((feedback.StatusWord & (16U | 1024U)) == (16U | 1024U));
-        CHECK(diagnostics.TxDropCount == 88 && diagnostics.LastServiceError == 123);
-        CHECK(diagnostics.TxEnqueueCount == 1 && diagnostics.RxValidCount == 5);
+        CHECK(same_feedback(feedback, repeated));
+        CHECK((feedback.status_word & (16U | 1024U)) == (16U | 1024U));
+        CHECK(diagnostics.tx_drop_count == 1);
+        CHECK(diagnostics.tx_enqueue_count == 1 && diagnostics.rx_valid_count == 5);
         axis.acknowledge_publication();
         view.read_feedback(1, 20, repeated, diagnostics);
-        CHECK(!(repeated.StatusWord & (16U | 1024U)));
-        CHECK((feedback.StatusWord & (16U | 1024U)) == (16U | 1024U));
-        feedback.StatusWord &= ~(16U | 1024U);
-        CHECK(!std::memcmp(&feedback, &repeated, sizeof(feedback)));
+        CHECK(!(repeated.status_word & (16U | 1024U)));
+        CHECK((feedback.status_word & (16U | 1024U)) == (16U | 1024U));
+        feedback.status_word &= ~(16U | 1024U);
+        CHECK(same_feedback(feedback, repeated));
         view.read_feedback(21, 20, repeated, diagnostics);
-        CHECK(!(repeated.ValidFlags & 63U));
+        CHECK(!(repeated.sample.valid_fields & 63U));
         view.read_feedback(21, 30, repeated, diagnostics);
-        CHECK((repeated.ValidFlags & 7U) == 7U);
+        CHECK((repeated.sample.valid_fields & 7U) == 7U);
         axis.consume_feedback(type1_feedback(), 22, 22, dcu::app::ParameterDialect::None);
         view.read_feedback(22, 20, repeated, diagnostics);
-        CHECK((repeated.StatusWord & (16U | 1024U)) == 16U);
+        CHECK((repeated.status_word & (16U | 1024U)) == 16U);
         return 0;
     }
     if (!std::strcmp(argv[1], "axis_history")) {
@@ -970,17 +1312,17 @@ int main(int argc, char **argv)
         dcu::app::AxisController axis;
         axis.initialize(0);
         CHECK(configure_controller(axis, 0));
-        mc_axis_rx_t command{};
-        command.Mode = 1;
-        command.CurrentLimit = 50;
-        command.TargetPosition = 17453;
+        dcu::motor::Command command{};
+        command.mode = dcu::motor::ControlMode::Position;
+        command.current_limit_dA = 50;
+        command.position_urad = 17453;
         CHECK(axis.accept(command, true, 1));
-        command.ControlWord = MC_AXIS_ARM;
+        command.control_bits = MC_AXIS_ARM;
         CHECK(axis.accept(command, true, 1));
         query_observation(axis, 1, 0x3F800000);
         query_observation(axis, 2, 0);
         query_observation(axis, 3, 0);
-        command.ControlWord |= MC_AXIS_START_MOTION;
+        command.control_bits |= MC_AXIS_START_MOTION;
         CHECK(axis.accept(command, true, 1));
         axis.control_submitted(1);
         dcu_can_frame_t invalid{};
@@ -988,18 +1330,18 @@ int main(int argc, char **argv)
         invalid.dlc = 8;
         axis.consume_feedback(invalid, 1, 1, dcu::app::ParameterDialect::None);
         axis.stop(4);
-        mc_axis_tx_t feedback{};
-        mc_diag_t diagnostics{};
+        dcu::app::AxisFeedback feedback{};
+        dcu::app::AxisDiagnostics diagnostics{};
         axis.read_feedback(1, 20, feedback, diagnostics);
-        CHECK(diagnostics.TxEnqueueCount == 1 && diagnostics.RxValidCount == 3);
-        CHECK(diagnostics.ProtocolErrorCount == 1 && diagnostics.ActiveFaultBits == (1U << 4));
+        CHECK(diagnostics.tx_enqueue_count == 1 && diagnostics.rx_valid_count == 3);
+        CHECK(diagnostics.protocol_error_count == 1 && diagnostics.active_fault_bits == (1U << 4));
         CHECK(configure_controller(axis, 0));
         axis.read_feedback(2, 20, feedback, diagnostics);
-        CHECK(diagnostics.TxEnqueueCount == 1 && diagnostics.RxValidCount == 3);
-        CHECK(diagnostics.ProtocolErrorCount == 1 && diagnostics.ActiveFaultBits == (1U << 4));
-        CHECK(diagnostics.QueriedPosition == 17453 && diagnostics.PositionQueryAgeUs == UINT32_MAX);
-        CHECK(!feedback.BridgeFaultCode && !feedback.ActualPosition && !feedback.ValidFlags);
-        CHECK(feedback.FeedbackAgeMs == UINT16_MAX && feedback.PowerAgeMs == UINT16_MAX);
+        CHECK(diagnostics.tx_enqueue_count == 1 && diagnostics.rx_valid_count == 3);
+        CHECK(diagnostics.protocol_error_count == 1 && diagnostics.active_fault_bits == (1U << 4));
+        CHECK(diagnostics.queried_position_urad == 17453 && diagnostics.position_query_age_us == UINT32_MAX);
+        CHECK(!feedback.bridge_fault && !feedback.sample.position_urad && !feedback.sample.valid_fields);
+        CHECK(feedback.feedback_age_ms == UINT16_MAX && feedback.power_age_ms == UINT16_MAX);
         CHECK(!axis.query_ready(2));
         return 0;
     }
@@ -1116,7 +1458,7 @@ int main(int argc, char **argv)
         motor_control_operational(false);
         channel->Role = 3;
         channel->RawRateLimit = 8;
-        CHECK(apply_configuration());
+        CHECK(adapter::apply_configuration());
         motor_control_operational(true);
         input.submit(false);
         input.sideband.Channel0 = 0;
@@ -1180,7 +1522,13 @@ int main(int argc, char **argv)
         auto *maintenance = object<mc_maintenance_t>(0x3008);
         maintenance->Opcode = 3;
         maintenance->RequestSeq = 1;
-        CHECK(parameters::commit(0, true, 0, true, false));
+        parameters::Request request{};
+        request.dialect = dcu::app::ParameterDialect::EncosLegacy;
+        request.can_id = 1;
+        request.sequence = 1;
+        request.maintenance = true;
+        request.opcode = 3;
+        CHECK(parameters::commit(request, 0, true, false).accepted);
         parameters::mark_sent(0, 1);
         parameters::cancel(0, RESULT_IO);
         CHECK(!parameters::inspect(0).busy && !parameters::available(0, 500));
@@ -1194,7 +1542,8 @@ int main(int argc, char **argv)
         input.submit();
         CHECK(sent.size() == 1);
         maintenance->RequestSeq = 2;
-        CHECK(parameters::commit(0, true, 501, true, false));
+        request.sequence = 2;
+        CHECK(parameters::commit(request, 501, true, false).accepted);
         parameters::mark_sent(0, 501);
         motor_control_operational(false);
         CHECK(parameters::available(0, 502));
@@ -1331,8 +1680,8 @@ int main(int argc, char **argv)
     }
     if (!std::strcmp(argv[1], "startup_gate")) {
         configure_axis(0);
-        CHECK(apply_configuration());
-        object<mc_owner_t>(0x2003)->Owner = OWNER_PDO;
+        CHECK(adapter::apply_configuration());
+        select_owner(OWNER_PDO);
         motor_control_operational(true);
         command_axis(0, false);
         command_axis(0);

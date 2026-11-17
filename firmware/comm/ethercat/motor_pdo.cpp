@@ -3,7 +3,9 @@
 #include "motor_application.hpp"
 #include "motor_dictionary.hpp"
 #include "motor_pdo_codec.hpp"
+#include "motor_axis_codec.hpp"
 #include "pdo_pipeline.h"
+#include "can_transport.h"
 extern "C" {
 #include "digital_io.h"
 #include "ecatslv.h"
@@ -17,10 +19,53 @@ static_assert(pdo_layout::max_output_bytes <= PDO_PIPELINE_RX_MAX, "PDO staging 
 
 namespace {
 dcu::ethercat::motor_pdo::detail::PublicationState publication;
+
+void publish_mirrors(const dcu::app::motor_application::Publication &snapshot)
+{
+    *object<mc_board_tx_t>(0x6000) = {snapshot.sequence, snapshot.accepted_cycle_sequence, snapshot.board_status,
+        snapshot.online_channels, snapshot.fault_channels, snapshot.online_axes, snapshot.fault_axes,
+        snapshot.rx_drops, snapshot.tx_drops, 0};
+    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
+        const auto &channel = snapshot.channels[c];
+        *object<mc_channel_tx_t>(0x6100 + c) = {channel.status, channel.online_motors, channel.fault_motors,
+            static_cast<uint16_t>(channel.rx_drops > UINT16_MAX ? UINT16_MAX : channel.rx_drops),
+            static_cast<uint16_t>(channel.tx_drops > UINT16_MAX ? UINT16_MAX : channel.tx_drops)};
+    }
+    for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a) {
+        *axis_feedback(a) = dcu::ethercat::motor_axis_codec::feedback(snapshot.axes[a].feedback);
+        dcu::ethercat::motor_axis_codec::diagnostics(snapshot.axes[a].diagnostics, *axis_diagnostics(a));
+    }
+}
 }
 
 namespace dcu::ethercat::motor_pdo {
 static_assert(app::config::motor_control::raw_batch_capacity >= CANFD_GATEWAY_SLOTS_PER_BUS);
+static_assert(static_cast<unsigned>(app::motor_application::OperatingMode::Motor) == 0 &&
+              static_cast<unsigned>(app::motor_application::OperatingMode::MotorWithRaw) == 1 &&
+              static_cast<unsigned>(app::motor_application::OperatingMode::Raw) == 2 &&
+              pdo_layout::profile_count == 3);
+
+void decode_cycle(const void *image, app::motor_application::OperatingMode mode,
+                  app::motor_application::CycleCommand &command)
+{
+    const auto b = board(image);
+    command.board = {b.CycleSeq, b.AxisEnableMask, b.BoardControl, b.CommandLeaseMs, b.ChannelEnableMask,
+        b.InterfaceVersion == MC_INTERFACE_VERSION && !b.Reserved0 && !b.Reserved1 &&
+        !b.Reserved2 && !b.Reserved3 && !b.Reserved4};
+    if (mode == app::motor_application::OperatingMode::Raw) {
+        for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
+            decode_raw_bus(raw_bus(image, c), c, command.raw[c]);
+    } else {
+        for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
+            const auto ch = channel(image, c);
+            command.channels[c] = {ch.ChannelControl, ch.ActiveMask, ch.ExpectedRole, ch.Reserved};
+        }
+        for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
+            command.axes[a] = motor_axis_codec::command(axis(image, a));
+        if (mode == app::motor_application::OperatingMode::MotorWithRaw)
+            decode_raw_sideband(raw(image), command.raw[0]);
+    }
+}
 
 void decode_raw_sideband(const mc_raw_t &raw, app::RawCanBatch &batch)
 {
@@ -93,7 +138,7 @@ uint16_t motor_control_mapping(uint16_t *in, uint16_t *out)
         uint16_t rx[pdo_layout::assignment_capacity], tx[pdo_layout::assignment_capacity];
         unsigned nr = mapping_indices(p, false, rx), nt = mapping_indices(p, true, tx);
         if (gRxAssign.u16SubIndex0 == nr && gTxAssign.u16SubIndex0 == nt && !memcmp(rx, gRxAssign.aEntries, nr * 2) && !memcmp(tx, gTxAssign.aEntries, nt * 2)) {
-            if (!dcu::app::motor_application::select_profile(p))
+            if (!dcu::app::motor_application::select_mode(static_cast<dcu::app::motor_application::OperatingMode>(p)))
                 return ALSTATUSCODE_INVALIDOUTPUTMAPPING;
             object<mc_board_config_t>(0x2001)->ActivePdoProfile = p;
             *in = publication.input_size = pdo_layout::profiles[p].input;
@@ -106,17 +151,20 @@ uint16_t motor_control_mapping(uint16_t *in, uint16_t *out)
 }
 void motor_control_prepare_input(void)
 {
-    auto snapshot = dcu::app::motor_application::prepare_publication();
-    publication.input_size = pdo_layout::profiles[snapshot.profile].input;
+    auto &snapshot = publication.snapshot;
+    dcu::app::motor_application::prepare_publication(snapshot);
+    publish_mirrors(snapshot);
+    const unsigned profile = static_cast<unsigned>(snapshot.mode);
+    publication.input_size = pdo_layout::profiles[profile].input;
     uint8_t *p = publication.image;
     motor_pdo::write_board(p, *object<mc_board_tx_t>(0x6000));
-    if (snapshot.profile == 2) {
+    if (profile == 2) {
         for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
             auto *raw = static_cast<canfd_bus_pdo_t *>(mc_object(0x6500 + c * 16));
             memset(raw, 0, sizeof(*raw));
             raw->cycle_seq = snapshot.cycle_sequence;
-            raw->bus_state = ethercat_canfd_bus_state(c);
-            raw->counter0 = ethercat_canfd_rx_drops(c) + snapshot.raw_drops[c];
+            raw->bus_state = dcu_can_bus_state(c);
+            raw->counter0 = dcu_can_rx_drops(c) + snapshot.channels[c].raw_drops;
             dcu_can_frame_t f;
             for (unsigned i = 0; i < CANFD_GATEWAY_SLOTS_PER_BUS && dcu::app::motor_application::take_raw_frame(c, f); i++) {
                 raw->valid_mask |= 1u << i;
@@ -135,12 +183,12 @@ void motor_control_prepare_input(void)
         for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++)
             motor_pdo::write_axis(p, a, *axis_feedback(a));
         motor_pdo::write_imu(p, *object<mc_imu_t>(0x6300));
-        if (snapshot.profile == 1) {
+        if (profile == 1) {
             mc_raw_t *raw = object<mc_raw_t>(0x6400);
             memset(raw, 0, sizeof(*raw));
             bool motor_only = true;
             for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++)
-                if (snapshot.roles[c] >= 2)
+                if (snapshot.channels[c].role >= 2)
                     motor_only = false;
             if (motor_only) {
                 uint8_t *d = (uint8_t *)raw;
@@ -151,7 +199,7 @@ void motor_control_prepare_input(void)
                 d[3] = '2';
                 d[4] = page;
                 for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++)
-                    d[5 + a] = (uint8_t)(page ? snapshot.type1_count[a] : ethercat_canfd_completions(a));
+                    d[5 + a] = (uint8_t)(page ? snapshot.axes[a].type1_count : dcu_can_completions(a));
             } else {
                 raw->BatchSeq = ++publication.raw_batch;
                 raw->DropCount = object<mc_board_tx_t>(0x6000)->RxDropCount;

@@ -13,8 +13,8 @@
 #include "ecatslv.h"
 #include "applInterface.h"
 #include "digital_io.h"
-#include "ethercat_canfd_gateway.h"
-#include "motor_application.h"
+#include "hpm_mcan_transport.h"
+#include "motor_ethercat.h"
 #include "ethercat_cycle.h"
 #include "ethercat_can_task.h"
 #include "cycle_timers.h"
@@ -37,8 +37,12 @@ int main(void)
 #endif
     board_init_led_pins();
     board_init_can_led_pins();
+    if (!dcu_timebase_init()) {
+        printf("Init cycle timebase failed!\n");
+        return 0;
+    }
     /* 1 ms 非阻塞节拍同时服务 CAN 活动灯；回调内部每 1000 次翻转原心跳灯。 */
-    board_timer_create(1, ethercat_canfd_gateway_led_tick);
+    board_timer_create(1, dcu_mcan_led_tick);
     board_init_ethercat(HPM_ESC); /* init ESC function pins */
     board_init_switch_led();      /* init switch and led for ECAT display */
     printf("EtherCAT IO sample\n");
@@ -53,17 +57,13 @@ int main(void)
     sIdentity.u32Serialnumber = ecat_flash_eeprom_serial();
 
     /* 初始化四路 CAN FD；任一路失败都不启动 EtherCAT 应用，避免部分总线误运行。 */
-    stat = ethercat_canfd_gateway_init();
+    stat = dcu_mcan_init();
     if (stat != status_success) {
         printf("Init EtherCAT/CAN FD gateway failed: %d\n", stat);
         return 0;
     }
 
     motor_control_init();
-    if (!dcu_timebase_init()) {
-        printf("Init cycle timebase failed!\n");
-        return 0;
-    }
     dcu_cycle_init();
     MainInit(); /* SSC Initilize the stack */
     sSyncManOutPar.u16SyncTypesSupported = SYNCTYPE_DCSYNC0SUPP;

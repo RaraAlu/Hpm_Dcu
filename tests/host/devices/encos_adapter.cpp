@@ -2,6 +2,7 @@
 #include "encos_motor.h"
 #include "../motor/encos_motion_reference.hpp"
 #include "device_config.h"
+#include "motor_axis_codec.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -13,6 +14,23 @@
 
 namespace motor = dcu::motor;
 namespace app = dcu::app;
+namespace codec = dcu::ethercat::motor_axis_codec;
+
+static bool encode_wire_command(const motor::MotorDevice &device, const mc_axis_rx_t &wire, motor::CanFrame &frame)
+{
+    return device.encode(codec::command(wire), frame) == motor::Result::Ok;
+}
+
+static bool decode_wire_feedback(const motor::MotorDevice &device, const motor::CanFrame &frame, mc_axis_tx_t &wire)
+{
+    motor::Feedback value{};
+    constexpr uint32_t required = motor::Position | motor::Velocity | motor::Current;
+    if (device.decode(frame, value) != motor::Result::Ok || (value.valid_fields & required) != required ||
+        value.current_cA < INT16_MIN || value.current_cA > INT16_MAX || value.motor_fault > UINT8_MAX)
+        return false;
+    codec::sample(value, wire);
+    return true;
+}
 
 struct Fixture {
     mc_range_t range{0, 500, 0, 5, -1000, 1000, -2000, 2000, -100, 100, -100, 100};
@@ -31,11 +49,11 @@ struct Fixture {
         route.VelocityLimit = 20000000;
         route.CurrentLimit = 100;
         route.TorqueLimit = 10000;
-        encos_profile(&range, &basic, &profile);
+        profile = codec::configuration(route, basic, range).encos.profile;
     }
     app::MotorBinding bind(unsigned slot = 0) const
     {
-        return app::configure_motor_driver(slot, route, basic, range, 0);
+        return app::configure_motor_driver(slot, codec::configuration(route, basic, range), 0);
     }
 };
 
@@ -66,7 +84,7 @@ static bool registry()
     CHECK(f.bind().driver != nullptr && f.bind().parameter_dialect == app::ParameterDialect::EncosLegacy);
     CHECK(f.bind(ENCOS_AXIS_COUNT).driver == nullptr);
     f.route.ModelProfileId = 0xFFFF;
-    CHECK(!app::validate_motor_configuration(f.route, f.basic, f.range, 0));
+    CHECK(!app::validate_motor_configuration(codec::configuration(f.route, f.basic, f.range), 0));
     CHECK(f.bind().driver == nullptr);
     return true;
 }
@@ -74,7 +92,7 @@ static bool registry()
 static bool validation()
 {
     Fixture original;
-    CHECK(app::validate_motor_configuration(original.route, original.basic, original.range, 0));
+    CHECK(app::validate_motor_configuration(codec::configuration(original.route, original.basic, original.range), 0));
     for (unsigned which = 0; which < 14; ++which) {
         Fixture f;
         switch (which) {
@@ -93,7 +111,7 @@ static bool validation()
         case 12: f.basic.CommunicationMode = 1; break;
         case 13: f.range.KpMax = f.range.KpMin; break;
         }
-        CHECK(!app::validate_motor_configuration(f.route, f.basic, f.range, 0));
+        CHECK(!app::validate_motor_configuration(codec::configuration(f.route, f.basic, f.range), 0));
     }
     return true;
 }
@@ -123,7 +141,7 @@ static bool command_bytes()
         command.Kd = command.Mode == 4 ? 2345 : 0;
         motor::CanFrame expected{}, actual{};
         CHECK(legacy_reference::encode(&command, &f.route, &f.profile, &expected));
-        CHECK(app::encode_motor_command(device, command, actual));
+        CHECK(encode_wire_command(device, command, actual));
         CHECK(actual.id == expected.id && actual.dlc == expected.dlc && actual.flags == expected.flags);
         CHECK(std::memcmp(actual.data, expected.data, 8) == 0);
     }
@@ -149,7 +167,7 @@ static bool rejected_commands()
         }
         motor::CanFrame frame{};
         frame.id = 999;
-        CHECK(!app::encode_motor_command(device, command, frame) && frame.id == 999);
+        CHECK(!encode_wire_command(device, command, frame) && frame.id == 999);
     }
     motor::Command wide{};
     wide.mode = motor::ControlMode::Current;
@@ -183,7 +201,7 @@ static bool feedback_bytes()
         expected.ValidFlags = 64;
         actual = expected;
         CHECK(legacy_reference::feedback(&frame, &f.profile, &expected));
-        CHECK(app::decode_motor_feedback(device, frame, actual));
+        CHECK(decode_wire_feedback(device, frame, actual));
         CHECK(std::memcmp(&actual, &expected, sizeof(actual)) == 0);
     }
     return true;
@@ -210,7 +228,7 @@ static bool feedback_rejection()
         before.ActualPosition = 123;
         before.ValidFlags = 64;
         auto after = before;
-        CHECK(!app::decode_motor_feedback(device, frame, after));
+        CHECK(!decode_wire_feedback(device, frame, after));
         CHECK(std::memcmp(&before, &after, sizeof(after)) == 0);
     }
     Fixture wide_current;
@@ -229,18 +247,18 @@ static bool feedback_rejection()
     mc_axis_tx_t previous{};
     previous.ActualPosition = 123;
     auto after = previous;
-    CHECK(!app::decode_motor_feedback(device, overflow, after));
+    CHECK(!decode_wire_feedback(device, overflow, after));
     CHECK(std::memcmp(&previous, &after, sizeof(after)) == 0);
     TestFeedbackDriver partial;
     partial.value.valid_fields = motor::Current;
     device.bind(partial);
     motor::Feedback logical{};
     CHECK(device.decode(overflow, logical) == motor::Result::Ok);
-    CHECK(!app::decode_motor_feedback(device, overflow, after));
+    CHECK(!decode_wire_feedback(device, overflow, after));
     CHECK(std::memcmp(&previous, &after, sizeof(after)) == 0);
     partial.value.valid_fields = motor::Position | motor::Velocity | motor::Current;
     partial.value.motor_fault = 256;
-    CHECK(!app::decode_motor_feedback(device, overflow, after));
+    CHECK(!decode_wire_feedback(device, overflow, after));
     CHECK(std::memcmp(&previous, &after, sizeof(after)) == 0);
     return true;
 }
@@ -264,7 +282,7 @@ static Fixture boundary_fixture(unsigned variant)
         f.route.CurrentLimit = 5000;
         f.route.TorqueLimit = 500000;
     }
-    encos_profile(&f.range, &f.basic, &f.profile);
+    f.profile = codec::configuration(f.route, f.basic, f.range).encos.profile;
     return f;
 }
 
@@ -329,7 +347,7 @@ static bool command_boundaries()
                 std::memset(&actual, 0x5A, sizeof(actual));
                 const auto before = actual;
                 const bool accepted = legacy_reference::encode(&command, &f.route, &f.profile, &expected);
-                CHECK(app::encode_motor_command(device, command, actual) == accepted);
+                CHECK(encode_wire_command(device, command, actual) == accepted);
                 if (accepted) {
                     CHECK(actual.id == expected.id && actual.dlc == expected.dlc && actual.flags == expected.flags);
                     CHECK(std::memcmp(actual.data, expected.data, sizeof(actual.data)) == 0);
@@ -371,7 +389,7 @@ static bool feedback_boundaries()
                 const auto before = expected;
                 auto actual = before;
                 const bool accepted = legacy_reference::feedback(&frame, &f.profile, &expected);
-                CHECK(app::decode_motor_feedback(device, frame, actual) == accepted);
+                CHECK(decode_wire_feedback(device, frame, actual) == accepted);
                 CHECK(std::memcmp(&actual, accepted ? &expected : &before, sizeof(actual)) == 0);
             }
         }
@@ -393,11 +411,92 @@ static bool axis_isolation()
     mc_axis_rx_t command{};
     command.Mode = 3;
     motor::CanFrame x{}, y{};
-    CHECK(app::encode_motor_command(a, command, x) && app::encode_motor_command(b, command, y));
+    CHECK(encode_wire_command(a, command, x) && encode_wire_command(b, command, y));
     CHECK(x.id == 1 && y.id == 7);
     second.route.ModelProfileId = 0xFFFF;
     CHECK(second.bind(1).driver == nullptr);
-    CHECK(app::encode_motor_command(a, command, x) && x.id == 1);
+    CHECK(encode_wire_command(a, command, x) && x.id == 1);
+    return true;
+}
+
+static bool field_mapping()
+{
+    Fixture f;
+    f.route.CurrentLimit = UINT32_MAX;
+    f.route.PowerQueryPeriodMs = 347;
+    f.route.StopPolicy = 2;
+    f.route.FeedbackPolicy = 3;
+    f.basic.CommunicationMode = 1;
+    f.range = {1, 502, 3, 7, -1234, 987, -2134, 1987, -334, 287, -434, 387};
+    const auto config = codec::configuration(f.route, f.basic, f.range);
+    CHECK(config.route.can_id == f.route.CanId && config.model_profile_id == f.route.ModelProfileId);
+    CHECK(config.route.position_min_urad == f.route.PositionLimitMin && config.route.position_max_urad == f.route.PositionLimitMax);
+    CHECK(config.route.current_limit_dA == UINT32_MAX && config.route.velocity_limit_urad_s == f.route.VelocityLimit);
+    CHECK(config.route.torque_limit_mNm == f.route.TorqueLimit && config.power_query_period_ms == 347);
+    CHECK(config.stop_policy == 2 && config.feedback_policy == 3 && config.encos.frame_format == 1);
+    CHECK(config.encos.timeout_ms == 100 && config.encos.profile.kt == 0.5);
+    const auto &p = config.encos.profile;
+    CHECK(p.kp[0] == 1 && p.kp[1] == 502 && p.kd[0] == 3 && p.kd[1] == 7);
+    CHECK(p.pos[0] == -12.34 && p.pos[1] == 9.87 && p.vel[0] == -21.34 && p.vel[1] == 19.87);
+    CHECK(p.torque[0] == -33.4 && p.torque[1] == 28.7 && p.current[0] == -43.4 && p.current[1] == 38.7);
+
+    const mc_axis_rx_t wire{15, 4, 7, INT32_MIN, INT32_MAX, -12345, INT16_MIN, 123, 456, UINT16_MAX};
+    const auto command = codec::command(wire);
+    const auto copy = codec::command(command);
+    CHECK(std::memcmp(&wire, &copy, sizeof(wire)) == 0);
+    mc_sdo_command_t sdo{};
+    sdo.ControlWord = wire.ControlWord; sdo.Mode = wire.Mode; sdo.Flags = wire.Flags;
+    sdo.TargetPosition = wire.TargetPosition; sdo.TargetVelocity = wire.TargetVelocity;
+    sdo.TargetTorque = wire.TargetTorque; sdo.TargetCurrent = wire.TargetCurrent;
+    sdo.Kp = wire.Kp; sdo.Kd = wire.Kd; sdo.CurrentLimit = wire.CurrentLimit;
+    const auto sdo_copy = codec::command(codec::command(sdo));
+    CHECK(std::memcmp(&wire, &sdo_copy, sizeof(wire)) == 0);
+
+    app::AxisFeedback feedback{};
+    feedback.sample = {63, -123, 456, -789, 2345, -1234, 3276, 7};
+    feedback.mode = motor::ControlMode::Impedance;
+    feedback.status_word = 0x1234;
+    feedback.bridge_fault = 9;
+    feedback.power_mW = -567;
+    feedback.feedback_age_ms = 123;
+    feedback.power_age_ms = 456;
+    feedback.power_valid = true;
+    const auto tx = codec::feedback(feedback);
+    CHECK(tx.StatusWord == 0x1234 && tx.ModeDisplay == 4 && tx.ValidFlags == 127);
+    CHECK(tx.ActualPosition == -123 && tx.ActualVelocity == 456 && tx.ActualCurrent == -789 && tx.EstimatedTorque == 2345);
+    CHECK(tx.MotorTemperature == -1234 && tx.MosTemperature == 3276 && tx.MotorFaultRaw == 7 && tx.BridgeFaultCode == 9);
+    CHECK(tx.ActualPower == -567 && tx.FeedbackAgeMs == 123 && tx.PowerAgeMs == 456);
+    const uint32_t fields[] = {motor::Position, motor::Velocity, motor::Current, motor::Torque,
+                              motor::MotorTemperature, motor::MosTemperature};
+    for (unsigned i = 0; i < 6; ++i) {
+        feedback.sample.valid_fields = fields[i];
+        feedback.power_valid = false;
+        CHECK(codec::feedback(feedback).ValidFlags == (1U << i));
+    }
+    app::AxisDiagnostics diagnostic{1, 2, 3, 4, 5, 6, -7, -8, 9, 10};
+    mc_diag_t mirror{};
+    mirror.LastServiceError = 123;
+    codec::diagnostics(diagnostic, mirror);
+    CHECK(mirror.TxEnqueueCount == 1 && mirror.TxDropCount == 2 && mirror.RxValidCount == 3);
+    CHECK(mirror.ProtocolErrorCount == 4 && mirror.ActiveFaultBits == 5 && mirror.TxCompleteCount == 6);
+    CHECK(mirror.QueriedPosition == -7 && mirror.QueriedVelocity == -8);
+    CHECK(mirror.PositionQueryAgeUs == 9 && mirror.VelocityQueryAgeUs == 10 && mirror.LastServiceError == 123);
+
+    mc_basic_t basic{};
+    basic.CommunicationMode = 1; basic.TorqueConstantRaw = 2; basic.CanTimeoutMs = 3;
+    mc_range_t range{4, 5, 6, 7, -8, 9, -10, 11, -12, 13, -14, 15};
+    mc_gain_t gain{16, 17, 18, 19, 20, 21};
+    mc_kt_t kt{};
+    kt.CalibrationMode = 2; kt.Group = 10;
+    kt.Kt1Raw = 22; kt.Kt2Raw = 23; kt.Kt3Raw = 24; kt.Kt4Raw = 25;
+    const uint16_t expected[][4] = {
+        {1}, {2}, {4, 5}, {6, 7}, {uint16_t(-8), 9}, {uint16_t(-10), 11},
+        {uint16_t(-12), 13}, {uint16_t(-14), 15}, {3}, {16, 17}, {18, 19}, {20, 21}, {2}, {22, 23, 24, 25}
+    };
+    for (uint16_t id = 2; id <= 15; ++id) {
+        const auto value = codec::parameter(id, basic, range, gain, kt);
+        CHECK(value.group == 10 && std::memcmp(value.words, expected[id - 2], sizeof(value.words)) == 0);
+    }
     return true;
 }
 
@@ -410,6 +509,7 @@ int main(int argc, char **argv)
         {"reject_commands", rejected_commands}, {"feedback", feedback_bytes},
         {"reject_feedback", feedback_rejection}, {"axis_isolation", axis_isolation},
         {"command_boundaries", command_boundaries}, {"feedback_boundaries", feedback_boundaries},
+        {"field_mapping", field_mapping},
     };
     for (const auto &entry : cases)
         if (std::strcmp(argv[1], entry.name) == 0) return entry.run() ? 0 : 1;

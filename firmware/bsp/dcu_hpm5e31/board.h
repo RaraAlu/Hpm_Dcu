@@ -25,7 +25,7 @@
 #include "eeprom_device.h"
 #endif
 
-#define BOARD_NAME          "hpm5e00evk"
+#define BOARD_NAME          "dcu_hpm5e31"
 #define BOARD_UF2_SIGNATURE (0x0A4D5048UL)
 #define BOARD_DFU_SIGNATURE (0x48504D21UL)
 #define BOARD_CPU_FREQ      (480000000UL)

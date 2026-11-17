@@ -4,7 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include "encos_interface.h"
-#include "ethercat_canfd_gateway.h"
+#include "raw_can_pdo.h"
+#include "device_config.h"
 
 namespace dcu::ethercat::pdo_layout {
 
@@ -44,6 +45,7 @@ inline constexpr size_t input_imu_offset = input_axes_offset + ENCOS_AXIS_COUNT 
 inline constexpr unsigned assignment_capacity = 39;
 
 // These are the frozen on-wire layouts, not scheduling configuration.
+static_assert(CANFD_GATEWAY_BUS_COUNT == ENCOS_CHANNEL_COUNT);
 static_assert(profiles[0].input == 1024 && profiles[0].output == 736);
 static_assert(profiles[1].input == 1072 && profiles[1].output == 784);
 static_assert(profiles[2].input == 544 && profiles[2].output == 544);

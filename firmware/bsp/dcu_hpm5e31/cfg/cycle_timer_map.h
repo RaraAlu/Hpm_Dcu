@@ -11,4 +11,8 @@
 #define DCU_TIMEBASE_CLOCK clock_gptmr1
 #define DCU_TIMEBASE_CHANNEL 0U
 
+#define DCU_MACHINE_TIMER HPM_MCHTMR
+#define DCU_MACHINE_TIMER_CLOCK clock_mchtmr0
+#define DCU_MACHINE_TIMER_HZ 24000000U
+
 #endif

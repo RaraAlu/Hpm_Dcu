@@ -1,14 +1,9 @@
-#ifndef ETHERCAT_CANFD_GATEWAY_H
-#define ETHERCAT_CANFD_GATEWAY_H
+#ifndef DCU_RAW_CAN_PDO_H
+#define DCU_RAW_CAN_PDO_H
 
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "dcu_compiler.h"
-
-#include "device_config.h"
-#include "can_frame.h"
-#include "hpm_common.h"
 
 /* 固定过程映像：4 路总线，每路 7 个帧槽，每个方向共 512 字节。 */
 #define CANFD_GATEWAY_BUS_COUNT       4U
@@ -27,14 +22,6 @@
 #define CANFD_INPUT_FLAG_NEW          CANFD_FLAG_VALID
 #define CANFD_INPUT_FLAG_ESI          CANFD_FLAG_ON_CHANGE
 
-/* Stable bus_state codes published in TxPDO. */
-enum {
-    CANFD_BUS_ERROR_ACTIVE = 0,
-    CANFD_BUS_ERROR_WARNING = 1,
-    CANFD_BUS_ERROR_PASSIVE = 2,
-    CANFD_BUS_OFF = 3,
-};
-
 /* 单帧 PDO 槽。packed 保证与 TwinCAT/ESI 的 16 字节布局完全一致。 */
 typedef struct __attribute__((packed)) {
     uint32_t can_id;     /* 标准帧使用低 11 bit，扩展帧使用低 29 bit。 */
@@ -46,7 +33,7 @@ typedef struct __attribute__((packed)) {
 
 /* 单路 PDO：16 字节总线头 + 7 × 16 字节帧槽。 */
 typedef struct __attribute__((packed)) {
-    uint16_t cycle_seq;  /* EtherCAT 周期序号；连续 3 周期不变则停止发送。 */
+    uint16_t cycle_seq;  /* 单路批次去重序号；板级命令租约独立约束发送。 */
     uint8_t valid_mask;  /* Bit0～6 对应 Slot1～7；Bit7 必须为 0。 */
     uint8_t mode;        /* 下行保留；上行为本周期接收帧数。 */
     uint16_t deadline_us;/* 下行发送预算，首版固定映射但不在 ISR 内等待。 */
@@ -66,27 +53,4 @@ DCU_STATIC_ASSERT(sizeof(canfd_bus_pdo_t) == 128, "CAN FD bus PDO must be 128 by
 DCU_STATIC_ASSERT(sizeof(ethercat_canfd_process_image_t) == CANFD_GATEWAY_PROCESS_SIZE,
                "EtherCAT process image must be 512 bytes");
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-hpm_stat_t ethercat_canfd_gateway_init(void);
-void ethercat_canfd_gateway_led_tick(void);
-uint32_t ethercat_canfd_now_ms(void);
-uint32_t ethercat_canfd_now_us(void);
-uint32_t ethercat_canfd_rx_drops(unsigned bus);
-uint32_t ethercat_canfd_completions(unsigned axis);
-uint16_t ethercat_canfd_bus_state(uint32_t bus);
-bool ethercat_canfd_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stamp);
-bool ethercat_canfd_pending(unsigned bus);
-bool ethercat_canfd_axis_pending(unsigned axis);
-unsigned ethercat_canfd_tx_free(unsigned bus);
-uint32_t ethercat_canfd_tx_progress(unsigned bus);
-void ethercat_canfd_cancel(unsigned bus);
-void ethercat_canfd_cancel_axis(unsigned axis);
-void ethercat_canfd_cancel_service(unsigned bus);
-bool ethercat_canfd_send(unsigned bus,const dcu_can_frame_t *frame,unsigned axis);
-#ifdef __cplusplus
-}
-#endif
 #endif

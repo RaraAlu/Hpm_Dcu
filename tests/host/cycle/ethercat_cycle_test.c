@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <setjmp.h>
 #include "hpm_gptmr_drv.h"
 #include "ethercat_can_task.c"
 
@@ -26,13 +27,14 @@ static uint8_t last_output[784];
 static uint8_t requested_state;
 static uint16_t requested_error;
 static bool sync_during_mapping;
+static jmp_buf worker_exit;
+static unsigned worker_iterations;
 
-uint32_t ethercat_canfd_now_us(void) { return time_us; }
 uint32_t dcu_time_now_us(void) { return time_us; }
 bool dcu_worker_timer_ack(void) { return true; }
 void dcu_worker_timer_start(void) {}
-uint32_t ethercat_canfd_now_ms(void) { return time_us / 1000U; }
-void ethercat_canfd_cancel(unsigned channel) { CHECK(channel < 4); ++cancel_calls; }
+uint32_t dcu_time_now_ms(void) { return time_us / 1000U; }
+void dcu_can_cancel(unsigned channel) { CHECK(channel < 4); ++cancel_calls; }
 void motor_control_output(const void *data) { ++output_calls; memcpy(last_output, data, sizeof(last_output)); }
 void motor_control_prepare_input(void) { ++prepare_calls; time_us += prepare_cost_us; }
 void motor_control_process(void) {}
@@ -73,7 +75,12 @@ TaskHandle_t xTaskCreateStatic(void (*entry)(void *), const char *name, uint32_t
                               void *arg, uint32_t priority, StackType_t *stack, StaticTask_t *tcb)
 { (void)entry; (void)name; (void)depth; (void)arg; (void)priority; (void)stack; return tcb; }
 void vTaskStartScheduler(void) {}
-uint32_t ulTaskNotifyTake(BaseType_t clear, uint32_t wait) { (void)clear; (void)wait; return 1; }
+uint32_t ulTaskNotifyTake(BaseType_t clear, uint32_t wait)
+{
+    (void)clear; (void)wait;
+    if (++worker_iterations > 1) longjmp(worker_exit, 1);
+    return 1;
+}
 void vTaskNotifyGiveFromISR(TaskHandle_t task, BaseType_t *wake) { (void)task; *wake = pdTRUE; }
 uint32_t uxTaskGetStackHighWaterMark(TaskHandle_t task) { (void)task; return 100; }
 
@@ -95,8 +102,10 @@ static void command_boundary(uint32_t time)
 
 static void check_stopped(uint32_t expected_fault)
 {
+    dcu_cycle_diagnostics_t snapshot;
+    dcu_cycle_read_diagnostics(&snapshot);
     CHECK(fault_calls == 1);
-    CHECK(g_dcu_cycle_diagnostics.faults & expected_fault);
+    CHECK(snapshot.faults & expected_fault);
     CHECK(requested_state == STATE_SAFEOP && requested_error == ALSTATUSCODE_SYNCERROR);
     CHECK(!runtime.outputs_running);
     CHECK(dcu_tx_inhibited());
@@ -105,6 +114,26 @@ static void check_stopped(uint32_t expected_fault)
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
+    if (!strcmp(argv[1], "diagnostics")) {
+        dcu_rtos_diagnostics_t rtos;
+        dcu_cycle_diagnostics_t first, second;
+        dcu_rtos_read_diagnostics(&rtos);
+        CHECK(!rtos.worker_stack_free_words && !rtos.fatal_line && !rtos.fatal_file);
+        start();
+        dcu_cycle_stop_outputs();
+        time_us = 1000000U;
+        if (!setjmp(worker_exit)) worker(NULL);
+        dcu_rtos_read_diagnostics(&rtos);
+        CHECK(rtos.worker_stack_free_words == 100);
+        dcu_cycle_read_diagnostics(&first);
+        CHECK(first.configured_period_ns == test_esc_period);
+        first.configured_period_ns = 0;
+        rtos.worker_stack_free_words = 0;
+        dcu_cycle_read_diagnostics(&second);
+        dcu_rtos_read_diagnostics(&rtos);
+        CHECK(second.configured_period_ns == test_esc_period && rtos.worker_stack_free_words == 100);
+        return 0;
+    }
     if (!strcmp(argv[1], "configuration")) {
         bDcSyncActive = false;
         CHECK(dcu_cycle_configure() == ALSTATUSCODE_SYNCHRONNOTSUPPORTED);
@@ -137,7 +166,9 @@ int main(int argc, char **argv)
     if (!strcmp(argv[1], "normal")) {
         time_us = 1750;
         dcu_cycle_step();
-        CHECK(mapping_calls == 1 && g_dcu_cycle_diagnostics.published_epoch == 1);
+        dcu_cycle_diagnostics_t snapshot;
+        dcu_cycle_read_diagnostics(&snapshot);
+        CHECK(mapping_calls == 1 && snapshot.published_epoch == 1);
         command_boundary(2100);
         dcu_cycle_step();
         CHECK(output_calls == 2 && fault_calls == 0);
@@ -148,7 +179,9 @@ int main(int argc, char **argv)
         CHECK(runtime.outputs_running && pipeline.epoch == 1);
         time_us = 1750;
         dcu_cycle_step();
-        CHECK(fault_calls == 0 && g_dcu_cycle_diagnostics.published_epoch == 1);
+        dcu_cycle_diagnostics_t snapshot;
+        dcu_cycle_read_diagnostics(&snapshot);
+        CHECK(fault_calls == 0 && snapshot.published_epoch == 1);
         return 0;
     }
     if (!strcmp(argv[1], "prepare_late")) {

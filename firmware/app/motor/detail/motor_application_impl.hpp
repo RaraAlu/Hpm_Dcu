@@ -4,7 +4,6 @@
 #include "axis_controller.hpp"
 #include "can_bus_scheduler.hpp"
 #include "motor_application.hpp"
-#include "motor_pdo_layout.hpp"
 #include "raw_can_gateway.hpp"
 #include <cstdint>
 
@@ -13,20 +12,21 @@ namespace dcu::app::motor_application::detail {
 // MainLoop and SDO callbacks share one task; only the C/C++ entry points own this object.
 class MotorApplication {
 public:
-    void initialize();
-    void process();
+    void initialize(const Configuration &defaults);
+    ProcessResult process(const CycleCommand *candidate);
     void operational(bool operational);
     void cycle_fault();
-    void output(const void *data);
     bool configuration_writable() const;
     bool owner_change_allowed() const;
-    bool apply_configuration();
-    bool select_profile(unsigned profile);
-    void owner_changed();
-    void commit_sdo_command(unsigned axis, mc_sdo_command_t &command, uint32_t now_ms);
-    bool commit_parameter(unsigned axis, bool maintenance, uint32_t now_ms, bool preop);
-    void refresh_axis_feedback(unsigned axis);
-    PdoPublication prepare_publication();
+    bool apply_configuration(const Configuration &configuration);
+    bool select_mode(OperatingMode mode);
+    OperatingMode mode() const { return state_.mode; }
+    bool set_owner(Owner owner);
+    Owner owner() const { return state_.owner; }
+    CommandResult commit_sdo_command(unsigned axis, const SdoCommand &command, uint32_t now_ms);
+    parameters::CommitOutcome commit_parameter(const parameters::Request &request, uint32_t now_ms, bool preop);
+    bool read_axis(unsigned axis, AxisFeedback &feedback, AxisDiagnostics &diagnostics) const;
+    void prepare_publication(Publication &snapshot);
     bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame);
 
 private:
@@ -37,29 +37,28 @@ private:
     bool command_permitted(uint32_t now_ms) const;
     void stop_all(uint16_t fault);
     void check_timeouts(uint32_t now_ms);
-    bool accept_candidate(uint32_t now_ms);
-    void process_raw(uint32_t now_ms);
-    bool accept_axis_command(unsigned axis, const mc_axis_rx_t &command, bool permitted, uint32_t now_ms);
+    bool accept_candidate(const CycleCommand &candidate, uint32_t now_ms, ProcessResult &result);
+    bool process_raw(const CycleCommand &candidate, uint32_t now_ms);
     void consume_feedback(unsigned bus, const dcu_can_frame_t &frame,
                           uint32_t timestamp_ms, uint32_t now_ms);
-    void publish(uint32_t now_ms);
 
     AxisController axes_[ENCOS_AXIS_COUNT]{};
     RawCanGateway raw_{};
     BusScheduler schedule_[ENCOS_CHANNEL_COUNT]{};
     struct Session {
-        mc_channel_config_t channels[ENCOS_CHANNEL_COUNT]{};
-        mc_board_config_t config{};
-        mc_board_rx_t board_command{};
-        mc_channel_rx_t channel_command[ENCOS_CHANNEL_COUNT]{};
-        uint8_t candidate[dcu::ethercat::pdo_layout::max_output_bytes]{};
-        uint16_t output_size{};
-        bool operational{}, pending{}, session_armed{}, resume_pdo_owner{};
+        ChannelConfiguration channels[ENCOS_CHANNEL_COUNT]{};
+        BoardConfiguration config{};
+        BoardCommand board_command{};
+        ChannelCommand channel_command[ENCOS_CHANNEL_COUNT]{};
+        OperatingMode mode{};
+        Owner owner{};
+        bool operational{}, session_armed{}, resume_pdo_owner{};
         bool seen_cycle{}, config_ready{};
         uint32_t last_command_ms{}, last_cycle{}, tx_total{}, last_process_us{};
         uint8_t query_slot[ENCOS_CHANNEL_COUNT]{};
         uint16_t board_fault{};
         uint32_t channel_tx_drop[ENCOS_CHANNEL_COUNT]{};
+        uint32_t publication_sequence{}, sdo_accepted_sequence[ENCOS_AXIS_COUNT]{};
     } state_{};
 };
 

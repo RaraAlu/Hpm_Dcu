@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "ethercat_canfd_gateway.c"
+#include "hpm_mcan_transport.c"
 
 #define CHECK(expr) do { if (!(expr)) { \
     fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #expr); exit(1); \
@@ -18,11 +18,12 @@ static void fault_timer(void)
         return;
     }
     inhibited = true;
-    ethercat_canfd_cancel(0);
+    dcu_can_cancel(0);
 }
 
 bool dcu_tx_inhibited(void) { return inhibited; }
 uint32_t dcu_time_now_us(void) { return 0; }
+uint32_t dcu_time_now_ms(void) { return 0; }
 void test_enter_critical(void) { ++critical_depth; }
 void test_exit_critical(void)
 {
@@ -76,27 +77,27 @@ int main(int argc, char **argv)
     expected_tag = 3;
     if (!strcmp(argv[1], "staging_fault")) {
         during_stage = true;
-        CHECK(!ethercat_canfd_send(0, &frame, 3));
+        CHECK(!dcu_can_send(0, &frame, 3));
         CHECK(stage_calls == 1 && commits == 0 && s_tx_axis[0][2] == 255);
     } else if (!strcmp(argv[1], "commit_fault")) {
         during_commit = true;
-        CHECK(ethercat_canfd_send(0, &frame, 3));
+        CHECK(dcu_can_send(0, &frame, 3));
         CHECK(commits == 1 && inhibited && cancel_calls == 8 && test_mcan[0].TXBRP == 0);
     } else if (!strcmp(argv[1], "already_inhibited")) {
         inhibited = true;
-        CHECK(!ethercat_canfd_send(0, &frame, 3));
+        CHECK(!dcu_can_send(0, &frame, 3));
         CHECK(stage_calls == 0 && commits == 0);
     } else if (!strcmp(argv[1], "stage_failure")) {
         stage_failure = true;
-        CHECK(!ethercat_canfd_send(0, &frame, 3));
+        CHECK(!dcu_can_send(0, &frame, 3));
         CHECK(commits == 0 && s_tx_axis[0][2] == 255);
     } else if (!strcmp(argv[1], "invalid")) {
-        CHECK(!ethercat_canfd_send(4, &frame, 3));
-        CHECK(!ethercat_canfd_send(0, NULL, 3));
+        CHECK(!dcu_can_send(4, &frame, 3));
+        CHECK(!dcu_can_send(0, NULL, 3));
         CHECK(stage_calls == 0 && commits == 0);
     } else {
         CHECK(!strcmp(argv[1], "normal"));
-        CHECK(ethercat_canfd_send(0, &frame, 3));
+        CHECK(dcu_can_send(0, &frame, 3));
         CHECK(commits == 1 && stage_calls == 1 && test_mcan[0].TXBRP == 4);
     }
     CHECK(critical_depth == 0);

@@ -66,6 +66,9 @@ class EthercatCycleTest(unittest.TestCase):
     def test_reconfigure_cannot_reset_a_running_pipeline(self):
         self.run_command([str(self.executable), "reconfigure_running"])
 
+    def test_cycle_and_rtos_diagnostics_are_independent_snapshots(self):
+        self.run_command([str(self.executable), "diagnostics"])
+
 
 if __name__ == "__main__":
     unittest.main()

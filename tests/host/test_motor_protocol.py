@@ -35,6 +35,7 @@ class MotorProtocolTest(unittest.TestCase):
         cls.run_command([
             cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", *flags,
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
+            str(ROOT / "firmware/protocols/encos/encos_service.cpp"),
             str(ROOT / "tests/host/motor/motor_protocol.cpp"), *objects, "-lm",
             "-o", str(cls.executable),
         ])

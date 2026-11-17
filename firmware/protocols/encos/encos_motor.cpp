@@ -5,26 +5,19 @@
 #include <string.h>
 
 using dcu::encos::detail::pi;
-uint16_t encos_be16(const uint8_t *p) { return (uint16_t)((uint16_t)p[0]<<8 | p[1]); }
-uint32_t encos_be32(const uint8_t *p) { return (uint32_t)p[0]<<24 | (uint32_t)p[1]<<16 | (uint32_t)p[2]<<8 | p[3]; }
 static void put16(uint8_t *p, uint16_t v) { p[0]=v>>8; p[1]=v; }
 static void put32(uint8_t *p, uint32_t v) { p[0]=v>>24; p[1]=v>>16; p[2]=v>>8; p[3]=v; }
 static uint32_t float_bits(float f) { uint32_t u; memcpy(&u,&f,4); return u; }
-bool encos_float(const uint8_t *p, double scale, int32_t *v)
+bool encos_profile_valid(const encos_profile_t *p)
 {
-    uint32_t u=encos_be32(p); float f; memcpy(&f,&u,4); double x=f*scale;
-    if(!isfinite(x) || x<INT32_MIN || x>INT32_MAX) return false;
-    *v=(int32_t)x; return true;
-}
-bool encos_profile(const mc_range_t *r, const mc_basic_t *b, encos_profile_t *p)
-{
-    *p=encos_profile_t{{static_cast<double>(r->KpMin),static_cast<double>(r->KpMax)},
-        {static_cast<double>(r->KdMin),static_cast<double>(r->KdMax)},
-        {r->PosMinRaw/100.,r->PosMaxRaw/100.},{r->SpdMinRaw/100.,r->SpdMaxRaw/100.},
-        {r->TorMinRaw/10.,r->TorMaxRaw/10.},{r->CurMinRaw/10.,r->CurMaxRaw/10.},b->TorqueConstantRaw/100.};
+    const double *ranges[] = {p->kp, p->kd, p->pos, p->vel, p->torque, p->current};
+    for (const auto *range : ranges)
+        if (!isfinite(range[0]) || !isfinite(range[1]) || !isfinite(range[1] - range[0])) return false;
     return p->kp[0]<p->kp[1] && p->kd[0]<p->kd[1] && p->pos[0]<0 && p->pos[1]>0
         && p->vel[0]<0 && p->vel[1]>0 && p->torque[0]<0 && p->torque[1]>0
-        && p->current[0]<0 && p->current[1]>0 && b->CanTimeoutMs>0;
+        && p->current[0]<0 && p->current[1]>0 && isfinite(p->kt) && p->kt >= 0
+        && p->pos[0] * 1e6 >= INT32_MIN && p->pos[1] * 1e6 <= INT32_MAX
+        && p->vel[0] * 1e6 >= INT32_MIN && p->vel[1] * 1e6 <= INT32_MAX;
 }
 static bool quantize(double x, const double r[2], unsigned bits, uint32_t *v)
 {
@@ -33,23 +26,23 @@ static bool quantize(double x, const double r[2], unsigned bits, uint32_t *v)
 }
 static double decode(uint32_t v,const double r[2],unsigned bits) { return r[0]+v*(r[1]-r[0])/((1u<<bits)-1); }
 namespace dcu::encos {
-bool encode_motion(const motor::Command &c, const mc_routing_t &r,
+bool encode_motion(const motor::Command &c, const motor::Routing &r,
                    const encos_profile_t &p, motor::CanFrame &frame) noexcept
 {
     using motor::ControlMode;
     const auto mode = static_cast<uint8_t>(c.mode);
     const double pos = c.position_urad / 1e6, vel = c.velocity_urad_s / 1e6;
     constexpr uint16_t controls = motor::Arm | motor::Stop | motor::ResetFault | motor::StartMotion;
-    if (mode < 1 || mode > 5 || c.reserved_flags || (c.control_bits & ~controls) || r.CanId < 1 || r.CanId > 8)
+    if (mode < 1 || mode > 5 || c.reserved_flags || (c.control_bits & ~controls) || r.can_id < 1 || r.can_id > 8)
         return false;
     if (c.current_cA < INT16_MIN || c.current_cA > INT16_MAX)
         return false;
     if ((c.mode == ControlMode::Position || c.mode == ControlMode::Impedance) &&
-        (c.position_urad < r.PositionLimitMin || c.position_urad > r.PositionLimitMax))
+        (c.position_urad < r.position_min_urad || c.position_urad > r.position_max_urad))
         return false;
-    if (fabs(static_cast<double>(c.velocity_urad_s)) > r.VelocityLimit ||
-        fabs(static_cast<double>(c.current_cA)) > r.CurrentLimit * 10.0 ||
-        fabs(static_cast<double>(c.torque_mNm)) > r.TorqueLimit)
+    if (fabs(static_cast<double>(c.velocity_urad_s)) > r.velocity_limit_urad_s ||
+        fabs(static_cast<double>(c.current_cA)) > r.current_limit_dA * 10.0 ||
+        fabs(static_cast<double>(c.torque_mNm)) > r.torque_limit_mNm)
         return false;
     if (c.mode != ControlMode::Position && c.mode != ControlMode::Impedance && c.position_urad)
         return false;
@@ -63,14 +56,14 @@ bool encode_motion(const motor::Command &c, const mc_routing_t &r,
     if (c.mode != ControlMode::Impedance && (c.kp_centi || c.kd_milli))
         return false;
     if (c.mode == ControlMode::Position || c.mode == ControlMode::Velocity) {
-        if (!c.current_limit_dA || c.current_limit_dA > r.CurrentLimit)
+        if (!c.current_limit_dA || c.current_limit_dA > r.current_limit_dA)
             return false;
     } else if (c.current_limit_dA) {
         return false;
     }
 
     motor::CanFrame candidate{};
-    candidate.id = r.CanId;
+    candidate.id = r.can_id;
     switch (c.mode) {
     case ControlMode::Position: {
         const double rpm10 = vel * 60 / (2 * pi) * 10;
@@ -127,12 +120,15 @@ bool decode_feedback(const motor::CanFrame &frame, const encos_profile_t &p,
     if (frame.dlc != 8 || (frame.data[0] >> 5) != 1 || (frame.data[0] & 31) > 7)
         return false;
     const uint8_t *d = frame.data;
+    const double position = decode(encos_be16(d + 1), p.pos, 16) * 1e6;
+    const double velocity = decode(static_cast<uint32_t>(d[3]) << 4 | d[4] >> 4, p.vel, 12) * 1e6;
     const double current = decode(static_cast<uint32_t>(d[4] & 15) << 8 | d[5], p.current, 12) * 100;
-    if (current < INT16_MIN || current > INT16_MAX)
+    if (!(position >= INT32_MIN && position <= INT32_MAX) ||
+        !(velocity >= INT32_MIN && velocity <= INT32_MAX) || !(current >= INT16_MIN && current <= INT16_MAX))
         return false;
     motor::Feedback candidate{};
-    candidate.position_urad = static_cast<int32_t>(decode(encos_be16(d + 1), p.pos, 16) * 1e6);
-    candidate.velocity_urad_s = static_cast<int32_t>(decode(static_cast<uint32_t>(d[3]) << 4 | d[4] >> 4, p.vel, 12) * 1e6);
+    candidate.position_urad = static_cast<int32_t>(position);
+    candidate.velocity_urad_s = static_cast<int32_t>(velocity);
     candidate.current_cA = static_cast<int16_t>(current);
     // Torque uses the already truncated current, as required by the wire conversion.
     const double torque = candidate.current_cA * p.kt * 10;
@@ -148,34 +144,4 @@ bool decode_feedback(const motor::CanFrame &frame, const encos_profile_t &p,
     feedback = candidate;
     return true;
 }
-}
-uint8_t encos_parameter_query(uint16_t p)
-{
-    static const uint8_t q[]={0,5,0,22,23,24,25,26,27,28,31,32,33,34,35,36,38};
-    return p<sizeof(q)?q[p]:(p>=0x101 && p<=0x127?(uint8_t)(p-0x100):0);
-}
-bool encos_query(uint8_t code,uint8_t group,encos_frame_t *f)
-{
-    if(!(code>=1 && code<=5) && !(code>=22 && code<=39))return false;
-    if(code==36 && (group<1||group>10))return false;
-    f->dlc=2; memset(f->data,0,8); f->data[0]=0xE0|(code==36?group:0); f->data[1]=code;return true;
-}
-bool encos_parameter(uint16_t id,const mc_basic_t *b,const mc_range_t *r,const mc_gain_t *g,const mc_kt_t *k,encos_frame_t *f)
-{
-    static const uint8_t code[]={0,1,2,4,5,6,7,8,9,10,11,12,13,14,15,16,17};
-    if(id<1||id>15 || id==1) return false; /* Acceleration ACK table conflicts with its example; disabled pending confirmation. */
-    memset(f->data,0,8);f->data[0]=0xC0;f->data[1]=code[id];f->dlc=4;
-    if(id==2){if(b->CommunicationMode>1)return false;f->data[0]=0xC1;f->data[2]=b->CommunicationMode;f->dlc=3;}
-    else if(id==3){if(!b->TorqueConstantRaw)return false;put16(f->data+2,b->TorqueConstantRaw);}
-    else if(id>=4 && id<=9){uint16_t v[2];memcpy(v,(const uint8_t *)r+(id-4)*4,4);put16(f->data+2,v[0]);put16(f->data+4,v[1]);f->dlc=6;}
-    else if(id==10){if(!b->CanTimeoutMs)return false;put16(f->data+2,b->CanTimeoutMs);}
-    else if(id>=11 && id<=13){uint16_t v[2];memcpy(v,(const uint8_t *)g+(id-11)*4,4);put16(f->data+2,v[0]);put16(f->data+4,v[1]);f->dlc=6;}
-    else if(id==14){if(k->CalibrationMode>2)return false;f->data[2]=k->CalibrationMode;f->dlc=3;}
-    else if(id==15){if(k->Group<1||k->Group>10||k->Kt1Raw>4095||k->Kt2Raw>4095||k->Kt3Raw>4095||k->Kt4Raw>4095)return false;
-        f->data[0]|=k->Group;uint64_t bits=(uint64_t)k->Kt1Raw<<36|(uint64_t)k->Kt2Raw<<24|(uint64_t)k->Kt3Raw<<12|k->Kt4Raw;
-        for(unsigned i=0;i<6;i++) {
-            f->data[i+2]=(uint8_t)(bits>>(40-8*i));
-        }
-        f->dlc=8;}
-    return true;
 }

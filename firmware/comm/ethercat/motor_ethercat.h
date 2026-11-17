@@ -1,11 +1,20 @@
 #ifndef DCU_MOTOR_ETHERCAT_H
 #define DCU_MOTOR_ETHERCAT_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Initialize once before scheduler start. All remaining calls belong to the
+ * ecat-can task; ISR paths use the cycle/CAN handoff instead. */
+void motor_control_init(void);
+void motor_control_process(void);
+void motor_control_operational(bool operational);
+void motor_control_cycle_fault(void);
+void motor_control_output(const void *data);
 
 uint16_t motor_control_mapping(uint16_t *input_size, uint16_t *output_size);
 void motor_control_input(void *data);

@@ -20,8 +20,8 @@ class RawCanGatewayTest(unittest.TestCase):
         flags = ["-std=c++17", "-fno-exceptions", "-fno-rtti", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             flags += ["-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
-        # No axis, device, protocol, generated dictionary or SSC dependency.
-        for include in ("tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
+        # No HPM stubs, axis, device, protocol, generated dictionary or SSC dependency.
+        for include in ("firmware/cfg", "firmware/ports",
                         "firmware/app/motor", "firmware/comm/canfd"):
             flags.extend(("-I", str(ROOT / include)))
         cls.run_command([

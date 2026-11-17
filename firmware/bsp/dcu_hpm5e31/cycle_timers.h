@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+/* Once after board clocks are configured, before CAN IRQs or the worker.
+ * MCHTMR stays free-running; this never resets the FreeRTOS time source. */
 bool dcu_timebase_init(void);
 void dcu_worker_timer_start(void);
 bool dcu_worker_timer_ack(void);

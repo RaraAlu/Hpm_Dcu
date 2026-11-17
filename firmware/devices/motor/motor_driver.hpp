@@ -55,6 +55,13 @@ struct Feedback {
     uint32_t motor_fault{};
 };
 
+struct Routing {
+    uint16_t can_id{};
+    int32_t position_min_urad{}, position_max_urad{};
+    uint32_t velocity_limit_urad_s{}, torque_limit_mNm{};
+    uint32_t current_limit_dA{};
+};
+
 struct Capabilities {
     uint32_t control_modes{};
     uint32_t feedback_fields{};

@@ -1,16 +1,10 @@
-#include "motor_application.h"
 #include "detail/motor_application_impl.hpp"
 #include "encos_parameter_transactions.hpp"
-#include "ethercat_canfd_gateway.h"
-#include "motor_dictionary.hpp"
-#include "motor_pdo_codec.hpp"
-#include <cstring>
+#include "can_transport.h"
+#include "realtime_port.h"
 
 namespace dcu::app::motor_application::detail {
 namespace motor_cfg = dcu::app::config::motor_control;
-namespace pdo_layout = dcu::ethercat::pdo_layout;
-namespace motor_pdo = dcu::ethercat::motor_pdo;
-using namespace dcu::ethercat::motor_dictionary;
 
 namespace {
 bool newer(uint32_t a, uint32_t b)
@@ -29,12 +23,12 @@ bool any_service(void)
 
 unsigned MotorApplication::frame_us(unsigned c, unsigned bytes) const
 {
-    return dcu::app::BusScheduler::frame_cost(state_.channels[c].FrameFormat != 0, bytes);
+    return dcu::app::BusScheduler::frame_cost(state_.channels[c].frame_format != 0, bytes);
 }
 ControlSet MotorApplication::controls_on_bus(unsigned c) const
 {
     dcu::app::ControlSet controls{};
-    controls.period_us = state_.channel_command[c].Reserved;
+    controls.period_us = state_.channel_command[c].period_us;
     for (unsigned slot = 0; slot < ENCOS_MOTORS_PER_CHANNEL; ++slot) {
         auto &axis = axes_[c * ENCOS_MOTORS_PER_CHANNEL + slot];
         if (!axis.active()) continue;
@@ -60,39 +54,34 @@ bool MotorApplication::channel_active(unsigned c) const
 bool MotorApplication::command_permitted(uint32_t now) const
 {
     return state_.operational && state_.session_armed && state_.seen_cycle &&
-        (state_.board_command.BoardControl & 1) && !(state_.board_command.BoardControl & 2) &&
-        now - state_.last_command_ms < state_.board_command.CommandLeaseMs;
+        (state_.board_command.control_bits & 1) && !(state_.board_command.control_bits & 2) &&
+        now - state_.last_command_ms < state_.board_command.lease_ms;
 }
 void MotorApplication::stop_all(uint16_t fault)
 {
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++)
         axes_[a].stop(axes_[a].configured() ? fault : 0);
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++)
-        ethercat_canfd_cancel(c);
+        dcu_can_cancel(c);
     state_.session_armed = false;
 }
 void MotorApplication::operational(bool op)
 {
-    mc_owner_t *owner = object<mc_owner_t>(0x2003);
     if (!op) {
         /* Leaving OP ends this PDO session.  The idle EtherCAT master may
          * keep the slave in PREOP, but that must not keep CAN polling alive. */
-        state_.resume_pdo_owner = state_.resume_pdo_owner || owner->Owner == OWNER_PDO;
-        owner->Owner = OWNER_NONE;
-        owner->RequestedOwner = OWNER_NONE;
-        owner->Result = RESULT_OK;
-    } else if (state_.resume_pdo_owner && owner->Owner == OWNER_NONE) {
+        state_.resume_pdo_owner = state_.resume_pdo_owner || state_.owner == OWNER_PDO;
+        state_.owner = OWNER_NONE;
+    } else if (state_.resume_pdo_owner && state_.owner == OWNER_NONE) {
         /* A transient OP loss in the same HMI session can recover without
          * repeating the PREOP SDO setup.  A new owner write cancels this. */
-        owner->Owner = OWNER_PDO;
-        owner->RequestedOwner = OWNER_PDO;
+        state_.owner = OWNER_PDO;
         state_.resume_pdo_owner = false;
     }
     state_.operational = op;
-    state_.pending = false;
     state_.seen_cycle = false;
     raw_.reset_session();
-    memset(&state_.board_command, 0, sizeof(state_.board_command));
+    state_.board_command = {};
     stop_all(0);
     if (!op)
         parameters::reset_session(RESULT_STATE);
@@ -103,141 +92,115 @@ void MotorApplication::cycle_fault()
 {
     operational(false);
     /* Keep the existing invalid-PDO bit understood by the master's 0xfc mask.
-     * Detailed cycle causes remain in g_dcu_cycle_diagnostics. */
+     * Detailed cycle causes remain in cycle_diagnostics. */
     state_.board_fault |= 64U;
 }
 void MotorApplication::check_timeouts(uint32_t now)
 {
     if (!state_.operational) return;
-    if (state_.seen_cycle && uint32_t(now - state_.last_command_ms) >= state_.board_command.CommandLeaseMs) {
+    if (state_.seen_cycle && uint32_t(now - state_.last_command_ms) >= state_.board_command.lease_ms) {
         state_.board_fault |= 4;
         stop_all(3);
     }
-    const bool sdo_owner = object<mc_owner_t>(0x2003)->Owner == OWNER_SDO;
+    const bool sdo_owner = state_.owner == OWNER_SDO;
     for (auto &axis : axes_)
-        axis.check_timeouts(now, sdo_owner, state_.config.FeedbackTimeoutMs);
+        axis.check_timeouts(now, sdo_owner, state_.config.feedback_timeout_ms);
 }
-void MotorApplication::output(const void *p)
+bool MotorApplication::accept_candidate(const CycleCommand &candidate, uint32_t now, ProcessResult &result)
 {
-    memcpy(state_.candidate, p, state_.output_size);
-    state_.pending = true;
-}
-bool MotorApplication::accept_axis_command(unsigned axis, const mc_axis_rx_t &command, bool permit, uint32_t now)
-{
-    const bool accepted = axes_[axis].accept(command, permit, now);
-    if (accepted && axes_[axis].active())
-        *object<mc_axis_rx_t>(0x7200 + axis) = command;
-    return accepted;
-}
-bool MotorApplication::accept_candidate(uint32_t now)
-{
-    if (!state_.pending) {
-        return false;
-    }
-    state_.pending = false;
-    auto b = motor_pdo::board(state_.candidate);
+    const auto &b = candidate.board;
     /* Stop intent always wins, including duplicate sequence or malformed targets. */
-    bool stop = !(b.BoardControl & 1) || (b.BoardControl & 2);
+    bool stop = !(b.control_bits & 1) || (b.control_bits & 2);
     if (stop)
         stop_all(0);
-    if (state_.config.ActivePdoProfile != 2)
+    if (state_.mode != OperatingMode::Raw)
         for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++) {
-            auto c = motor_pdo::axis(state_.candidate, a);
-            auto ch = motor_pdo::channel(state_.candidate, a / ENCOS_MOTORS_PER_CHANNEL);
-            if (!(c.ControlWord & 1) || (c.ControlWord & 2) || !(ch.ChannelControl & 1) || (ch.ChannelControl & 2) || !(b.ChannelEnableMask & (1u << (a / ENCOS_MOTORS_PER_CHANNEL))) || !(b.AxisEnableMask & (1u << a)) || !(ch.ActiveMask & (1u << (a % ENCOS_MOTORS_PER_CHANNEL))))
+            const auto &c = candidate.axes[a];
+            const auto &ch = candidate.channels[a / ENCOS_MOTORS_PER_CHANNEL];
+            if (!(c.control_bits & 1) || (c.control_bits & 2) || !(ch.control_bits & 1) || (ch.control_bits & 2) || !(b.enabled_channels & (1u << (a / ENCOS_MOTORS_PER_CHANNEL))) || !(b.enabled_axes & (1u << a)) || !(ch.active_motors & (1u << (a % ENCOS_MOTORS_PER_CHANNEL))))
                 axes_[a].stop(0);
         }
-    if (b.InterfaceVersion != MC_INTERFACE_VERSION || (b.BoardControl & ~7u) || (b.ChannelEnableMask & 0xF0) || (b.AxisEnableMask & 0xF0000000u) || b.Reserved0 || b.Reserved1 || b.Reserved2 || b.Reserved3 || b.Reserved4 || !b.CommandLeaseMs || b.CommandLeaseMs > state_.config.MaxCommandLeaseMs) {
+    if (!b.layout_valid || (b.control_bits & ~7u) || (b.enabled_channels & 0xF0) || (b.enabled_axes & 0xF0000000u) || !b.lease_ms || b.lease_ms > state_.config.max_command_lease_ms) {
         state_.board_fault |= 64;
         stop_all(9);
         return false;
     }
-    if (!state_.operational || (state_.seen_cycle && !newer(b.CycleSeq, state_.last_cycle)))
+    if (!state_.operational || (state_.seen_cycle && !newer(b.sequence, state_.last_cycle)))
         return false;
     if (!state_.session_armed && !stop) {
         stop_all(8);
         return false;
     }
-    if (stop && !b.AxisEnableMask)
+    if (stop && !b.enabled_axes)
         state_.session_armed = true;
-    if ((b.BoardControl & 4) && !(state_.board_command.BoardControl & 4) && stop)
+    if ((b.control_bits & 4) && !(state_.board_command.control_bits & 4) && stop)
         state_.board_fault = 0;
-    state_.last_cycle = b.CycleSeq;
+    state_.last_cycle = b.sequence;
     state_.seen_cycle = true;
     state_.last_command_ms = now;
     state_.board_command = b;
-    *object<mc_board_rx_t>(0x7000) = b;
-    object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq = b.CycleSeq;
-    if (state_.config.ActivePdoProfile == 2) {
+    if (state_.mode == OperatingMode::Raw) {
         return true;
     }
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
-        auto ch = motor_pdo::channel(state_.candidate, c);
+        const auto &ch = candidate.channels[c];
         state_.channel_command[c] = ch;
-        *object<mc_channel_rx_t>(0x7100 + c) = ch;
-        bool valid = !(ch.ChannelControl & ~3u) && !(ch.ActiveMask & 0x80u) && ch.Reserved >= 1000u && ch.Reserved <= 10000u && ch.Reserved % 1000u == 0 && ch.ExpectedRole == state_.channels[c].Role;
+        bool valid = !(ch.control_bits & ~3u) && !(ch.active_motors & 0x80u) && ch.period_us >= 1000u && ch.period_us <= 10000u && ch.period_us % 1000u == 0 && ch.expected_role == state_.channels[c].role;
         for (unsigned j = 0; j < ENCOS_MOTORS_PER_CHANNEL; j++) {
             unsigned a = c * ENCOS_MOTORS_PER_CHANNEL + j;
-            auto cmd = motor_pdo::axis(state_.candidate, a);
-            bool permit = valid && !stop && (b.ChannelEnableMask & (1u << c)) && (b.AxisEnableMask & (1u << a)) && (ch.ChannelControl & 1) && !(ch.ChannelControl & 2) && (ch.ActiveMask & (1u << j));
+            const auto &cmd = candidate.axes[a];
+            bool permit = valid && !stop && (b.enabled_channels & (1u << c)) && (b.enabled_axes & (1u << a)) && (ch.control_bits & 1) && !(ch.control_bits & 2) && (ch.active_motors & (1u << j));
             if (!valid) {
                 axes_[a].stop(7);
                 continue;
             }
-            if (object<mc_owner_t>(0x2003)->Owner == OWNER_PDO)
-                accept_axis_command(a, cmd, permit, now);
+            if (state_.owner == OWNER_PDO && axes_[a].accept(cmd, permit, now) && axes_[a].active())
+                result.mirrored_axes |= 1u << a;
         }
-    }
-    if (state_.config.ActivePdoProfile == 1) {
-        mc_raw_t *r = object<mc_raw_t>(0x7300);
-        *r = motor_pdo::raw(state_.candidate);
     }
     return true;
 }
-bool MotorApplication::apply_configuration()
+bool MotorApplication::apply_configuration(const Configuration &configuration)
 {
-    mc_board_config_t *b = object<mc_board_config_t>(0x2001);
-    if (!configuration_writable() || any_service() || b->MaxCommandLeaseMs < 2 || b->MaxCommandLeaseMs > 10 || b->FeedbackTimeoutMs < 5 || b->FeedbackTimeoutMs > 20)
+    const auto *b = &configuration.board;
+    if (!configuration_writable() || any_service() || b->max_command_lease_ms < 2 || b->max_command_lease_ms > 10 || b->feedback_timeout_ms < 5 || b->feedback_timeout_ms > 20)
         return false;
     uint32_t mask = 0;
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
-        mc_channel_config_t *ch = object<mc_channel_config_t>(0x2010 + c);
-        if (ch->Role > 3 || ch->FrameFormat > 1 || ch->NominalBitrate != 1000000 || ch->DataBitrate != 5000000 || ch->ScheduleUs != 2000 || ch->RawRateLimit > 8)
+        const auto *ch = &configuration.channels[c];
+        if (ch->role > 3 || ch->frame_format > 1 || ch->nominal_bitrate != 1000000 || ch->data_bitrate != 5000000 || ch->schedule_us != 2000 || ch->raw_rate_limit > 8)
             return false;
-        if ((ch->Role == 0 || ch->Role == 2) && ch->MotorConfiguredMask)
+        if ((ch->role == 0 || ch->role == 2) && ch->configured_motors)
             return false;
-        if (state_.config.ActivePdoProfile == 2 && ch->MotorConfiguredMask)
+        if (state_.mode == OperatingMode::Raw && ch->configured_motors)
             return false;
-        if (ch->MotorConfiguredMask & 0x80u)
+        if (ch->configured_motors & 0x80u)
             return false;
         for (unsigned j = 0; j < ENCOS_MOTORS_PER_CHANNEL; j++)
-            if (ch->MotorConfiguredMask & (1u << j)) {
+            if (ch->configured_motors & (1u << j)) {
                 unsigned a = c * ENCOS_MOTORS_PER_CHANNEL + j;
-                mc_routing_t *r = object<mc_routing_t>(axis_object_base(a));
-                mc_basic_t *basic = object<mc_basic_t>(axis_object_base(a) + 1);
-                if (!dcu::app::validate_motor_configuration(*r, *basic, *object<mc_range_t>(axis_object_base(a) + 2), ch->FrameFormat))
+                const auto &axis_config = configuration.axes[a];
+                if (!validate_motor_configuration(axis_config, ch->frame_format))
                     return false;
                 for (unsigned previous = 0; previous < j; ++previous)
-                    if ((ch->MotorConfiguredMask & (1u << previous)) &&
-                        object<mc_routing_t>(axis_object_base(c * ENCOS_MOTORS_PER_CHANNEL + previous))->CanId == r->CanId)
+                    if ((ch->configured_motors & (1u << previous)) &&
+                        configuration.axes[c * ENCOS_MOTORS_PER_CHANNEL + previous].route.can_id == axis_config.route.can_id)
                         return false;
                 mask |= 1u << a;
             }
     }
-    if (mask != b->AxisConfiguredMask)
+    if (mask != b->configured_axes)
         return false;
     stop_all(0);
     state_.config = *b;
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
-        state_.channels[c] = *object<mc_channel_config_t>(0x2010 + c);
-        schedule_[c].reset_budget(ethercat_canfd_now_ms());
+        state_.channels[c] = configuration.channels[c];
+        schedule_[c].reset_budget(dcu_time_now_ms());
     }
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++) {
         if (!axes_[a].configure((mask & (1u << a)) != 0,
-                                state_.channels[a / ENCOS_MOTORS_PER_CHANNEL].FrameFormat,
-                                *object<mc_routing_t>(axis_object_base(a)),
-                                *object<mc_basic_t>(axis_object_base(a) + 1),
-                                *object<mc_range_t>(axis_object_base(a) + 2))) {
+                                state_.channels[a / ENCOS_MOTORS_PER_CHANNEL].frame_format,
+                                configuration.axes[a])) {
             axes_[a].stop(1);
             stop_all(1);
             state_.config_ready = false;
@@ -251,9 +214,11 @@ bool MotorApplication::apply_configuration()
 void MotorApplication::consume_feedback(unsigned c, const dcu_can_frame_t &frame, uint32_t stamp, uint32_t now)
 {
     const auto *f = &frame;
-    if ((f->flags & 2) || f->flags != (object<mc_channel_config_t>(0x2010 + c)->FrameFormat ? 24 : 0) || f->dlc < 2)
-        return;
     auto transaction = parameters::inspect(c);
+    const uint8_t format = transaction.busy && transaction.can_id == f->id ?
+        transaction.frame_format : state_.channels[c].frame_format;
+    if ((f->flags & 2) || f->flags != (format ? 24 : 0) || f->dlc < 2)
+        return;
     unsigned a = ENCOS_AXIS_COUNT;
     if (parameters::consume_maintenance(c, *f))
         return;
@@ -267,28 +232,30 @@ void MotorApplication::consume_feedback(unsigned c, const dcu_can_frame_t &frame
     if (a == ENCOS_AXIS_COUNT)
         return;
     const auto service_dialect = transaction.busy && transaction.sent && transaction.axis == a ?
-        motor_parameter_dialect(object<mc_routing_t>(axis_object_base(a))->ModelProfileId) : ParameterDialect::None;
+        transaction.dialect : ParameterDialect::None;
     axes_[a].consume_feedback(frame, stamp, now, service_dialect);
 }
-void MotorApplication::process()
+ProcessResult MotorApplication::process(const CycleCommand *candidate)
 {
-    uint32_t now_us = ethercat_canfd_now_us();
+    ProcessResult result{};
+    uint32_t now_us = dcu_time_now_us();
     if ((uint32_t)(now_us - state_.last_process_us) < motor_cfg::process_period_us)
-        return;
+        return result;
     state_.last_process_us = now_us;
-    uint32_t now = ethercat_canfd_now_ms();
-    const bool accepted = accept_candidate(now);
+    uint32_t now = dcu_time_now_ms();
+    result.consumed = candidate != nullptr;
+    result.accepted = candidate && accept_candidate(*candidate, now, result);
     check_timeouts(now);
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
         schedule_[c].refill(now);
         dcu_can_frame_t f;
         uint32_t stamp;
-        for (unsigned n = 0; n < 32 && ethercat_canfd_receive(c, &f, &stamp); n++) {
+        for (unsigned n = 0; n < 32 && dcu_can_receive(c, &f, &stamp); n++) {
             consume_feedback(c, f, stamp, now);
-            if (state_.channels[c].Role >= 2)
+            if (state_.channels[c].role >= 2)
                 raw_.receive(c, f);
         }
-        if (ethercat_canfd_bus_state(c) == 3) {
+        if (dcu_can_bus_state(c) == 3) {
             state_.board_fault |= 8;
             parameters::cancel(c, RESULT_IO);
             for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; a++)
@@ -302,37 +269,37 @@ void MotorApplication::process()
         for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; a++)
             axes_[a].check_startup(now);
         auto controls = controls_on_bus(c);
-        if (schedule_[c].stalled(now, ethercat_canfd_tx_progress(c),
-                                 ethercat_canfd_pending(c), state_.config.FeedbackTimeoutMs)) {
+        if (schedule_[c].stalled(now, dcu_can_tx_progress(c),
+                                 dcu_can_pending(c), state_.config.feedback_timeout_ms)) {
             /* 只把“队列持续无任何发送完成”视为真正的 TX 卡死。
              * 正常多轴流水发送时 TXBRP 可以跨调度周期保持非零。 */
-            ethercat_canfd_cancel(c);
+            dcu_can_cancel(c);
             ++state_.channel_tx_drop[c];
             ++state_.tx_total;
             state_.board_fault |= 32;
             for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; a++)
                 if (axes_[a].active()) {
-                    ++axis_diagnostics(a)->TxDropCount;
+                    axes_[a].record_tx_drop();
                     axes_[a].stop(6);
                 }
             continue;
         }
-        if (state_.operational && state_.session_armed && state_.config.ActivePdoProfile != 2) {
+        if (state_.operational && state_.session_armed && state_.mode != OperatingMode::Raw) {
             unsigned cost = 2u * frame_us(c, 8);
-            bool ready = !ethercat_canfd_pending(c) && ethercat_canfd_tx_free(c) > 0;
+            bool ready = !dcu_can_pending(c) && dcu_can_tx_free(c) > 0;
             int selected = schedule_[c].next_control(controls, now_us, cost, ready);
             if (selected >= 0) {
                 unsigned slot = static_cast<unsigned>(selected);
                 unsigned a = c * ENCOS_MOTORS_PER_CHANNEL + slot;
                 auto &axis = axes_[a];
                 if (axis.encode_control(f)) {
-                    f.flags = state_.channels[c].FrameFormat ? 24 : 0;
-                    if (ethercat_canfd_send(c, &f, a)) {
+                    f.flags = state_.channels[c].frame_format ? 24 : 0;
+                    if (dcu_can_send(c, &f, a)) {
                         schedule_[c].control_submitted(slot, now_us, controls.period_us, !axis.control_sent(), cost);
                         axis.control_submitted(now);
                         controls.first_send_mask &= ~(1u << slot);
                     } else {
-                        ++axis_diagnostics(a)->TxDropCount;
+                        axis.record_tx_drop();
                         ++state_.channel_tx_drop[c];
                         ++state_.tx_total;
                     }
@@ -343,17 +310,17 @@ void MotorApplication::process()
             }
         }
         const auto *request = parameters::pending(c);
-        if (request && !ethercat_canfd_pending(c) && ethercat_canfd_tx_free(c) &&
+        if (request && !dcu_can_pending(c) && dcu_can_tx_free(c) &&
             schedule_[c].guard_elapsed(now_us)) {
             unsigned cost = frame_us(c, request->dlc) + frame_us(c, 8);
             bool query_window = !transaction.internal || schedule_[c].query_window(controls, now_us, cost, 2u * frame_us(c, 8));
-            if (query_window && schedule_[c].can_afford(cost) && ethercat_canfd_send(c, request, ENCOS_AXIS_COUNT)) {
+            if (query_window && schedule_[c].can_afford(cost) && dcu_can_send(c, request, ENCOS_AXIS_COUNT)) {
                 schedule_[c].submitted(now_us, cost);
                 parameters::mark_sent(c, now);
             }
         }
-        unsigned owner = object<mc_owner_t>(0x2003)->Owner;
-        if (!transaction.busy && (owner == OWNER_PDO || owner == OWNER_SDO) && state_.config.ActivePdoProfile != 2 && state_.channels[c].Role != 0) {
+        const Owner owner = state_.owner;
+        if (!transaction.busy && (owner == OWNER_PDO || owner == OWNER_SDO) && state_.mode != OperatingMode::Raw && state_.channels[c].role != 0) {
             /* Internal queries are strictly best effort.  Reserve one complete
              * control sweep and enough wall-clock slack before creating the
              * service, otherwise the query waits without stealing a deadline.
@@ -369,7 +336,7 @@ void MotorApplication::process()
                         auto &axis = axes_[a];
                         if (!axis.configured() || (pass == 0 ? axis.active() : !axis.active()))
                             continue;
-                        if (axis.start_query(now, owner, state_.channels[c].FrameFormat))
+                        if (axis.start_query(now, owner, state_.channels[c].frame_format))
                             state_.query_slot[c] = (slot + 1) % ENCOS_MOTORS_PER_CHANNEL;
                         if (parameters::inspect(c).busy)
                             break;
@@ -378,164 +345,154 @@ void MotorApplication::process()
             }
         }
     }
-    if (accepted)
-        process_raw(now);
+    if (result.accepted)
+        result.raw_mirrored = process_raw(*candidate, now);
+    return result;
 }
-void MotorApplication::process_raw(uint32_t now)
+bool MotorApplication::process_raw(const CycleCommand &candidate, uint32_t now)
 {
-    const unsigned profile = state_.config.ActivePdoProfile;
-    if (profile != 1 && profile != 2) return;
+    const auto mode = state_.mode;
+    if (mode == OperatingMode::Motor) return false;
     RawCanPolicy policy{};
     policy.permitted = command_permitted(now);
-    if (profile == 2 && !policy.permitted) return;
+    if (mode == OperatingMode::Raw && !policy.permitted) return false;
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
         auto &bus = policy.buses[c];
         const auto &channel = state_.channels[c];
-        bus.can_send = (state_.board_command.ChannelEnableMask & (1u << c)) &&
-            (channel.Role == 2 || channel.Role == 3) && parameters::available(c, now);
-        bus.rate_limit = channel.RawRateLimit;
-        bus.fd_response = channel.FrameFormat != 0;
+        bus.can_send = (state_.board_command.enabled_channels & (1u << c)) &&
+            (channel.role == 2 || channel.role == 3) && parameters::available(c, now);
+        bus.rate_limit = channel.raw_rate_limit;
+        bus.fd_response = channel.frame_format != 0;
         for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; ++a)
             if (axes_[a].configured())
                 bus.protected_ids[bus.protected_count++] = axes_[a].can_id();
     }
-    const unsigned batches = profile == 2 ? ENCOS_CHANNEL_COUNT : 1;
+    const unsigned batches = mode == OperatingMode::Raw ? ENCOS_CHANNEL_COUNT : 1;
     for (unsigned c = 0; c < batches; ++c) {
-        RawCanBatch batch{};
-        if (profile == 1) {
-            motor_pdo::decode_raw_sideband(motor_pdo::raw(state_.candidate), batch);
-        } else {
-            const auto raw = motor_pdo::raw_bus(state_.candidate, c);
-            *object<canfd_bus_pdo_t>(0x7400 + 16 * c) = raw;
-            motor_pdo::decode_raw_bus(raw, c, batch);
-        }
-        const auto drops = raw_.process(batch, policy, now, schedule_);
+        const auto drops = raw_.process(candidate.raw[c], policy, now, schedule_);
         state_.tx_total += drops.total;
         for (unsigned bus = 0; bus < ENCOS_CHANNEL_COUNT; ++bus)
             state_.channel_tx_drop[bus] += drops.channel[bus];
     }
+    return true;
 }
-void MotorApplication::publish(uint32_t now)
+void MotorApplication::prepare_publication(Publication &snapshot)
 {
-    mc_board_tx_t *b = object<mc_board_tx_t>(0x6000);
-    ++b->PublishSeq;
-    b->BoardStatus = state_.board_fault | (state_.config_ready ? 1 : 0) | (state_.operational ? 2 : 0) | (object<mc_owner_t>(0x2003)->Owner == OWNER_SDO ? 128 : 0);
-    b->AxisOnlineMask = b->AxisFaultMask = 0;
-    b->ChannelOnlineMask = b->ChannelFaultMask = 0;
+    const uint32_t now = dcu_time_now_ms();
+    snapshot.mode = state_.mode;
+    snapshot.sequence = ++state_.publication_sequence;
+    snapshot.accepted_cycle_sequence = state_.last_cycle;
+    snapshot.cycle_sequence = state_.board_command.sequence;
+    snapshot.board_status = state_.board_fault | (state_.config_ready ? 1 : 0) | (state_.operational ? 2 : 0) | (state_.owner == OWNER_SDO ? 128 : 0);
+    snapshot.online_axes = snapshot.fault_axes = 0;
+    snapshot.online_channels = snapshot.fault_channels = 0;
     uint32_t rx_drops_total = 0;
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
-        mc_channel_tx_t *ch = object<mc_channel_tx_t>(0x6100 + c);
-        memset(ch, 0, sizeof(*ch));
-        uint32_t drops = ethercat_canfd_rx_drops(c) + raw_.rx_drops(c);
+        auto *ch = &snapshot.channels[c];
+        *ch = {};
+        uint32_t drops = dcu_can_rx_drops(c) + raw_.rx_drops(c);
         rx_drops_total += drops;
-        ch->ChannelStatus = (state_.config_ready ? 1 : 0) | (channel_active(c) ? 2 : 0) | (ethercat_canfd_bus_state(c) == 3 ? 4 : 0) | (drops ? 8 : 0) | (state_.channel_tx_drop[c] ? 16 : 0);
-        ch->RxDropCount = drops > 65535 ? 65535 : drops;
-        ch->TxDropCount = state_.channel_tx_drop[c] > 65535 ? 65535 : state_.channel_tx_drop[c];
+        ch->status = (state_.config_ready ? 1 : 0) | (channel_active(c) ? 2 : 0) | (dcu_can_bus_state(c) == 3 ? 4 : 0) | (drops ? 8 : 0) | (state_.channel_tx_drop[c] ? 16 : 0);
+        ch->rx_drops = drops;
+        ch->tx_drops = state_.channel_tx_drop[c];
+        ch->role = state_.channels[c].role;
+        ch->raw_drops = raw_.rx_drops(c);
         for (unsigned a = c * ENCOS_MOTORS_PER_CHANNEL; a < (c + 1) * ENCOS_MOTORS_PER_CHANNEL; a++) {
-            const auto status = axes_[a].read_feedback(now, state_.config.FeedbackTimeoutMs,
-                                                       *axis_feedback(a), *axis_diagnostics(a));
+            auto &axis = snapshot.axes[a];
+            const auto status = axes_[a].read_feedback(now, state_.config.feedback_timeout_ms, axis.feedback, axis.diagnostics);
+            axis.type1_count = axes_[a].type1_count();
             axes_[a].acknowledge_publication();
             if (status.online) {
-                b->AxisOnlineMask |= 1u << a;
-                ch->OnlineMask |= 1u << (a % ENCOS_MOTORS_PER_CHANNEL);
+                snapshot.online_axes |= 1u << a;
+                ch->online_motors |= 1u << (a % ENCOS_MOTORS_PER_CHANNEL);
             }
             if (status.fault) {
-                b->AxisFaultMask |= 1u << a;
-                ch->FaultMask |= 1u << (a % ENCOS_MOTORS_PER_CHANNEL);
+                snapshot.fault_axes |= 1u << a;
+                ch->fault_motors |= 1u << (a % ENCOS_MOTORS_PER_CHANNEL);
             }
         }
-        if (ch->OnlineMask) {
-            b->ChannelOnlineMask |= 1u << c;
+        if (ch->online_motors) {
+            snapshot.online_channels |= 1u << c;
         }
-        if (ch->FaultMask || (ch->ChannelStatus & 4)) {
-            b->ChannelFaultMask |= 1u << c;
+        if (ch->fault_motors || (ch->status & 4)) {
+            snapshot.fault_channels |= 1u << c;
         }
     }
-    b->RxDropCount = rx_drops_total;
-    b->TxDropCount = state_.tx_total;
+    snapshot.rx_drops = rx_drops_total;
+    snapshot.tx_drops = state_.tx_total;
     if (rx_drops_total) {
         state_.board_fault |= 16;
-        b->BoardStatus |= 16;
+        snapshot.board_status |= 16;
     }
 }
 bool MotorApplication::configuration_writable() const { return !state_.operational && !any_active(); }
 bool MotorApplication::owner_change_allowed() const { return !any_active() && !any_service(); }
-bool MotorApplication::select_profile(unsigned profile)
+bool MotorApplication::select_mode(OperatingMode mode)
 {
-    if (profile >= pdo_layout::profile_count ||
-        (state_.operational && profile != state_.config.ActivePdoProfile) ||
-        (profile == 2 && state_.config.AxisConfiguredMask)) return false;
-    state_.config.ActivePdoProfile = profile;
-    state_.output_size = pdo_layout::profiles[profile].output;
+    if (mode > OperatingMode::Raw ||
+        (state_.operational && mode != state_.mode) ||
+        (mode == OperatingMode::Raw && state_.config.configured_axes)) return false;
+    state_.mode = mode;
     return true;
 }
-PdoPublication MotorApplication::prepare_publication()
-{
-    publish(ethercat_canfd_now_ms());
-    PdoPublication snapshot{};
-    snapshot.profile = state_.config.ActivePdoProfile;
-    snapshot.cycle_sequence = state_.board_command.CycleSeq;
-    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
-        snapshot.roles[c] = state_.channels[c].Role;
-        snapshot.raw_drops[c] = raw_.rx_drops(c);
-    }
-    for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
-        snapshot.type1_count[a] = axes_[a].type1_count();
-    return snapshot;
-}
 bool MotorApplication::take_raw_frame(unsigned bus, dcu_can_frame_t &frame) { return raw_.take(bus, frame); }
-void MotorApplication::refresh_axis_feedback(unsigned axis)
-{
-    if (axis >= ENCOS_AXIS_COUNT) return;
-    axes_[axis].read_feedback(ethercat_canfd_now_ms(), state_.config.FeedbackTimeoutMs,
-                             *axis_feedback(axis), *axis_diagnostics(axis));
-}
-void MotorApplication::owner_changed() { stop_all(0); state_.resume_pdo_owner = false; }
-void MotorApplication::commit_sdo_command(unsigned axis, mc_sdo_command_t &command, uint32_t now)
-{
-    if (axis >= ENCOS_AXIS_COUNT) {
-        command.CommandResult = RESULT_INVALID;
-        return;
-    }
-    bool gate = command_permitted(now);
-    if (object<mc_owner_t>(0x2003)->Owner != OWNER_SDO || !gate) {
-        command.CommandResult = RESULT_STATE;
-        axes_[axis].stop(8);
-    } else if (!command.LeaseMs || command.LeaseMs > state_.config.MaxCommandLeaseMs ||
-               !newer(command.CommitSeq, command.AcceptedSeq)) {
-        command.CommandResult = RESULT_INVALID;
-        axes_[axis].stop(2);
-    } else {
-        mc_axis_rx_t intent;
-        memcpy(&intent, &command, sizeof(intent));
-        bool ok = accept_axis_command(axis, intent, true, now);
-        command.CommandResult = ok ? RESULT_OK : RESULT_INVALID;
-        if (ok) {
-            command.AcceptedSeq = command.CommitSeq;
-            axes_[axis].set_sdo_lease(command.LeaseMs, now);
-        }
-    }
-}
-bool MotorApplication::commit_parameter(unsigned axis, bool maintenance, uint32_t now, bool is_preop)
+bool MotorApplication::read_axis(unsigned axis, AxisFeedback &feedback, AxisDiagnostics &diagnostics) const
 {
     if (axis >= ENCOS_AXIS_COUNT) return false;
-    bool permitted = is_preop && configuration_writable() && object<mc_owner_t>(0x2003)->Owner == OWNER_SDO;
-    return parameters::commit(axis, maintenance, now, permitted, channel_active(axis / ENCOS_MOTORS_PER_CHANNEL));
+    axes_[axis].read_feedback(dcu_time_now_ms(), state_.config.feedback_timeout_ms, feedback, diagnostics);
+    return true;
 }
-void MotorApplication::initialize()
+bool MotorApplication::set_owner(Owner owner)
 {
-    state_.config = *object<mc_board_config_t>(0x2001);
-    state_.output_size = pdo_layout::max_output_bytes;
+    if (owner > OWNER_SDO || !owner_change_allowed()) return false;
+    stop_all(0);
+    state_.resume_pdo_owner = false;
+    state_.owner = owner;
+    return true;
+}
+CommandResult MotorApplication::commit_sdo_command(unsigned axis, const SdoCommand &command, uint32_t now)
+{
+    if (axis >= ENCOS_AXIS_COUNT) return {};
+    CommandResult result{};
+    result.accepted_sequence = state_.sdo_accepted_sequence[axis];
+    if (command.sequence == result.accepted_sequence) {
+        result.changed = false;
+        return result;
+    }
+    bool gate = command_permitted(now);
+    if (state_.owner != OWNER_SDO || !gate) {
+        result.result = RESULT_STATE;
+        axes_[axis].stop(8);
+    } else if (!command.lease_ms || command.lease_ms > state_.config.max_command_lease_ms ||
+               !newer(command.sequence, result.accepted_sequence)) {
+        axes_[axis].stop(2);
+    } else {
+        bool ok = axes_[axis].accept(command.command, true, now);
+        result.result = ok ? RESULT_OK : RESULT_INVALID;
+        if (ok) {
+            result.accepted_sequence = state_.sdo_accepted_sequence[axis] = command.sequence;
+            result.mirror_command = axes_[axis].active();
+            axes_[axis].set_sdo_lease(command.lease_ms, now);
+        }
+    }
+    return result;
+}
+parameters::CommitOutcome MotorApplication::commit_parameter(const parameters::Request &request, uint32_t now, bool is_preop)
+{
+    const unsigned axis = request.axis;
+    if (axis >= ENCOS_AXIS_COUNT) return {};
+    bool permitted = is_preop && configuration_writable() && state_.owner == OWNER_SDO;
+    return parameters::commit(request, now, permitted, channel_active(axis / ENCOS_MOTORS_PER_CHANNEL));
+}
+void MotorApplication::initialize(const Configuration &defaults)
+{
+    state_.config = defaults.board;
     state_.last_process_us = UINT32_MAX;
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++) {
         axes_[a].initialize(a);
-        object<mc_routing_t>(axis_object_base(a))->CanId = a % ENCOS_MOTORS_PER_CHANNEL + 1;
-        axis_feedback(a)->FeedbackAgeMs = axis_feedback(a)->PowerAgeMs = UINT16_MAX;
-        axis_diagnostics(a)->PositionQueryAgeUs = axis_diagnostics(a)->VelocityQueryAgeUs = UINT32_MAX;
     }
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++)
-        state_.channels[c] = *object<mc_channel_config_t>(0x2010 + c);
-    object<mc_board_info_t>(0x2000)->Capabilities = 7; /* Three PDO profiles; hardware validation still required. */
+        state_.channels[c] = defaults.channels[c];
 }
 }
 namespace {
@@ -543,31 +500,34 @@ namespace {
 dcu::app::motor_application::detail::MotorApplication application;
 }
 
-void motor_control_init(void) { application.initialize(); }
-void motor_control_process(void) { application.process(); }
-void motor_control_operational(bool operational) { application.operational(operational); }
-void motor_control_cycle_fault(void) { application.cycle_fault(); }
-void motor_control_output(const void *data) { application.output(data); }
-
 namespace dcu::app::motor_application {
+void initialize(const Configuration &defaults) { application.initialize(defaults); }
+ProcessResult process(const CycleCommand *candidate) { return application.process(candidate); }
+void operational(bool operational) { application.operational(operational); }
+void cycle_fault() { application.cycle_fault(); }
 bool configuration_writable() { return application.configuration_writable(); }
 bool owner_change_allowed() { return application.owner_change_allowed(); }
 bool transaction_busy(unsigned axis)
 {
     return axis < ENCOS_AXIS_COUNT && parameters::inspect(axis / ENCOS_MOTORS_PER_CHANNEL).busy;
 }
-bool apply_configuration() { return application.apply_configuration(); }
-bool select_profile(unsigned profile) { return application.select_profile(profile); }
-void owner_changed() { application.owner_changed(); }
-void commit_sdo_command(unsigned axis, mc_sdo_command_t &command, uint32_t now_ms)
+bool apply_configuration(const Configuration &configuration) { return application.apply_configuration(configuration); }
+bool select_mode(OperatingMode mode) { return application.select_mode(mode); }
+OperatingMode mode() { return application.mode(); }
+bool set_owner(Owner owner) { return application.set_owner(owner); }
+Owner owner() { return application.owner(); }
+CommandResult commit_sdo_command(unsigned axis, const SdoCommand &command, uint32_t now_ms)
 {
-    application.commit_sdo_command(axis, command, now_ms);
+    return application.commit_sdo_command(axis, command, now_ms);
 }
-bool commit_parameter(unsigned axis, bool maintenance, uint32_t now_ms, bool preop)
+parameters::CommitOutcome commit_parameter(const parameters::Request &request, uint32_t now_ms, bool preop)
 {
-    return application.commit_parameter(axis, maintenance, now_ms, preop);
+    return application.commit_parameter(request, now_ms, preop);
 }
-void refresh_axis_feedback(unsigned axis) { application.refresh_axis_feedback(axis); }
-PdoPublication prepare_publication() { return application.prepare_publication(); }
+bool read_axis(unsigned axis, AxisFeedback &feedback, AxisDiagnostics &diagnostics)
+{
+    return application.read_axis(axis, feedback, diagnostics);
+}
+void prepare_publication(Publication &snapshot) { application.prepare_publication(snapshot); }
 bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame) { return application.take_raw_frame(bus, frame); }
 }

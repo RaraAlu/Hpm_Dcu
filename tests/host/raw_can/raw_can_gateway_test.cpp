@@ -14,7 +14,7 @@ struct SentFrame { unsigned bus; dcu_can_frame_t frame; };
 static std::vector<SentFrame> sent;
 static bool allow_send = true;
 
-extern "C" bool ethercat_canfd_send(unsigned bus, const dcu_can_frame_t *frame, unsigned tag)
+extern "C" bool dcu_can_send(unsigned bus, const dcu_can_frame_t *frame, unsigned tag)
 {
     CHECK(tag == ENCOS_AXIS_COUNT);
     if (!allow_send) return false;

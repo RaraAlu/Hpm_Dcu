@@ -16,7 +16,7 @@ PRIVATE_HEADERS = {
     "app/runtime/detail/ethercat_can_task_state.h": "app/runtime/ethercat_can_task.c",
     "comm/ethercat/detail/motor_pdo_state.hpp": "comm/ethercat/motor_pdo.cpp",
     "comm/ethercat/detail/ethercat_dictionary_owner.h": "comm/ethercat/ethercat_callbacks.c",
-    "comm/canfd/detail/can_gateway_state.h": "comm/canfd/ethercat_canfd_gateway.c",
+    "comm/canfd/detail/can_gateway_state.h": "comm/canfd/hpm_mcan_transport.c",
     "protocols/encos/detail/encos_math.hpp": "protocols/encos/encos_motor.cpp",
 }
 
@@ -28,6 +28,41 @@ def owned_files():
 
 
 class HeaderOwnershipTest(unittest.TestCase):
+    def test_public_headers_do_not_export_mutable_storage(self):
+        # SDK-derived ESC address contract is the sole owned-header exception.
+        # SSC dictionary storage is generated and excluded by owned_files().
+        exceptions = {"comm/ethercat/port/hpm_ecat_hw.h": {"extern MEM_ADDR ESCMEM * pEsc;"}}
+        exports = {}
+        for path in owned_files():
+            if path.suffix not in (".h", ".hpp"):
+                continue
+            text = re.sub(r"/\*.*?\*/|//[^\n]*", "", path.read_text(), flags=re.DOTALL)
+            declarations = set()
+            for declaration in re.findall(r'\bextern\s+(?!"C")[^;{}]+;', text):
+                declaration = " ".join(declaration.split())
+                if "(" not in declaration:
+                    declarations.add(declaration)
+            if declarations:
+                exports[path.relative_to(FIRMWARE).as_posix()] = declarations
+        self.assertEqual(exports, exceptions)
+
+    def test_transport_wire_and_diagnostics_headers_need_no_hardware_or_rtos_stubs(self):
+        includes = ("firmware/cfg", "firmware/ports", "firmware/comm/canfd", "firmware/comm/ethercat",
+                    "firmware/generated/encos", "firmware/app/cycle", "firmware/app/runtime")
+        headers = ("can_transport.h", "raw_can_pdo.h", "realtime_port.h",
+                   "ethercat_cycle.h", "ethercat_can_task.h")
+        for compiler, language, standard in (("cc", "c", "c11"), ("c++", "c++", "c++17")):
+            command = [compiler, "-x", language, f"-std={standard}", "-fsyntax-only",
+                       "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
+            for include in includes:
+                command.extend(("-I", str(ROOT / include)))
+            for header in (*headers, *(("motor_pdo_layout.hpp",) if language == "c++" else ())):
+                with self.subTest(language=language, header=header):
+                    source = f'#include "{header}"\n#include "{header}"\nint main(void) {{ return 0; }}\n'
+                    result = subprocess.run([*command, "-"], input=source, text=True,
+                                            capture_output=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_implementation_files_do_not_define_types_or_macros(self):
         declaration = re.compile(
             r"^\s*(?:#\s*define\b|typedef\b|using\s+\w+\s*=|(?:(?:static|const)\s+)*"
