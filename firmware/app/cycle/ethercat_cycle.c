@@ -117,6 +117,36 @@ static inline void write_handoff(uint32_t *value, uint32_t next)
     __atomic_store_n(value, next, __ATOMIC_RELEASE);
 }
 
+static bool sm2_sync_selected(void)
+{
+    return !bDcSyncActive && sSyncManOutPar.u16SyncType == SYNCTYPE_SM_SYNCHRON &&
+           sSyncManInPar.u16SyncType == SYNCTYPE_SM2_SYNCHRON;
+}
+
+static bool sm2_configuration_matches(void)
+{
+    uint32_t activation = 0;
+    HW_EscReadDWord(activation, ESC_DC_UNIT_CONTROL_OFFSET);
+    return sm2_sync_selected() &&
+           !(SWAPDWORD(activation) & (ESC_DC_SYNC_UNIT_ACTIVE_MASK |
+                                     ESC_DC_SYNC_UNIT_AUTO_ACTIVE_MASK |
+                                     ESC_DC_SYNC0_ACTIVE_MASK | ESC_DC_SYNC1_ACTIVE_MASK));
+}
+
+static bool cycle_configuration_matches(void)
+{
+    return read_handoff(&handoff.sm2_cycles) ? sm2_configuration_matches() :
+                                             dc_configuration_matches(pipeline.period_ns);
+}
+
+static void check_sm2_gap(uint32_t now_us)
+{
+    if (read_handoff(&handoff.sm2_cycles) && read_handoff(&pipeline.enabled) &&
+        (int32_t)(now_us - read_handoff(&handoff.sm2_event_us)) >
+            (int32_t)(pipeline.period_us + DCU_WORKER_PERIOD_US))
+        pdo_pipeline_fault(&pipeline, PDO_PIPELINE_RX_MISSING);
+}
+
 static void timing_sample(volatile dcu_cycle_timing_histogram_t *stats, uint32_t us)
 {
     if (!stats->count || us < stats->min_us) stats->min_us = us;
@@ -149,18 +179,24 @@ uint16_t dcu_cycle_configure(void)
     if (runtime.outputs_running)
         return ALSTATUSCODE_DCINVALIDSYNCCFG;
     runtime.configured = false;
-    if (!bDcSyncActive || sSyncManOutPar.u16SyncType != SYNCTYPE_DCSYNC0 ||
-        sSyncManInPar.u16SyncType != SYNCTYPE_DCSYNC0)
-        return ALSTATUSCODE_SYNCHRONNOTSUPPORTED;
-
-    uint32_t period_ns = 0;
-    HW_EscReadDWord(period_ns, ESC_DC_SYNC0_CYCLETIME_OFFSET);
-    period_ns = SWAPDWORD(period_ns);
-    if (!dc_configuration_matches(period_ns))
-        return ALSTATUSCODE_DCINVALIDSYNCCFG;
+    const bool sm2 = sm2_sync_selected();
+    uint32_t period_ns = DCU_SM2_CYCLE_NS;
+    if (sm2) {
+        if (!sm2_configuration_matches())
+            return ALSTATUSCODE_DCINVALIDSYNCCFG;
+    } else {
+        if (!bDcSyncActive || sSyncManOutPar.u16SyncType != SYNCTYPE_DCSYNC0 ||
+            sSyncManInPar.u16SyncType != SYNCTYPE_DCSYNC0)
+            return ALSTATUSCODE_SYNCHRONNOTSUPPORTED;
+        HW_EscReadDWord(period_ns, ESC_DC_SYNC0_CYCLETIME_OFFSET);
+        period_ns = SWAPDWORD(period_ns);
+        if (!dc_configuration_matches(period_ns))
+            return ALSTATUSCODE_DCINVALIDSYNCCFG;
+    }
     intc_m_disable_irq(IRQn_ESC_SYNC0);
     runtime.configured = pdo_pipeline_configure(&pipeline, period_ns,
                                                 DCU_TX_PUBLISH_ADVANCE_US, nPdOutputSize);
+    write_handoff(&handoff.sm2_cycles, runtime.configured && sm2);
     intc_m_enable_irq_with_priority(IRQn_ESC_SYNC0, DCU_IRQ_SYNC0_PRIORITY);
     cycle_diagnostics.configured_period_ns = runtime.configured ? period_ns : 0;
     if (!runtime.configured)
@@ -173,7 +209,7 @@ uint16_t dcu_cycle_start_outputs(void)
 {
     if (!runtime.configured)
         return ALSTATUSCODE_DCINVALIDSYNCCFG;
-    if (!dc_configuration_matches(pipeline.period_ns))
+    if (!cycle_configuration_matches())
         return ALSTATUSCODE_DCINVALIDSYNCCFG;
     memset((void *)&cycle_timing, 0, sizeof(cycle_timing));
     /* A new session must not reuse a command staged before OP. */
@@ -216,8 +252,11 @@ uint16_t dcu_cycle_start_outputs(void)
     dcu_tx_allow();
     pipeline.stage_clock_us = dcu_time_now_us;
 #if defined(CONFIG_SYNC0_HW_CAPTURE_TEST)
-    dcu_sync0_capture_begin(pipeline.period_ns);
+    if (!read_handoff(&handoff.sm2_cycles))
+        dcu_sync0_capture_begin(pipeline.period_ns);
 #endif
+    if (read_handoff(&handoff.sm2_cycles))
+        write_handoff(&handoff.sm2_event_us, dcu_time_now_us());
     pdo_pipeline_enable(&pipeline, true);
     intc_m_enable_irq_with_priority(IRQn_ESC_SYNC0, DCU_IRQ_SYNC0_PRIORITY);
     return ALSTATUSCODE_NOERROR;
@@ -273,11 +312,23 @@ static inline __attribute__((always_inline)) uint32_t stage_begin(void)
     return __atomic_add_fetch(&handoff.stage_sequence, 1U, __ATOMIC_RELAXED);
 }
 
+DCU_FAST_CODE void dcu_cycle_sm2_event_isr(void)
+{
+    if (read_handoff(&handoff.sm2_cycles) && read_handoff(&pipeline.enabled)) {
+        const uint32_t now_us = dcu_time_now_us();
+        check_sm2_gap(now_us);
+        write_handoff(&handoff.sm2_event_us, now_us);
+    }
+}
+
 static void stage_finish(bool committed, const void *data, bool direct, uint32_t direct_read_end_us)
 {
     if (committed) {
         const uint32_t done_us = dcu_time_now_us();
         write_handoff(&handoff.stage_done_us, done_us);
+        /* The ready slot is complete. Budget from the SM event, not copy end. */
+        if (read_handoff(&handoff.sm2_cycles))
+            (void)pdo_pipeline_sync(&pipeline, read_handoff(&handoff.sm2_event_us));
 #if defined(CONFIG_PDO_PHASE_TRACE)
         dcu_pdo_phase_record_rx(data, read_handoff(&handoff.stage_start_us), done_us,
                                 direct, direct_read_end_us);
@@ -312,6 +363,8 @@ DCU_FAST_CODE bool dcu_cycle_stage_read(uint16_t address, uint16_t size,
 
 DCU_FAST_CODE void dcu_cycle_sync0_isr(void)
 {
+    if (read_handoff(&handoff.sm2_cycles))
+        return;
     const uint32_t sync_us = dcu_time_now_us();
     if (pdo_pipeline_sync(&pipeline, sync_us)) {
         const uint32_t busy = read_handoff(&handoff.stage_busy);
@@ -326,7 +379,8 @@ DCU_FAST_CODE void dcu_cycle_sync0_isr(void)
 
 void dcu_cycle_sync1_isr(void)
 {
-    __atomic_fetch_add(&handoff.sync1_pending, 1U, __ATOMIC_RELEASE);
+    if (!read_handoff(&handoff.sm2_cycles))
+        __atomic_fetch_add(&handoff.sync1_pending, 1U, __ATOMIC_RELEASE);
 }
 
 void dcu_cycle_timer_isr(void)
@@ -336,6 +390,7 @@ void dcu_cycle_timer_isr(void)
 
 static bool check_faults(uint32_t now_us)
 {
+    check_sm2_gap(now_us);
     uint32_t faults = pdo_pipeline_check(&pipeline, now_us);
     if (!runtime.outputs_running || !faults)
         return false;
@@ -343,7 +398,7 @@ static bool check_faults(uint32_t now_us)
     cycle_diagnostics.fault_al_status = nAlStatus;
     cycle_diagnostics.fault_handled_us = now_us;
     cycle_diagnostics.fault_last_stage_us = read_handoff(&handoff.stage_done_us);
-    if (faults & PDO_PIPELINE_RX_MISSING) {
+    if ((faults & PDO_PIPELINE_RX_MISSING) && !read_handoff(&handoff.sm2_cycles)) {
         cycle_diagnostics.first_rx_miss_epoch = read_handoff(&handoff.miss_epoch);
         cycle_diagnostics.first_rx_miss_sync_us = read_handoff(&handoff.miss_sync_us);
         cycle_diagnostics.first_rx_miss_last_stage_us = read_handoff(&handoff.miss_last_stage_us);
@@ -367,9 +422,9 @@ static void publish_due(void)
         return;
     uint32_t sync_us = read_handoff(&pipeline.sync_us);
     if (epoch != read_handoff(&pipeline.epoch)) return;
-    /* No TxPDO for this epoch may carry the pre-processing snapshot. Keep
-     * the existing deadline armed even while the gateway defers a command. */
-    if (read_handoff(&pipeline.received) && runtime.processed_epoch != epoch)
+    /* DC carries its processed epoch; SM2 publishes the latest available feedback. */
+    const bool sm2 = read_handoff(&handoff.sm2_cycles);
+    if (!sm2 && read_handoff(&pipeline.received) && runtime.processed_epoch != epoch)
         return;
     uint32_t offset_us = now_us - sync_us;
     uint32_t release_us = pipeline.period_us - pipeline.advance_us - DCU_TX_BUILD_BUDGET_US;
@@ -393,7 +448,7 @@ static void publish_due(void)
     if (pdo_pipeline_mark_published(&pipeline, epoch, end_us)) {
         cycle_diagnostics.published_epoch = epoch;
 #if defined(CONFIG_PDO_PHASE_TRACE)
-        phase_record_publish(epoch, now_us, packed_us, esc_begin_us, end_us);
+        if (!sm2) phase_record_publish(epoch, now_us, packed_us, esc_begin_us, end_us);
 #endif
     }
     (void)check_faults(dcu_time_now_us());
@@ -402,7 +457,8 @@ static void publish_due(void)
 void dcu_cycle_step(void)
 {
     uint32_t start = dcu_time_now_us();
-    if (runtime.outputs_running && !dc_configuration_matches(pipeline.period_ns))
+    const bool sm2 = read_handoff(&handoff.sm2_cycles);
+    if (runtime.outputs_running && !cycle_configuration_matches())
         pdo_pipeline_fault(&pipeline, PDO_PIPELINE_CONFIG_CHANGED);
     uint32_t count = take(&handoff.sync0_pending);
     cycle_diagnostics.sync0_count += count;
@@ -422,9 +478,9 @@ void dcu_cycle_step(void)
     pdo_pipeline_view_t view;
     if (pdo_pipeline_acquire(&pipeline, &view)) {
         if (runtime.outputs_running && view.epoch == __atomic_load_n(&pipeline.epoch, __ATOMIC_ACQUIRE)) {
-            record_timing(&view);
+            if (!sm2) record_timing(&view);
 #if defined(CONFIG_PDO_PHASE_TRACE)
-            volatile dcu_pdo_phase_sample_t *sample = phase_record_latch(&view, start);
+            volatile dcu_pdo_phase_sample_t *sample = sm2 ? NULL : phase_record_latch(&view, start);
             uint32_t output_begin_us = dcu_time_now_us();
 #endif
             motor_control_output(view.data);
@@ -440,9 +496,10 @@ void dcu_cycle_step(void)
         }
         pdo_pipeline_release(&pipeline, &view);
     }
-    publish_due();
+    if (!sm2) publish_due();
 #if defined(CONFIG_PDO_PHASE_TRACE)
-    volatile dcu_pdo_phase_sample_t *sample = runtime.command_pending ? phase_current(runtime.pending_epoch) : NULL;
+    volatile dcu_pdo_phase_sample_t *sample = !sm2 && runtime.command_pending ?
+                                             phase_current(runtime.pending_epoch) : NULL;
     uint32_t process_begin_us = sample ? dcu_time_now_us() : 0U;
 #endif
     const bool processed = motor_control_process();
@@ -474,6 +531,8 @@ void dcu_cycle_step(void)
     service_local_sync_recovery();
     if (!runtime.outputs_running && update_idle_input) {
         motor_control_prepare_input();
+        if (runtime.configured && sm2 && bEcatInputUpdateRunning)
+            PDO_InputMapping();
 #if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
         /* A Store request deferred in SAFEOP/OP must still reach flash once
          * PREOP/INIT maintenance resumes. The port enforces the state gate. */
@@ -489,8 +548,10 @@ void dcu_cycle_step(void)
 void dcu_cycle_watchdog_isr(void)
 {
     /* Independent of task progress; never mutate SSC or motor objects here. */
+    const uint32_t now_us = dcu_time_now_us();
+    check_sm2_gap(now_us);
     if (__atomic_load_n(&pipeline.enabled, __ATOMIC_ACQUIRE) &&
-        pdo_pipeline_check(&pipeline, dcu_time_now_us())) {
+        pdo_pipeline_check(&pipeline, now_us)) {
         dcu_tx_inhibit();
         for (unsigned c = 0; c < DCU_CAN_BUS_COUNT; ++c)
             dcu_can_cancel_from_isr(c);

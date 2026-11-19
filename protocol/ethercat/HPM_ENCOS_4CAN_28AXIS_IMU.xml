@@ -138,6 +138,11 @@
             <AssignActivate>#x300</AssignActivate>
             <CycleTimeSync0 Factor="1">0</CycleTimeSync0>
           </OpMode>
+          <OpMode>
+            <Name>SM2 Sync (1 ms)</Name>
+            <Desc>SM2 Sync (1 ms)</Desc>
+            <AssignActivate>#x0</AssignActivate>
+          </OpMode>
         </Dc>
         <Eeprom>
           <ByteSize>16384</ByteSize>

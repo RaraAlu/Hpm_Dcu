@@ -217,7 +217,7 @@ UINT16 APPL_GenerateMapping(UINT16 *pInputSize, UINT16 *pOutputSize)
 */
 void APPL_InputMapping(UINT16 *pData)
 {
-    /* The DC worker has already filled aPdInputData. SSC publishes that image. */
+    /* The cycle task fills aPdInputData before publishing it to SM3. */
     (void)pData;
 }
 

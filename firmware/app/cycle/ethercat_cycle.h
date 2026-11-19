@@ -38,6 +38,8 @@ void dcu_cycle_stop_outputs(void);
 void dcu_cycle_stop_inputs(void);
 void dcu_cycle_ack_safeop_error(void);
 /* The PDI producer stages complete RxPDOs; dedicated ISRs only hand off events. */
+/* Called at the start of the SSC SM2 read, before either data-copy path. */
+void dcu_cycle_sm2_event_isr(void);
 void dcu_cycle_stage(const void *data);
 /* A true result means the full SM2 read was already performed, even if the
  * cycle stopped before commit. read_output returns the image-complete time.

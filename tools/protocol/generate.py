@@ -353,8 +353,13 @@ def sii(xml, settings):
         raise ValueError('Only the CoE mailbox is supported')
     coe = mailbox.find('CoE')
     modes = device.findall('./Dc/OpMode')
-    if len(modes) != 1 or number(modes[0].findtext('AssignActivate')) != 0x300:
-        raise ValueError('Only DC Sync0 is supported')
+    activations = [number(mode.findtext('AssignActivate')) for mode in modes]
+    if activations not in ([0x300], [0x300, 0]):
+        raise ValueError('Expected DC Sync0 and optional SM2 synchronization')
+    if len(modes) == 2 and any(node.tag.startswith(('CycleTime', 'ShiftTime')) for node in modes[1]):
+        raise ValueError('SM2 synchronization must not specify a DC pulse')
+    # Keep the boot SII category byte-identical. The extra mode is an ESI
+    # selection for the master and does not change the on-board SII.
     mode = modes[0]
     cycle = mode.find('CycleTimeSync0')
     if (number(cycle.text) != 0 or number(cycle.get('Factor', '0')) != 1

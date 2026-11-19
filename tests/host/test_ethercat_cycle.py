@@ -39,6 +39,17 @@ class EthercatCycleTest(unittest.TestCase):
     def test_dc_mode_period_and_safeop_to_op_validation(self):
         self.run_command([str(self.executable), "configuration"])
 
+    def test_accepts_only_the_supported_sm2_sync_pair_and_no_dc_pulses(self):
+        self.run_command([str(self.executable), "sm2_config"])
+
+    def test_sm2_commits_one_complete_image_without_sync0_and_publishes_without_a_reply(self):
+        self.run_command([str(self.executable), "sm2_exchange"])
+
+    def test_sm2_uses_arrival_for_tx_deadline_and_has_a_worker_independent_rx_watchdog(self):
+        for scenario in ("sm2_deadline", "sm2_missing"):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.executable), scenario])
+
     def test_isrs_only_handoff_and_task_publishes_one_cycle(self):
         self.run_command([str(self.executable), "normal"])
 

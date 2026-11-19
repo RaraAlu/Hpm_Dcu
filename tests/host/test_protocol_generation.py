@@ -166,7 +166,7 @@ class ProtocolGenerationTest(unittest.TestCase):
         self.assertEqual(generator.config_crc(bytes(14)), 0x30)
         self.assertEqual(generator.config_crc(bytes.fromhex('800c816600000000000000000000')), 0x62)
 
-    def test_sii_dc_fields_and_strings_match_the_single_supported_mode(self):
+    def test_sii_dc_fields_and_strings_keep_the_boot_mode(self):
         cats, _ = categories(self.generated[SII])
         string_data, strings, offset = cats[10], [], 1
         for _ in range(string_data[0]):
@@ -178,7 +178,6 @@ class ProtocolGenerationTest(unittest.TestCase):
         # ETG.2010/TI layout: AssignActivate at byte 14, factor at 16, names at 18/19.
         self.assertEqual(struct.unpack('<IIIhHhBB4s', cats[60]), (0, 0, 0, 0, 0x300, 1, 3, 3, bytes(4)))
         modes = self.xml.findall('.//Dc/OpMode')
-        self.assertEqual(len(modes), 1)
         self.assertEqual(modes[0].findtext('AssignActivate'), '#x300')
         self.assertEqual(modes[0].find('CycleTimeSync0').get('Factor'), '1')
 
@@ -231,6 +230,17 @@ class ProtocolGenerationTest(unittest.TestCase):
             mutate(schema)
             with self.assertRaises(ValueError):
                 generator.expand(schema)
+
+    def test_sm2_mode_changes_only_the_esi_selection(self):
+        xml = copy.deepcopy(self.xml)
+        dc = xml.find('./Descriptions/Devices/Device/Dc')
+        self.assertEqual([mode.findtext('AssignActivate') for mode in dc], ['#x300', '#x0'])
+        no_pulses = dc[1]
+        ET.SubElement(no_pulses, 'CycleTimeSync0').text = '1000000'
+        with self.assertRaises(ValueError):
+            generator.sii(ET.tostring(xml), self.schema['sii'])
+        dc.remove(no_pulses)
+        self.assertEqual(generator.sii(ET.tostring(xml), self.schema['sii']), self.generated[SII])
 
     def test_unsupported_or_oversized_sii_is_rejected(self):
         for mutate in (

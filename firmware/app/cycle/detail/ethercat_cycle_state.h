@@ -7,6 +7,7 @@
 /* Every handoff field is accessed atomically across ISR/task ownership. */
 typedef struct {
     uint32_t sync0_pending, sync1_pending, timer_pending;
+    uint32_t sm2_cycles, sm2_event_us;
     uint32_t stage_sequence;
     uint32_t stage_start_us, stage_busy, stage_done_us;
     uint32_t miss_epoch, miss_sync_us, miss_last_stage_us, miss_stage_busy, miss_stage_start_us;

@@ -552,6 +552,7 @@ void PDI_Isr(void)
             ECAT_Application();
         }
 
+#ifndef HW_EscPublishSmInputsInTask
 /*ECATCHANGE_START(V5.13) ECAT 5*/
     if ( (bEcatInputUpdateRunning == TRUE) && (nPdInputSize > 0)
 /*ECATCHANGE_END(V5.13) ECAT 5*/
@@ -561,6 +562,7 @@ void PDI_Isr(void)
         /* EtherCAT slave is at least in SAFE-OPERATIONAL, update inputs */
         PDO_InputMapping();
     }
+#endif
 
     /*
       Check if cycle exceed

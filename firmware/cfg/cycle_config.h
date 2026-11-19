@@ -4,6 +4,8 @@
 #define DCU_SYNC_MIN_PERIOD_NS 1000000U
 #define DCU_SYNC_MAX_PERIOD_NS 5000000U
 #define DCU_WORKER_PERIOD_US 50U
+/* SM2-synchronous operation expects a 1 kHz master, with no Sync0 pulses. */
+#define DCU_SM2_CYCLE_NS 1000000U
 
 /* Must precede the master's next input read, not merely the next Sync0. */
 #ifndef DCU_TX_PUBLISH_ADVANCE_US

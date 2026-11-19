@@ -291,6 +291,7 @@ static DCU_FAST_CODE uint32_t hw_esc_read_staged_output(void *dest, uint16_t add
 
 DCU_FAST_CODE bool hw_esc_stage_outputs(uint16_t address, uint16_t size)
 {
+    dcu_cycle_sm2_event_isr();
     const volatile uint8_t *source = (const volatile uint8_t *)pEsc + address;
     if (!size || address != nEscAddrOutputData || size != nPdOutputSize ||
         (((uintptr_t)source | size) & (sizeof(uint32_t) - 1U)) != 0U)

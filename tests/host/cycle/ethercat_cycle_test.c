@@ -17,6 +17,7 @@
 test_sync_parameters_t sSyncManOutPar = {SYNCTYPE_DCSYNC0};
 test_sync_parameters_t sSyncManInPar = {SYNCTYPE_DCSYNC0};
 bool bDcSyncActive = true;
+bool bEcatInputUpdateRunning = true;
 uint16_t nPdOutputSize = 784;
 uint16_t LatchInputSync0Value = 1, LatchInputSync0Counter;
 uint8_t nAlStatus = 8;
@@ -143,6 +144,24 @@ static void command_boundary(uint32_t time)
     dcu_cycle_sync0_isr();
 }
 
+static void select_sm2(void)
+{
+    bDcSyncActive = false;
+    test_esc_activation = 0;
+    sSyncManOutPar.u16SyncType = SYNCTYPE_SM_SYNCHRON;
+    sSyncManInPar.u16SyncType = SYNCTYPE_SM2_SYNCHRON;
+}
+
+static void sm2_frame(uint32_t arrival, uint8_t value)
+{
+    time_us = arrival;
+    dcu_cycle_sm2_event_isr();
+    time_us += 132;
+    uint8_t command[784];
+    memset(command, value, sizeof(command));
+    dcu_cycle_stage(command);
+}
+
 static void check_stopped(uint32_t expected_fault)
 {
     dcu_cycle_diagnostics_t snapshot;
@@ -157,6 +176,71 @@ static void check_stopped(uint32_t expected_fault)
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
+    if (!strcmp(argv[1], "sm2_config")) {
+        select_sm2();
+        sSyncManInPar.u16SyncType = SYNCTYPE_DCSYNC0;
+        CHECK(dcu_cycle_configure() == ALSTATUSCODE_SYNCHRONNOTSUPPORTED);
+        sSyncManInPar.u16SyncType = SYNCTYPE_SM2_SYNCHRON;
+        test_esc_activation = ESC_DC_SYNC_UNIT_AUTO_ACTIVE_MASK;
+        CHECK(dcu_cycle_configure() == ALSTATUSCODE_DCINVALIDSYNCCFG);
+        test_esc_activation = 0;
+        start();
+        CHECK(pipeline.period_ns == 1000000U);
+        CHECK(dcu_cycle_configure() == ALSTATUSCODE_DCINVALIDSYNCCFG);
+        test_esc_activation = ESC_DC_SYNC0_ACTIVE_MASK;
+        dcu_cycle_step();
+        check_stopped(PDO_PIPELINE_CONFIG_CHANGED);
+        return 0;
+    }
+    if (!strcmp(argv[1], "sm2_exchange")) {
+        select_sm2();
+        time_us = 900;
+        start();
+        memset(fake_esc_output, 0xA5, sizeof(fake_esc_output));
+        time_us = 1000;
+        dcu_cycle_sm2_event_isr();
+        time_us = 1132;
+        CHECK(dcu_cycle_stage_read(0x1000, 784, read_sm2_into_slot));
+        CHECK(output_calls == 0 && !mapping_calls && !fault_calls);
+        dcu_cycle_step();
+        CHECK(output_calls == 1 && sync_calls == 0 && !mapping_calls);
+        CHECK(!memcmp(last_output, fake_esc_output, 784));
+        time_us = 1150;
+        dcu_cycle_step();
+        CHECK(mapping_calls == 1 && published_output == 0xA5);
+
+        defer_process = true;
+        sm2_frame(2000, 0xB6);
+        CHECK(mapping_calls == 1 && published_output == 0xA5);
+        time_us = 2150;
+        dcu_cycle_step();
+        CHECK(output_calls == 2 && command_pending && last_output[0] == 0xB6);
+        CHECK(mapping_calls == 2 && published_output == 0xA5);
+        CHECK(!fault_calls && !dcu_tx_inhibited());
+        return 0;
+    }
+    if (!strcmp(argv[1], "sm2_deadline") || !strcmp(argv[1], "sm2_missing")) {
+        select_sm2();
+        time_us = 900;
+        start();
+        sm2_frame(1000, 0xA5);
+        time_us = 1150;
+        if (!strcmp(argv[1], "sm2_deadline")) {
+            prepare_cost_us = DCU_TX_BUILD_BUDGET_US + 1;
+            dcu_cycle_step();
+            CHECK(mapping_calls == 0);
+            check_stopped(PDO_PIPELINE_TX_LATE);
+        } else {
+            dcu_cycle_step();
+            time_us = 2000 + DCU_WORKER_PERIOD_US + 1;
+            dcu_cycle_watchdog_isr();
+            CHECK(dcu_tx_inhibited() && cancel_calls == 4 && !fault_calls);
+            dcu_cycle_step();
+            check_stopped(PDO_PIPELINE_RX_MISSING);
+            CHECK(output_calls == 1 && mapping_calls == 1);
+        }
+        return 0;
+    }
     if (!strcmp(argv[1], "esc_sm2_direct_stage")) {
         const uint16_t sizes[] = {544, 736, 784};
         uint8_t *bytes = (uint8_t *)fake_esc_output;

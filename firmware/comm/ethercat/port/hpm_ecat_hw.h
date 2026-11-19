@@ -55,6 +55,8 @@ extern MEM_ADDR ESCMEM * pEsc;         /* pointer to the ESC */
 #if defined(DCU_ECAT_CYCLE_PORT)
 #define     HW_EscReadIsr(pData, Address, Len)         hw_esc_read_isr((pData), (Address), (Len))
 #define     HW_EscStageOutputs(Address, Len)          hw_esc_stage_outputs((Address), (Len))
+/* HPM's cycle task owns the shared SSC TxPDO image and publishes it to SM3. */
+#define     HW_EscPublishSmInputsInTask
 #define     HW_EscWriteIsr(pData, Address, Len)        hw_esc_write_pdo(&((volatile UINT32 *) pEsc)[((Address) >> 2)], (pData), (Len))
 #else
 #define     HW_EscReadIsr(pData, Address, Len)         HW_EscRead((pData), (Address), (Len))

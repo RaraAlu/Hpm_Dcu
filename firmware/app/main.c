@@ -73,8 +73,8 @@ int main(void)
         printf("Gateway startup fault: business transmission inhibited\n");
     dcu_cycle_init();
     MainInit(); /* SSC Initilize the stack */
-    sSyncManOutPar.u16SyncTypesSupported = SYNCTYPE_DCSYNC0SUPP;
-    sSyncManInPar.u16SyncTypesSupported = SYNCTYPE_DCSYNC0SUPP;
+    sSyncManOutPar.u16SyncTypesSupported = SYNCTYPE_SYNCHRONSUPP | SYNCTYPE_DCSYNC0SUPP;
+    sSyncManInPar.u16SyncTypesSupported = SYNCTYPE_SYNCHRONSUPP | SYNCTYPE_DCSYNC0SUPP;
 
 #if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
     pAPPL_EEPROM_Read  = ecat_eeprom_emulation_read;
