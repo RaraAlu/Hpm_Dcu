@@ -110,7 +110,7 @@ static bool commands()
         dcu_can_frame_t frame{};
         CHECK(encos::encode_motion(command, motor.route, motor.profile, frame));
         CHECK(frame.id == 1 && frame.flags == 0 && frame.dlc == sizes[mode - 1]);
-        CHECK(std::memcmp(frame.data, golden[mode - 1], sizeof(frame.data)) == 0);
+        CHECK(std::memcmp(frame.data, golden[mode - 1], sizeof(golden[0])) == 0);
     }
     return true;
 }

@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # If you do not want to use flash to simulate eeprom. It requests to regenerate
 # the SSC code, please refer to the README
+option(CONFIG_SYNC0_HW_CAPTURE_TEST "Measure ESC Sync0 with a spare GPTMR channel" OFF)
 set(CONFIG_EEPROM_EMULATION 1) # using eeprom emulation compenent
 set(CONFIG_FREERTOS 1)
 set(CONFIG_FREERTOS_HEAP custom)

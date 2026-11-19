@@ -11,9 +11,11 @@
 #include "hpm_i2c_drv.h"
 #include "hpm_romapi.h"
 #include "hpm_ecat_hw.h"
+#include "detail/esc_pdo_copy.h"
 #include "cfg/ethercat_eeprom_config.h"
 #include "ethercat_cycle.h"
 #include "cycle_config.h"
+#include "realtime_port.h"
 #ifdef HPMSOC_HAS_HPMSDK_GPTMRV2
 #include "hpm_gptmrv2_drv.h"
 #else
@@ -22,6 +24,10 @@
 #include "hpm_ppor_drv.h"
 #include "hpm_sysctl_drv.h"
 #include "esc.h"
+#include "ecatslv.h"
+#if defined(CONFIG_PDO_PHASE_TRACE)
+#include "detail/pdo_phase_trace.h"
+#endif
 
 #if defined(EOE_SUPPORTED) && EOE_SUPPORTED
 #include "sys_arch.h" /* lwip sys_arch.h */
@@ -252,12 +258,74 @@ void HW_ClearTimer(void)
 }
 #endif /* ECAT_SSC_TIMER_USE_RTOS_TICK */
 
+#if defined(CONFIG_PDO_PHASE_TRACE)
+static volatile dcu_rx_phase_trace_t pdo_rx_phase_trace;
+/* Accessed by the PDI handler and its SSC mapping callbacks, not Sync0. */
+static uint32_t sm2_irq_us, sm2_read_start_us, sm2_read_end_us;
+static bool tracing_sm2;
+#endif
+
+DCU_FAST_CODE void hw_esc_read_isr(void *dest, uint16_t address, uint16_t size)
+{
+    const bool sm2 = size != 0U && address == nEscAddrOutputData && size == nPdOutputSize;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    const bool record = tracing_sm2 && sm2;
+    if (record) sm2_read_start_us = dcu_time_now_us();
+#endif
+    if (!sm2 || !dcu_esc_pdo_read_words(dest, (const volatile uint8_t *)pEsc + address, size))
+        HW_EscRead(dest, address, size);
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (record) sm2_read_end_us = dcu_time_now_us();
+#endif
+}
+
+static DCU_FAST_CODE uint32_t hw_esc_read_staged_output(void *dest, uint16_t address, uint16_t size)
+{
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (tracing_sm2) sm2_read_start_us = dcu_time_now_us();
+#endif
+    if (!dcu_esc_pdo_read_words(dest, (const volatile uint8_t *)pEsc + address, size))
+        HW_EscRead(dest, address, size);
+    return dcu_time_now_us();
+}
+
+DCU_FAST_CODE bool hw_esc_stage_outputs(uint16_t address, uint16_t size)
+{
+    const volatile uint8_t *source = (const volatile uint8_t *)pEsc + address;
+    if (!size || address != nEscAddrOutputData || size != nPdOutputSize ||
+        (((uintptr_t)source | size) & (sizeof(uint32_t) - 1U)) != 0U)
+        return false;
+    return dcu_cycle_stage_read(address, size, hw_esc_read_staged_output);
+}
+
+#if defined(CONFIG_PDO_PHASE_TRACE)
+void dcu_pdo_phase_record_rx(const void *data, uint32_t stage_start_us, uint32_t stage_commit_us,
+                            uint32_t direct_to_slot, uint32_t direct_read_end_us)
+{
+    if (!tracing_sm2 || (!direct_to_slot && !sm2_read_end_us) || nPdOutputSize < 4U) return;
+    const uint8_t *b = data;
+    const uint32_t sequence = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+                              ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    const uint32_t pos = pdo_rx_phase_trace.count++ % DCU_PDO_PHASE_SAMPLES;
+    pdo_rx_phase_trace.sample[pos] = (dcu_rx_phase_sample_t){sequence, sm2_irq_us, sm2_read_start_us,
+        direct_to_slot ? direct_read_end_us : sm2_read_end_us, stage_start_us, stage_commit_us, direct_to_slot};
+}
+#endif
+
 /* ECAT PDI IRQ handler */
 SDK_DECLARE_EXT_ISR_M(IRQn_ESC, ecat_pdi_isr)
 void ecat_pdi_isr(void)
 {
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    sm2_irq_us = dcu_time_now_us();
+    tracing_sm2 = (SWAPWORD(HW_GetALEventRegister_Isr()) & PROCESS_OUTPUT_EVENT) != 0U;
+    sm2_read_end_us = 0U;
+#endif
     /* call handler in SSC */
     PDI_Isr();
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    tracing_sm2 = false;
+#endif
 
     /* callback */
 }
@@ -531,6 +599,11 @@ void hw_esc_read_4bytes(void *dest, const void *src, uint16_t size)
         uint32_t last_4bytes = s[index]; /* Read the last 4-byte block */
         memcpy(&d[index], &last_4bytes, remainder); /* Copy only the remaining bytes */
     }
+}
+
+DCU_FAST_CODE void hw_esc_write_pdo(volatile uint32_t *dest, const void *src, uint16_t size)
+{
+    dcu_esc_pdo_copy(dest, src, size);
 }
 
 /* actual EEPROM initialization */

@@ -42,14 +42,39 @@ class EthercatCycleTest(unittest.TestCase):
     def test_isrs_only_handoff_and_task_publishes_one_cycle(self):
         self.run_command([str(self.executable), "normal"])
 
+    def test_publish_waits_for_current_command_without_extending_deadline(self):
+        for scenario in ("process_before_publish", "process_deadline"):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.executable), scenario])
+
     def test_packing_and_esc_write_must_finish_before_deadline(self):
         self.run_command([str(self.executable), "prepare_late"])
+
+    def test_already_late_packing_never_begins_an_esc_write(self):
+        self.run_command([str(self.executable), "pack_already_late"])
 
     def test_sync_during_esc_write_cannot_acknowledge_new_epoch(self):
         self.run_command([str(self.executable), "crossed_epoch"])
 
+    def test_esc_word_copy_keeps_exact_pdo_bytes_and_tail_bounds(self):
+        self.run_command([str(self.executable), "esc_pdo_copy"])
+
+    def test_sm2_word_read_keeps_all_profiles_byte_exact(self):
+        self.run_command([str(self.executable), "esc_sm2_word_read"])
+
+    def test_sm2_reads_directly_into_an_unpublished_slot(self):
+        self.run_command([str(self.executable), "esc_sm2_direct_stage"])
+
     def test_missing_frame_stops_without_replaying_old_command(self):
         self.run_command([str(self.executable), "missing"])
+
+    def test_completed_preop_rearms_communication_not_old_commands(self):
+        self.run_command([str(self.executable), "preop_recovery"])
+
+    def test_safeop_ack_clears_only_own_error_outside_pending_transition(self):
+        for scenario in ("safeop_recovery", "unrelated_error"):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.executable), scenario])
 
     def test_sync_loss_still_detected_by_worker(self):
         self.run_command([str(self.executable), "sync_lost"])

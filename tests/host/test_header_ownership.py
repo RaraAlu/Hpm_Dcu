@@ -8,12 +8,24 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = ROOT / "firmware"
 PRIVATE_HEADERS = {
-    "app/motor/detail/axis_state.hpp": "app/motor/axis_controller.hpp",
-    "app/motor/detail/motor_application_impl.hpp": "app/motor/motor_application.cpp",
-    "app/motor/detail/encos_parameter_state.hpp": "app/motor/encos_parameter_transactions.cpp",
+    "app/gateway/detail/profile_update_state.hpp": "app/gateway/profile_update.cpp",
+    "devices/motor/detail/motor_instance_state.hpp": "devices/motor/motor_instance.hpp",
+    "app/gateway/detail/gateway_application_impl.hpp": (
+        "app/gateway/gateway_application.cpp", "app/gateway/gateway_publication.cpp",
+    ),
+    "app/gateway/detail/can_transactions.hpp": (
+        "app/gateway/can_transactions.cpp", "app/gateway/detail/gateway_application_impl.hpp",
+    ),
+    "app/gateway/detail/production_startup.hpp": (
+        "app/gateway/production_startup.cpp", "app/gateway/detail/gateway_application_impl.hpp",
+    ),
+    "app/gateway/detail/raw_can_submit.hpp": "app/gateway/gateway_application.cpp",
+    "devices/motor/drivers/encos/detail/encos_parameter_state.hpp": "devices/motor/drivers/encos/encos_parameter_transactions.cpp",
+    "devices/motor/drivers/encos/detail/encos_session_state.hpp": "devices/motor/drivers/encos/encos_driver.hpp",
     "app/cycle/detail/ethercat_cycle_state.h": "app/cycle/ethercat_cycle.c",
     "app/cycle/detail/pdo_pipeline_slots.h": "app/cycle/pdo_pipeline.c",
     "app/runtime/detail/ethercat_can_task_state.h": "app/runtime/ethercat_can_task.c",
+    "app/gateway/detail/gateway_readiness_state.h": "app/gateway/gateway_readiness.c",
     "comm/ethercat/detail/motor_pdo_state.hpp": "comm/ethercat/motor_pdo.cpp",
     "comm/ethercat/detail/ethercat_dictionary_owner.h": "comm/ethercat/ethercat_callbacks.c",
     "comm/canfd/detail/can_gateway_state.h": "comm/canfd/hpm_mcan_transport.c",
@@ -48,15 +60,16 @@ class HeaderOwnershipTest(unittest.TestCase):
 
     def test_transport_wire_and_diagnostics_headers_need_no_hardware_or_rtos_stubs(self):
         includes = ("firmware/cfg", "firmware/ports", "firmware/comm/canfd", "firmware/comm/ethercat",
-                    "firmware/generated/encos", "firmware/app/cycle", "firmware/app/runtime")
+                    "firmware/generated/encos", "firmware/app/cycle", "firmware/app/runtime",
+                    "firmware/app/gateway")
         headers = ("can_transport.h", "raw_can_pdo.h", "realtime_port.h",
-                   "ethercat_cycle.h", "ethercat_can_task.h")
+                   "ethercat_cycle.h", "ethercat_can_task.h", "gateway_readiness.h")
         for compiler, language, standard in (("cc", "c", "c11"), ("c++", "c++", "c++17")):
             command = [compiler, "-x", language, f"-std={standard}", "-fsyntax-only",
                        "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
             for include in includes:
                 command.extend(("-I", str(ROOT / include)))
-            for header in (*headers, *(("motor_pdo_layout.hpp",) if language == "c++" else ())):
+            for header in (*headers, *(("motor_pdo_layout.hpp", "raw_can_gateway.hpp") if language == "c++" else ())):
                 with self.subTest(language=language, header=header):
                     source = f'#include "{header}"\n#include "{header}"\nint main(void) {{ return 0; }}\n'
                     result = subprocess.run([*command, "-"], input=source, text=True,
@@ -86,7 +99,7 @@ class HeaderOwnershipTest(unittest.TestCase):
                     includes = re.findall(r'^\s*#\s*include\s*"([^"]+)"', path.read_text(), re.MULTILINE)
                     if any(Path(include).name == Path(header).name for include in includes):
                         consumers.append(path.relative_to(FIRMWARE).as_posix())
-                self.assertEqual(consumers, [owner])
+                self.assertCountEqual(consumers, (owner,) if isinstance(owner, str) else owner)
 
     def test_private_type_headers_do_not_export_or_allocate_state(self):
         for header in PRIVATE_HEADERS:
@@ -118,9 +131,9 @@ class HeaderOwnershipTest(unittest.TestCase):
         motor_includes = (
             "tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
             "firmware/generated/encos", "firmware/generated/ethercat",
-            "firmware/app/motor", "firmware/app/cycle", "firmware/protocols/encos",
+            "firmware/app/gateway", "firmware/app/cycle", "firmware/protocols/encos",
             "firmware/comm/canfd", "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
-            "firmware/devices/motor", "firmware/devices/motor/drivers/encos",
+            "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408",
         )
         groups = (
             (cxx, "c++", "c++17", motor_includes,

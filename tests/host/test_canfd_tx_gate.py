@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import tempfile
@@ -18,6 +19,8 @@ class CanFdTxGateTest(unittest.TestCase):
         cls.executable = Path(directory.name) / "tx_gate"
         command = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors",
                    "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections"]
+        if os.environ.get("DCU_HOST_SANITIZE") == "1":
+            command += ["-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         for include in ("tests/host/canfd/stubs", "firmware/comm/canfd", "firmware/app/cycle",
                         "firmware/cfg", "firmware/ports"):
             command.extend(("-I", str(ROOT / include)))
@@ -44,8 +47,25 @@ class CanFdTxGateTest(unittest.TestCase):
     def test_invalid_bus_and_null_frame_are_rejected(self):
         self.run_command([str(self.executable), "invalid"])
 
-    def test_tag_is_visible_before_the_hardware_request(self):
+    def test_transaction_is_visible_before_the_hardware_request(self):
         self.run_command([str(self.executable), "normal"])
+
+    def test_channel_scoped_transactions_ignore_late_events_after_cancellation_and_reuse(self):
+        self.run_command([str(self.executable), "transaction_ids"])
+
+    def test_mcan_fifos_and_byte_exact_transport_through_64_bytes(self):
+        self.run_command([str(self.executable), "fd_roundtrip"])
+
+    def test_oversized_and_classic_high_dlc_frames_are_not_truncated(self):
+        self.run_command([str(self.executable), "invalid_lengths"])
+
+    def test_profile_initializes_only_the_selected_controller(self):
+        self.run_command([str(self.executable), "single_profile"])
+
+    def test_invalid_or_partial_profile_does_not_activate_controllers(self):
+        for scenario in ("invalid_profile", "partial_profile"):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.executable), scenario])
 
 
 if __name__ == "__main__":

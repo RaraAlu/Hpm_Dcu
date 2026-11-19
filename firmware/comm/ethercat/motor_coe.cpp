@@ -1,7 +1,7 @@
 #include "motor_ethercat.h"
 #include "motor_dictionary.hpp"
 #include "motor_pdo_layout.hpp"
-#include "motor_application.hpp"
+#include "gateway_application.hpp"
 #include "motor_services.hpp"
 #include "motor_adapter.hpp"
 #include "realtime_port.h"
@@ -13,13 +13,22 @@ extern "C" {
 #include <cstring>
 
 using namespace dcu::ethercat::motor_dictionary;
-using namespace dcu::app::motor_application;
+using namespace dcu::app::gateway_application;
+namespace profile_update = dcu::app::profile_update;
 namespace pdo_layout = dcu::ethercat::pdo_layout;
 namespace adapter = dcu::ethercat::motor_adapter;
 
 static bool preop()
 {
-    return (nAlStatus & STATE_MASK) == STATE_PREOP && configuration_writable();
+    return (nAlStatus & STATE_MASK) == STATE_PREOP && preop_access_allowed();
+}
+
+static bool reserved_configuration(UINT16 index)
+{
+    if (index == 0x2002) return true;
+    if (index < axis_object_base(0) || index >= axis_object_base(ENCOS_AXIS_COUNT)) return false;
+    const unsigned part = (index - axis_object_base(0)) % 16;
+    return part <= 4 || part == 8;
 }
 
 UINT8 MC_AssignWrite(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 complete)
@@ -59,6 +68,50 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         *((uint8_t *)data) = (uint8_t)o->count;
         return 0;
     }
+    // Existing reserved board record: same indices, sizes and read-only descriptors.
+    if (index == 0x2002 && startup_enabled()) {
+        if (sub > 4) return ABORTIDX_SUBINDEX_NOT_EXISTING;
+        if (bytes != (sub == 3 ? 2U : 4U)) return ABORTIDX_PARAM_LENGTH_ERROR;
+        const auto status = readiness();
+        const uint32_t values[] = {static_cast<uint32_t>(status.boot_id >> 32), status.ready_generation,
+            static_cast<uint32_t>(status.state) | (static_cast<uint32_t>(status.reason) << 8),
+            0U};
+        std::memcpy(data, &values[sub - 1], bytes);
+        return 0;
+    }
+    if (index == profile_update::object_index) {
+        if (sub < 3) return ABORTIDX_WRITE_ONLY_ENTRY;
+        if (sub > 7) return ABORTIDX_SUBINDEX_NOT_EXISTING;
+        if (bytes != (sub == 3 ? 2U : 4U)) return ABORTIDX_PARAM_LENGTH_ERROR;
+        const auto active = readiness();
+        const uint32_t values[] = {static_cast<uint16_t>(profile_update::status()), active.profile_id,
+            active.revision, profile_update::staged_revision(), profile_policy().readiness_ttl_ms};
+        memcpy(data, &values[sub - 3], bytes);
+        return 0;
+    }
+    // Project the immutable active Profile through existing read-only descriptors.
+    if (startup_enabled() && index >= axis_object_base(0) && index < axis_object_base(ENCOS_AXIS_COUNT)) {
+        const unsigned offset = index - axis_object_base(0);
+        const auto *device = adapter::configured_device(offset / 16);
+        if (device && offset % 16 == 0 && sub <= 7) {
+            const uint32_t fields[] = {device->can_id, device->model_profile_id,
+                static_cast<uint32_t>(device->position_min_urad), static_cast<uint32_t>(device->position_max_urad),
+                device->velocity_limit_urad_s, device->current_limit_dA, device->torque_limit_mNm};
+            if (bytes != (sub <= 2 ? 2U : 4U)) return ABORTIDX_PARAM_LENGTH_ERROR;
+            memcpy(data, &fields[sub - 1], bytes);
+            return 0;
+        }
+        if (device && device->model_profile_id == 0x8000 && offset % 16 == 2 && sub <= 4) {
+            const auto &profile = device->encos.profile;
+            const double fields[] = {profile.kp[0], profile.kp[1], profile.kd[0], profile.kd[1]};
+            if (bytes != 2U) return ABORTIDX_PARAM_LENGTH_ERROR;
+            const auto value = static_cast<uint16_t>(fields[sub - 1]);
+            memcpy(data, &value, bytes);
+            return 0;
+        }
+    }
+    if (reserved_configuration(index))
+        return ABORTIDX_UNSUPPORTED_ACCESS;
     for (unsigned i = 0; i < mc_field_count; i++) {
         const mc_field_t *f = &mc_fields[i];
         if (f->index != index || f->sub != sub)
@@ -86,6 +139,8 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
         return ABORTIDX_OBJECT_NOT_EXISTING;
     if (!sub)
         return ABORTIDX_READ_ONLY_ENTRY;
+    if (reserved_configuration(index))
+        return ABORTIDX_READ_ONLY_ENTRY;
     const mc_field_t *field = NULL;
     for (unsigned i = 0; i < mc_field_count; i++)
         if (mc_fields[i].index == index && mc_fields[i].sub == sub) {
@@ -96,14 +151,30 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
         return ABORTIDX_SUBINDEX_NOT_EXISTING;
     if (!(field->access & 2))
         return ABORTIDX_READ_ONLY_ENTRY;
-    if (bytes != field->bytes)
-        return ABORTIDX_PARAM_LENGTH_ERROR;
     bool command = index >= 0x2200 && index <= 0x23B0, owner = index == 0x2003;
     if (!command && !owner && !preop())
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+    if (bytes != field->bytes) {
+        if (index == profile_update::object_index && sub == 1)
+            profile_update::discard();
+        return ABORTIDX_PARAM_LENGTH_ERROR;
+    }
+    if (index == profile_update::object_index) {
+        if (sub == 1)
+            return profile_update::stage(data, bytes) ? 0 : ABORTIDX_VALUE_EXCEEDED;
+        uint32_t revision = 0;
+        memcpy(&revision, data, sizeof(revision));
+        if (!profile_update::commit(revision)) return ABORTIDX_VALUE_EXCEEDED;
+        const auto policy = profile_policy();
+        auto *board = object<mc_board_config_t>(0x2001);
+        board->MaxCommandLeaseMs = policy.max_command_lease_ms;
+        board->FeedbackTimeoutMs = policy.feedback_timeout_ms;
+        return 0;
+    }
     if (owner && !owner_change_allowed())
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
-    if (index >= 0x3000 && index <= 0x31B8 && transaction_busy((index - 0x3000) / 16))
+    if (index >= 0x3007 && index <= 0x31B7 && (index - 0x3007) % 16 == 0 &&
+        parameter_service_busy(((index - 0x3007) / 16) / ENCOS_MOTORS_PER_CHANNEL))
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     memcpy(o->data + field->offset, data, bytes);
     uint32_t now = dcu_time_now_ms();
@@ -112,33 +183,25 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
         mc_owner_t *v = object<mc_owner_t>(index);
         if (v->RequestedOwner > 2) {
             result = ABORTIDX_VALUE_EXCEEDED;
-            v->Result = RESULT_INVALID;
+            v->Result = dcu::motor::RESULT_INVALID;
         } else {
             const bool accepted = set_owner(static_cast<Owner>(v->RequestedOwner));
-            v->Owner = dcu::app::motor_application::owner();
-            v->Result = accepted ? RESULT_OK : RESULT_STATE;
+            v->Owner = dcu::app::gateway_application::owner();
+            v->Result = accepted ? dcu::motor::RESULT_OK : dcu::motor::RESULT_STATE;
             if (!accepted) result = ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
         }
-    } else if (index == 0x2002) {
-        mc_action_t *v = object<mc_action_t>(index);
-        if (sub == 1) {
-            v->Result = RESULT_BUSY;
-            if (adapter::apply_configuration()) {
-                v->AppliedGeneration = v->ApplyGeneration;
-                v->Result = 0;
-                object<mc_board_info_t>(0x2000)->ConfigGeneration = v->AppliedGeneration;
-            } else
-                v->Result = RESULT_INVALID;
-        }
-        if (sub == 2)
-            v->Result = RESULT_UNSUPPORTED;
     } else if (command && sub == 11) {
         unsigned a = (index - 0x2200) / 16;
         adapter::commit_sdo_command(a, now);
     } else if (index >= 0x3000) {
         unsigned a = (index - 0x3000) / 16, part = (index - 0x3000) % 16;
-        if ((part == 7 && sub == 3) || (part == 8 && sub == 4))
-            result = dcu::ethercat::motor_services::commit(a, part == 8, now, preop()) ? 0 : ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+        if (part == 7 && sub == 3)
+            result = dcu::ethercat::motor_services::commit(a, now, preop()) ? 0 : ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     }
     return result;
+}
+
+void motor_control_discard_profile(void)
+{
+    profile_update::discard();
 }

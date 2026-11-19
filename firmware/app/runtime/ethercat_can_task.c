@@ -6,7 +6,6 @@
 #include "cfg/ethercat_can_task_config.h"
 #include "cycle_config.h"
 #include "can_transport.h"
-#include "device_config.h"
 #include "realtime_port.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -61,7 +60,7 @@ void dcu_rtos_assert(const char *file, unsigned long line)
     rtos_diagnostics.fatal_file = file;
     rtos_diagnostics.fatal_line = line;
     dcu_tx_inhibit();
-    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) dcu_can_cancel(c);
+    for (unsigned c = 0; c < DCU_CAN_BUS_COUNT; ++c) dcu_can_cancel_from_isr(c);
     for (;;) __asm volatile("nop");
 }
 void vApplicationStackOverflowHook(TaskHandle_t task, char *name)

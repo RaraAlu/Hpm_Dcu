@@ -3,6 +3,7 @@
 #include <string.h>
 #include <setjmp.h>
 #include "hpm_gptmr_drv.h"
+#include "port/detail/esc_pdo_copy.h"
 #include "ethercat_can_task.c"
 
 /* Include the production implementation to exercise its private single-step
@@ -17,6 +18,11 @@ test_sync_parameters_t sSyncManOutPar = {SYNCTYPE_DCSYNC0};
 test_sync_parameters_t sSyncManInPar = {SYNCTYPE_DCSYNC0};
 bool bDcSyncActive = true;
 uint16_t nPdOutputSize = 784;
+uint16_t LatchInputSync0Value = 1, LatchInputSync0Counter;
+uint8_t nAlStatus = 8;
+uint8_t u8LocalErrorState;
+uint16_t u16LocalErrorCode;
+bool bEcatWaitForAlControlRes;
 uint32_t test_esc_period = 2000000U, test_esc_activation = 0x300U;
 test_gptmr_t test_timebase;
 #define time_us test_timebase.CHANNEL[0].CNT
@@ -24,28 +30,63 @@ static uint32_t prepare_cost_us, mapping_cost_us;
 static uint32_t sync_calls, tick_calls, output_calls, prepare_calls, mapping_calls, fault_calls;
 static uint32_t cancel_calls;
 static uint8_t last_output[784];
+static uint8_t processed_output, published_output;
+static bool command_pending, defer_process;
 static uint8_t requested_state;
 static uint16_t requested_error;
 static bool sync_during_mapping;
 static jmp_buf worker_exit;
 static unsigned worker_iterations;
+static uint32_t fake_esc_output[784 / 4];
+static unsigned direct_reads;
+
+static uint32_t read_sm2_into_slot(void *destination, uint16_t address, uint16_t size)
+{
+    CHECK(address == 0x1000 && ((uintptr_t)destination & 3U) == 0U);
+    ++direct_reads;
+    CHECK(dcu_esc_pdo_read_words(destination, fake_esc_output, 4));
+    dcu_cycle_sync0_isr();
+    pdo_pipeline_view_t half_written;
+    CHECK(!pdo_pipeline_acquire(&pipeline, &half_written));
+    CHECK(dcu_esc_pdo_read_words((uint8_t *)destination + 4, fake_esc_output + 1, size - 4));
+    return time_us + 1U;
+}
 
 uint32_t dcu_time_now_us(void) { return time_us; }
 bool dcu_worker_timer_ack(void) { return true; }
 void dcu_worker_timer_start(void) {}
 uint32_t dcu_time_now_ms(void) { return time_us / 1000U; }
-void dcu_can_cancel(unsigned channel) { CHECK(channel < 4); ++cancel_calls; }
-void motor_control_output(const void *data) { ++output_calls; memcpy(last_output, data, sizeof(last_output)); }
+void dcu_can_cancel_from_isr(unsigned channel) { CHECK(channel < 4); ++cancel_calls; }
+void motor_control_output(const void *data)
+{
+    ++output_calls;
+    memcpy(last_output, data, sizeof(last_output));
+    command_pending = true;
+}
 void motor_control_prepare_input(void) { ++prepare_calls; time_us += prepare_cost_us; }
-void motor_control_process(void) {}
+bool motor_control_process(void)
+{
+    if (command_pending && defer_process) return false;
+    if (command_pending) processed_output = last_output[0];
+    command_pending = false;
+    return true;
+}
 void motor_control_cycle_fault(void) { ++fault_calls; }
-void Sync0_Isr(void) { ++sync_calls; }
+void Sync0_Isr(void)
+{
+    ++sync_calls;
+    if (LatchInputSync0Value && ++LatchInputSync0Counter == LatchInputSync0Value) {
+        PDO_InputMapping();
+        LatchInputSync0Counter = 0;
+    }
+}
 void Sync1_Isr(void) {}
 void ECAT_CheckTimer(void) { ++tick_calls; }
 void MainLoop(void) {}
 void PDO_InputMapping(void)
 {
     ++mapping_calls;
+    published_output = processed_output;
     time_us += mapping_cost_us;
     if (sync_during_mapping)
         dcu_cycle_sync0_isr();
@@ -54,6 +95,8 @@ void ECAT_StateChange(uint8_t state, uint16_t error)
 {
     requested_state = state;
     requested_error = error;
+    u8LocalErrorState = error ? state : 0;
+    u16LocalErrorCode = error;
 }
 void intc_m_disable_irq(uint32_t irq) { (void)irq; }
 void intc_m_enable_irq_with_priority(uint32_t irq, uint32_t priority) { (void)irq; (void)priority; }
@@ -114,6 +157,73 @@ static void check_stopped(uint32_t expected_fault)
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
+    if (!strcmp(argv[1], "esc_sm2_direct_stage")) {
+        const uint16_t sizes[] = {544, 736, 784};
+        uint8_t *bytes = (uint8_t *)fake_esc_output;
+        for (unsigned i = 0; i < sizeof(fake_esc_output); ++i)
+            bytes[i] = (uint8_t)((i * 59U) ^ (i >> 4U));
+        for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+            nPdOutputSize = sizes[i];
+            time_us = 100;
+            start();
+            CHECK(!dcu_cycle_stage_read(0x1000, sizes[i] - 4, read_sm2_into_slot));
+            CHECK(dcu_cycle_stage_read(0x1000, sizes[i], read_sm2_into_slot));
+            CHECK(direct_reads == i + 1);
+            CHECK(pdo_pipeline_mark_published(&pipeline, 1, 1800));
+            time_us = 2100;
+            dcu_cycle_sync0_isr();
+            pdo_pipeline_view_t output;
+            CHECK(pdo_pipeline_acquire(&pipeline, &output));
+            CHECK(output.epoch == 2 && output.sequence == 1 && output.ready_us == 101U);
+            CHECK(!memcmp(output.data, bytes, sizes[i]));
+            for (unsigned j = sizes[i]; j < sizeof(fake_esc_output); ++j)
+                CHECK(output.data[j] == 0U);
+            pdo_pipeline_release(&pipeline, &output);
+            dcu_cycle_stop_outputs();
+            CHECK(!dcu_cycle_stage_read(0x1000, sizes[i], read_sm2_into_slot));
+            CHECK(direct_reads == i + 1);
+        }
+        return 0;
+    }
+    if (!strcmp(argv[1], "esc_sm2_word_read")) {
+        uint32_t source[196];
+        _Alignas(4) uint8_t dest[792];
+        uint8_t *bytes = (uint8_t *)source;
+        const unsigned sizes[] = {4, 8, 544, 736, 784};
+        for (unsigned i = 0; i < sizeof(source); ++i)
+            bytes[i] = (uint8_t)((i * 73U) ^ (i >> 3));
+        for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i)
+            for (unsigned offset = 0; offset < 4; ++offset) {
+                memset(dest, 0xB5, sizeof(dest));
+                CHECK(dcu_esc_pdo_read_words(dest + offset, source, sizes[i]));
+                CHECK(!memcmp(dest + offset, bytes, sizes[i]));
+                for (unsigned j = 0; j < offset; ++j) CHECK(dest[j] == 0xB5);
+                for (unsigned j = offset + sizes[i]; j < sizeof(dest); ++j) CHECK(dest[j] == 0xB5);
+            }
+        memset(dest, 0xB5, sizeof(dest));
+        CHECK(!dcu_esc_pdo_read_words(dest, bytes + 2, 4));
+        CHECK(!dcu_esc_pdo_read_words(dest, bytes, 7));
+        for (unsigned i = 0; i < sizeof(dest); ++i) CHECK(dest[i] == 0xB5);
+        return 0;
+    }
+    if (!strcmp(argv[1], "esc_pdo_copy")) {
+        _Alignas(4) uint8_t src[1080];
+        uint32_t dest[271];
+        const uint8_t *out = (const uint8_t *)(dest + 1);
+        const unsigned sizes[] = {0, 1, 2, 3, 4, 7, 15, 16, 17, 20, 24, 28, 31, 32, 33, 544, 1024, 1072};
+        for (unsigned i = 0; i < sizeof(src); ++i)
+            src[i] = (uint8_t)(i ^ (i >> 8));
+        for (unsigned align = 0; align < 4; ++align)
+            for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+                memset(dest, 0xB5, sizeof(dest));
+                dcu_esc_pdo_copy(dest + 1, src + align, sizes[i]);
+                CHECK(dest[0] == UINT32_C(0xb5b5b5b5));
+                CHECK(!memcmp(out, src + align, sizes[i]));
+                for (unsigned j = sizes[i]; j < sizeof(dest) - sizeof(dest[0]); ++j)
+                    CHECK(out[j] == 0xB5);
+            }
+        return 0;
+    }
     if (!strcmp(argv[1], "diagnostics")) {
         dcu_rtos_diagnostics_t rtos;
         dcu_cycle_diagnostics_t first, second;
@@ -153,6 +263,31 @@ int main(int argc, char **argv)
         CHECK(!runtime.outputs_running);
         return 0;
     }
+    if (!strcmp(argv[1], "process_before_publish") || !strcmp(argv[1], "process_deadline")) {
+        test_esc_period = 1000000U;
+        start();
+        time_us = 85;
+        command_boundary(120);
+        time_us = 280; /* First worker dispatch is already inside the TxPDO window. */
+        defer_process = true;
+        dcu_cycle_step();
+        CHECK(output_calls == 1 && mapping_calls == 0 && runtime.command_pending);
+        if (!strcmp(argv[1], "process_deadline")) {
+            time_us = 871; /* Sync0 + 750 us is still the deadline. */
+            dcu_cycle_step();
+            CHECK(mapping_calls == 0);
+            check_stopped(PDO_PIPELINE_TX_LATE);
+        } else {
+            defer_process = false;
+            time_us = 330;
+            dcu_cycle_step();
+            CHECK(mapping_calls == 1 && published_output == 0xA5 && !runtime.command_pending);
+            time_us = 400;
+            dcu_cycle_step();
+            CHECK(mapping_calls == 1 && !fault_calls);
+        }
+        return 0;
+    }
     start();
     command_boundary(100);
     CHECK(output_calls == 0 && sync_calls == 0);
@@ -164,14 +299,28 @@ int main(int argc, char **argv)
         CHECK(last_output[i] == 0xA5);
 
     if (!strcmp(argv[1], "normal")) {
-        time_us = 1750;
+        CHECK(mapping_calls == 0);
+        time_us = 1250;
+        prepare_cost_us = 200;
+        mapping_cost_us = 300;
         dcu_cycle_step();
         dcu_cycle_diagnostics_t snapshot;
         dcu_cycle_read_diagnostics(&snapshot);
-        CHECK(mapping_calls == 1 && snapshot.published_epoch == 1);
+        CHECK(mapping_calls == 1 && snapshot.published_epoch == 1 && snapshot.publish_max_us == 500);
+        CHECK(snapshot.prepare_max_us == 200 && snapshot.esc_write_max_us == 300);
+        CHECK(snapshot.publish_start_delay_max_us == 0);
         command_boundary(2100);
         dcu_cycle_step();
         CHECK(output_calls == 2 && fault_calls == 0);
+        CHECK(mapping_calls == 1);
+        CHECK(cycle_timing.sync_interval.count == 1 && cycle_timing.sync_interval.histogram[2000] == 1);
+        CHECK(cycle_timing.rx_ready_lead.count == 2 && cycle_timing.rx_ready_lead.min_us == 100);
+        CHECK(cycle_timing.rx_ready_lead.max_us == 350 && cycle_timing.rx_ready_lead.sum_us == 450);
+        dcu_cycle_stop_outputs();
+        time_us = 4100;
+        dcu_cycle_sync0_isr();
+        dcu_cycle_step();
+        CHECK(mapping_calls == 2);
         return 0;
     }
     if (!strcmp(argv[1], "reconfigure_running")) {
@@ -192,6 +341,14 @@ int main(int argc, char **argv)
         check_stopped(PDO_PIPELINE_TX_LATE);
         return 0;
     }
+    if (!strcmp(argv[1], "pack_already_late")) {
+        time_us = 1750;
+        prepare_cost_us = 101;
+        dcu_cycle_step();
+        CHECK(mapping_calls == 0);
+        check_stopped(PDO_PIPELINE_TX_LATE);
+        return 0;
+    }
     if (!strcmp(argv[1], "crossed_epoch")) {
         time_us = 1750;
         mapping_cost_us = 350;
@@ -207,7 +364,59 @@ int main(int argc, char **argv)
         dcu_cycle_sync0_isr();
         dcu_cycle_step();
         check_stopped(PDO_PIPELINE_RX_MISSING);
+        dcu_cycle_diagnostics_t snapshot;
+        dcu_cycle_read_diagnostics(&snapshot);
+        CHECK(snapshot.fault_al_status == 8 && snapshot.fault_handled_us == 2100);
+        CHECK(snapshot.first_rx_miss_epoch == 2 && snapshot.first_rx_miss_sync_us == 2100);
+        CHECK(snapshot.first_rx_miss_last_stage_us == 0 && !snapshot.first_rx_miss_stage_busy);
         CHECK(output_calls == 1);
+        return 0;
+    }
+    if (!strcmp(argv[1], "preop_recovery")) {
+        time_us = 1750;
+        dcu_cycle_step();
+        time_us = 2100;
+        dcu_cycle_sync0_isr();
+        dcu_cycle_step();
+        check_stopped(PDO_PIPELINE_RX_MISSING);
+        nAlStatus = STATE_SAFEOP;
+        dcu_cycle_step();
+        CHECK(u16LocalErrorCode == ALSTATUSCODE_SYNCERROR);
+        dcu_cycle_stop_inputs();
+        nAlStatus = STATE_PREOP;
+        bEcatWaitForAlControlRes = true;
+        dcu_cycle_step();
+        CHECK(u16LocalErrorCode == ALSTATUSCODE_SYNCERROR);
+        bEcatWaitForAlControlRes = false;
+        dcu_cycle_step();
+        CHECK(u8LocalErrorState == 0 && u16LocalErrorCode == 0);
+        CHECK(cycle_diagnostics.local_sync_error_clears == 1);
+        CHECK(!runtime.outputs_running && output_calls == 1);
+        CHECK(dcu_cycle_configure() == ALSTATUSCODE_NOERROR);
+        CHECK(dcu_cycle_start_outputs() == ALSTATUSCODE_NOERROR);
+        return 0;
+    }
+    if (!strcmp(argv[1], "safeop_recovery") || !strcmp(argv[1], "unrelated_error")) {
+        time_us = 1750;
+        dcu_cycle_step();
+        time_us = 2100;
+        dcu_cycle_sync0_isr();
+        dcu_cycle_step();
+        check_stopped(PDO_PIPELINE_RX_MISSING);
+        nAlStatus = STATE_SAFEOP;
+        const bool unrelated = !strcmp(argv[1], "unrelated_error");
+        if (unrelated) u16LocalErrorCode = ALSTATUSCODE_SMWATCHDOG;
+        dcu_cycle_step();
+        CHECK(u8LocalErrorState == STATE_SAFEOP);
+        dcu_cycle_ack_safeop_error();
+        bEcatWaitForAlControlRes = true;
+        dcu_cycle_step();
+        CHECK(u8LocalErrorState == STATE_SAFEOP);
+        bEcatWaitForAlControlRes = false;
+        dcu_cycle_step();
+        CHECK(cycle_diagnostics.local_sync_error_clears == (unrelated ? 0U : 1U));
+        CHECK(u16LocalErrorCode == (unrelated ? ALSTATUSCODE_SMWATCHDOG : 0U));
+        CHECK(output_calls == 1 && !runtime.outputs_running && dcu_tx_inhibited());
         return 0;
     }
     if (!strcmp(argv[1], "sync_lost")) {

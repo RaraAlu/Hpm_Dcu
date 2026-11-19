@@ -26,6 +26,7 @@ typedef struct {
     uint32_t sequence;
     uint32_t epoch;
     uint32_t sync_us;
+    uint32_t ready_us;
     uint8_t data[PDO_PIPELINE_RX_MAX];
 } pdo_pipeline_slot_t;
 
@@ -46,6 +47,7 @@ typedef struct {
     uint32_t period_us;
     uint32_t advance_us;
     uint16_t output_size;
+    uint32_t (*stage_clock_us)(void);
 } pdo_pipeline_t;
 
 typedef struct {
@@ -54,15 +56,21 @@ typedef struct {
     uint32_t sequence;
     uint32_t epoch;
     uint32_t sync_us;
+    uint32_t ready_us;
 } pdo_pipeline_view_t;
 
 /* Configure/reset only with the producer and Sync0 interrupts quiescent. */
 bool pdo_pipeline_configure(pdo_pipeline_t *pipeline, uint32_t period_ns,
                             uint32_t advance_us, uint16_t output_size);
 void pdo_pipeline_enable(pdo_pipeline_t *pipeline, bool enabled);
+/* Single producer: a reservation is invisible to Sync0 until committed. */
+uint8_t *pdo_pipeline_reserve(pdo_pipeline_t *pipeline, uint16_t size, uint32_t *index);
+bool pdo_pipeline_commit(pdo_pipeline_t *pipeline, uint32_t index, uint32_t sequence,
+                         uint32_t image_complete_us);
 bool pdo_pipeline_stage(pdo_pipeline_t *pipeline, const void *data,
                         uint16_t size, uint32_t sequence);
-void pdo_pipeline_sync(pdo_pipeline_t *pipeline, uint32_t now_us);
+/* True only on the first missing RxPDO of this run. */
+bool pdo_pipeline_sync(pdo_pipeline_t *pipeline, uint32_t now_us);
 bool pdo_pipeline_acquire(pdo_pipeline_t *pipeline, pdo_pipeline_view_t *view);
 void pdo_pipeline_release(pdo_pipeline_t *pipeline, const pdo_pipeline_view_t *view);
 bool pdo_pipeline_publish_due(const pdo_pipeline_t *pipeline, uint32_t now_us);

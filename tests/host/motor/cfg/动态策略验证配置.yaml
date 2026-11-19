@@ -1,0 +1,8 @@
+schema_version: 1
+profile_id: 1
+base_revision: 1
+revision: 2
+policy:
+  max_command_lease_ms: 8
+  feedback_timeout_ms: 15
+  readiness_ttl_ms: 750

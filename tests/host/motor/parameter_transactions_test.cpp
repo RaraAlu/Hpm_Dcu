@@ -10,8 +10,8 @@
     std::fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #expr); std::exit(1); \
 } } while (0)
 
-namespace service = dcu::app::parameters;
-using namespace dcu::app::motor_application;
+namespace service = dcu::motor::encos_parameters;
+using namespace dcu::motor;
 static unsigned responses, queries, completions, cancellations[4];
 static unsigned last_axis;
 static uint8_t last_code;
@@ -21,7 +21,15 @@ static bool last_internal, last_maintenance;
 static service::QueryValue last_value{};
 static dcu_can_frame_t last_response{};
 
-extern "C" void dcu_can_cancel_service(unsigned bus) { CHECK(bus < 4); ++cancellations[bus]; }
+extern "C" bool dcu_can_cancel_tx(unsigned bus, dcu_can_tx_id_t id)
+{ CHECK(bus < 4 && id); ++cancellations[bus]; return true; }
+
+static void simulate_transmitted(unsigned bus, uint32_t now)
+{
+    static dcu_can_tx_id_t serial;
+    service::mark_submitted(bus, now, ++serial);
+    service::finish_tx(bus, {serial, DCU_CAN_TX_COMPLETED});
+}
 static void response(unsigned axis, bool maintenance, const dcu_can_frame_t &frame)
 {
     ++responses; last_axis = axis; last_maintenance = maintenance; last_response = frame;
@@ -38,8 +46,9 @@ static void complete(unsigned axis, bool maintenance, bool internal, uint32_t se
 static service::Request request(unsigned axis = 7)
 {
     service::Request value{};
-    value.axis = axis;
-    value.dialect = dcu::app::ParameterDialect::EncosLegacy;
+    value.device = axis;
+    value.bus = 1;
+    value.dialect = dcu::motor::ParameterDialect::EncosLegacy;
     value.can_id = 8;
     value.frame_format = 1;
     value.sequence = 9;
@@ -64,31 +73,55 @@ static dcu_can_frame_t reply(uint8_t code, uint8_t length = 6)
 }
 static void start(uint8_t code)
 {
-    CHECK(service::start_query(1, 7, code, 1, 1, dcu::app::ParameterDialect::EncosLegacy, 8, 1));
-    service::mark_sent(1, 1);
+    CHECK(service::start_query(1, 7, code, 1, 1, dcu::motor::ParameterDialect::EncosLegacy, 8, 1));
+    simulate_transmitted(1, 1);
 }
 
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
     service::initialize({response, query, complete});
+    if (!std::strcmp(argv[1], "tx_then_reply")) {
+        const auto dialect = dcu::motor::ParameterDialect::EncosLegacy;
+        CHECK(service::start_query(1, 7, 1, 1, 1, dialect, 8, 1));
+        service::mark_submitted(1, 1, 11);
+        auto frame = reply(1);
+        frame.data[2] = 0x3F; frame.data[3] = 0x80;
+        CHECK(!service::consume(1, 7, frame, 2).valid && !queries && !completions);
+        service::finish_tx(0, {11, DCU_CAN_TX_COMPLETED});
+        service::finish_tx(1, {10, DCU_CAN_TX_COMPLETED});
+        CHECK(service::inspect(1).awaiting_tx && !service::consume(1, 7, frame, 2).valid);
+        service::finish_tx(1, {11, DCU_CAN_TX_CANCELLED});
+        CHECK(!service::inspect(1).busy && last_result == RESULT_IO && completions == 1 && !queries);
+        service::finish_tx(1, {11, DCU_CAN_TX_COMPLETED});
+        CHECK(!service::consume(1, 7, frame, 3).valid && completions == 1 && !queries);
+        CHECK(service::start_query(1, 7, 1, 1, 4, dialect, 8, 1));
+        service::mark_submitted(1, 4, 12);
+        service::finish_tx(1, {12, DCU_CAN_TX_COMPLETED});
+        CHECK(service::inspect(1).busy && completions == 1 && !queries);
+        auto wrong_id = frame;
+        ++wrong_id.id;
+        CHECK(!service::consume(1, 7, wrong_id, 5).valid && completions == 1 && !queries);
+        CHECK(service::consume(1, 7, frame, 5).valid && completions == 2 && queries == 1);
+        return 0;
+    }
     if (!std::strcmp(argv[1], "request")) {
         auto value = request();
         auto outcome = service::commit(value, 1, true, false);
         CHECK(outcome.accepted && outcome.changed && outcome.result == RESULT_BUSY && !outcome.done_sequence);
         const auto status = service::inspect(1);
-        CHECK(status.busy && !status.sent && status.axis == 7 && status.can_id == 8);
+        CHECK(status.busy && !status.sent && status.device == 7 && status.can_id == 8);
         CHECK(status.dialect == value.dialect && status.frame_format == 1);
         value.can_id = 2; value.sequence = 88; value.write.data[3] = 99;
         CHECK(service::pending(1)->id == 8 && service::pending(1)->data[3] == 50);
         CHECK(service::pending(1)->flags == 24);
         CHECK(!service::commit(value, 1, true, false).accepted);
-        service::mark_sent(1, 2);
+        simulate_transmitted(1, 2);
         dcu_can_frame_t ack{};
         ack.id = 8; ack.dlc = 3; ack.data[0] = 0x80; ack.data[1] = 4; ack.data[2] = 1;
         CHECK(service::consume(1, 7, ack, 3).acknowledged);
         CHECK(service::pending(1)->data[1] == 22 && service::pending(1)->id == 8);
-        service::mark_sent(1, 4);
+        simulate_transmitted(1, 4);
         auto readback = reply(22, 4);
         readback.data[3] = 50;
         CHECK(service::consume(1, 7, readback, 5).valid);
@@ -100,8 +133,8 @@ int main(int argc, char **argv)
     if (!std::strcmp(argv[1], "admission")) {
         auto value = request(28);
         CHECK(!service::commit(value, 1, true, false).accepted);
-        value.axis = 7;
-        value.dialect = dcu::app::ParameterDialect::None;
+        value.device = 7;
+        value.dialect = dcu::motor::ParameterDialect::None;
         CHECK(!service::commit(value, 1, true, false).accepted);
         value = request();
         CHECK(!service::commit(value, 1, true, true).accepted);
@@ -113,6 +146,9 @@ int main(int argc, char **argv)
         CHECK(service::commit(value, 1, true, false).result == RESULT_INVALID);
         value.frame_format = 1;
         value.write_valid = false;
+        CHECK(service::commit(value, 1, true, false).result == RESULT_UNSUPPORTED);
+        value.write_valid = true;
+        value.write.dlc = 10;
         CHECK(service::commit(value, 1, true, false).result == RESULT_UNSUPPORTED);
         value.opcode = 99;
         CHECK(service::commit(value, 1, true, false).result == RESULT_UNSUPPORTED);
@@ -126,7 +162,7 @@ int main(int argc, char **argv)
         auto value = request();
         value.maintenance = true; value.opcode = 3;
         CHECK(service::commit(value, UINT32_MAX - 101, true, false).accepted);
-        service::mark_sent(1, UINT32_MAX - 100);
+        service::mark_submitted(1, UINT32_MAX - 100, 7);
         service::cancel(1, RESULT_IO);
         CHECK(last_maintenance && last_result == RESULT_IO && cancellations[1] == 1);
         CHECK(!service::available(1, 398) && service::available(1, 399));
@@ -180,9 +216,9 @@ int main(int argc, char **argv)
     }
     if (!std::strcmp(argv[1], "kt_groups")) {
         for (uint8_t group = 1; group <= 10; ++group) {
-            CHECK(service::start_query(1, 7, 36, group, 1, dcu::app::ParameterDialect::EncosLegacy, 8, 1));
+            CHECK(service::start_query(1, 7, 36, group, 1, dcu::motor::ParameterDialect::EncosLegacy, 8, 1));
             CHECK(service::pending(1)->data[0] == (0xE0 | group));
-            service::mark_sent(1, 1);
+            simulate_transmitted(1, 1);
             auto frame = reply(36, 8);
             frame.data[0] = 0xEE;
             frame.data[1] = 0x20 | group;
@@ -212,7 +248,7 @@ int main(int argc, char **argv)
             const uint8_t coefficients[] = {0x00, 0x0F, 0xFF, 0x12, 0x3A, 0xBC};
             std::memcpy(value.write.data + 2, coefficients, 6);
             CHECK(service::commit(value, 1, true, false).accepted);
-            service::mark_sent(1, 1);
+            simulate_transmitted(1, 1);
             auto frame = reply(0x2A, 8);
             frame.data[0] = 0xEE;
             std::memcpy(frame.data + 2, coefficients, 6);
@@ -222,7 +258,7 @@ int main(int argc, char **argv)
             CHECK(service::pending(1)->data[0] == 0xEA && service::pending(1)->data[1] == 36);
             CHECK(service::pending(1)->id == 8 && service::pending(1)->flags == 24);
             CHECK(!service::consume(1, 7, frame, 2).valid); // Readback has not been submitted.
-            service::mark_sent(1, 3);
+            simulate_transmitted(1, 3);
             if (mismatch) frame.data[7] ^= 1;
             CHECK(service::consume(1, 7, frame, 4).valid);
             CHECK(completions == completed + 1 && queries == published + 1);

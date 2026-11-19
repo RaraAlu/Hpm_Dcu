@@ -1,15 +1,6 @@
 #include "motor_driver.hpp"
 
 namespace dcu::motor {
-namespace {
-bool valid_frame(const CanFrame &frame) noexcept
-{
-    constexpr unsigned flags = DCU_CAN_FLAG_EXTENDED | DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
-    return frame.dlc <= DCU_CAN_MAX_PAYLOAD && !(frame.flags & ~flags) &&
-        (!(frame.flags & DCU_CAN_FLAG_BRS) || (frame.flags & DCU_CAN_FLAG_FD)) &&
-        frame.id <= ((frame.flags & DCU_CAN_FLAG_EXTENDED) ? 0x1FFFFFFFU : 0x7FFU);
-}
-}
 
 const Capabilities &MotorDevice::capabilities() const noexcept
 {
@@ -27,7 +18,7 @@ Result MotorDevice::encode(const Command &command, CanFrame &frame) const noexce
     const auto result = driver_->encode(command, candidate);
     if (result != Result::Ok)
         return result;
-    if (!valid_frame(candidate))
+    if (!dcu_can_frame_valid(&candidate))
         return Result::InvalidFrame;
     frame = candidate;
     return Result::Ok;
@@ -37,7 +28,7 @@ Result MotorDevice::decode(const CanFrame &frame, Feedback &feedback) const noex
 {
     if (!driver_)
         return Result::NotConfigured;
-    if (!valid_frame(frame))
+    if (!dcu_can_frame_valid(&frame))
         return Result::InvalidFrame;
     Feedback candidate{};
     const auto result = driver_->decode(frame, candidate);

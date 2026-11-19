@@ -19,7 +19,7 @@ class MotorProtocolTest(unittest.TestCase):
         work = Path(directory.name)
         includes = (
             "firmware/cfg", "firmware/ports", "firmware/generated/encos",
-            "firmware/protocols/encos", "firmware/app/motor", "firmware/devices/motor",
+            "firmware/protocols/encos", "firmware/devices/motor",
         )
         flags = ["-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":

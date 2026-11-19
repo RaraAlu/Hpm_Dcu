@@ -67,9 +67,10 @@ struct Capabilities {
     uint32_t feedback_fields{};
     double torque_constant_Nm_A{};
     bool active_stop_command{};
+    bool legacy_parameter_queries{};
 };
 
-// Drivers encode/decode only. Bus arbitration and physical stop policy are separate.
+// Wire codec contract. Session-capable drivers also implement MotorSessionDriver.
 class MotorDriver {
 public:
     virtual const Capabilities &capabilities() const noexcept = 0;

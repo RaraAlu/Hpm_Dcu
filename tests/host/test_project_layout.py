@@ -69,10 +69,10 @@ class ProjectLayoutTest(unittest.TestCase):
 
     def test_renamed_modules_have_no_retired_source_copies(self):
         modules = (
-            ("firmware/app/motor", "motor_control", "motor_application", ("cpp", "hpp")),
-            ("firmware/app/motor", "bus_scheduler", "can_bus_scheduler", ("cpp", "hpp")),
-            ("firmware/app/motor", "parameter_transactions", "encos_parameter_transactions", ("cpp", "hpp")),
-            ("firmware/app/motor/cfg", "motor_control", "motor_policy", ("hpp",)),
+            ("firmware/app/gateway", "motor_application", "gateway_application", ("cpp", "hpp")),
+            ("firmware/app/gateway", "bus_scheduler", "can_bus_scheduler", ("cpp", "hpp")),
+            ("firmware/devices/motor/drivers/encos", "parameter_transactions", "encos_parameter_transactions", ("cpp", "hpp")),
+            ("firmware/app/gateway/cfg", "motor_policy", "gateway_schedule_policy", ("hpp",)),
             ("firmware/app/cycle", "cycle_runtime", "ethercat_cycle", ("c", "h")),
             ("firmware/app/cycle/cfg", "runtime_config", "ethercat_cycle_policy", ("h",)),
             ("firmware/app/runtime", "app_runtime", "ethercat_can_task", ("c", "h")),
@@ -93,7 +93,7 @@ class ProjectLayoutTest(unittest.TestCase):
             self.assertIn('#include "digital_io.h"', text)
 
     def test_motor_policy_and_can_transport_do_not_import_ssc_or_ethercat_cycle(self):
-        motor = (ROOT / "firmware/app/motor/motor_application.cpp").read_text()
+        motor = (ROOT / "firmware/app/gateway/gateway_application.cpp").read_text()
         can = (ROOT / "firmware/comm/canfd/hpm_mcan_transport.c").read_text()
         for header in ("digital_io.h", "ecatslv.h", "sdoserv.h", "FreeRTOS.h"):
             self.assertNotIn(f'#include "{header}"', motor)
@@ -101,29 +101,47 @@ class ProjectLayoutTest(unittest.TestCase):
         self.assertIn('#include "realtime_port.h"', can)
 
     def test_motor_stateful_operations_have_object_owners_and_interface_tests(self):
-        motor = ROOT / "firmware/app/motor"
-        implementation = (motor / "detail/motor_application_impl.hpp").read_text()
-        self.assertIn("AxisController axes_", implementation)
+        gateway = ROOT / "firmware/app/gateway"
+        implementation = (gateway / "detail/gateway_application_impl.hpp").read_text()
+        self.assertIn("CanTransactions transactions_", implementation)
+        self.assertIn("GatewayApplication::prepare_publication", (gateway / "gateway_publication.cpp").read_text())
+        self.assertNotIn("encos_parameter_transactions.hpp", (gateway / "gateway_application.hpp").read_text())
+        self.assertIn("MotorInstance devices_", implementation)
+        for name in ("axis_controller.cpp", "axis_controller.hpp", "axis_contract.hpp", "detail/axis_state.hpp"):
+            self.assertFalse((ROOT / "firmware/app/motor" / name).exists())
         self.assertIn("RawCanGateway raw_", implementation)
-        self.assertFalse((motor / "detail/motor_application_state.hpp").exists())
-        for name in ("motor_application", "axis_controller", "raw_can_gateway"):
-            self.assertNotRegex((motor / f"{name}.cpp").read_text(), r"(?m)^static\s+")
+        self.assertFalse(list((ROOT / "firmware/app/motor").rglob("*.*")))
+        for source in (gateway / "gateway_application.cpp", ROOT / "firmware/devices/motor/motor_instance.cpp"):
+            self.assertNotRegex(source.read_text(), r"(?m)^static\s+")
         fixture = (ROOT / "tests/host/motor/motor_application_test.cpp").read_text()
-        self.assertNotIn('#include "motor_application.cpp"', fixture)
-        self.assertNotIn("motor_application_impl.hpp", fixture)
+        self.assertNotIn('#include "gateway_application.cpp"', fixture)
+        self.assertNotIn("gateway_application_impl.hpp", fixture)
 
-    def test_axis_controller_does_not_access_dictionary_storage(self):
-        controller = (ROOT / "firmware/app/motor/axis_controller.cpp").read_text()
-        self.assertNotIn("motor_dictionary.hpp", controller)
+    def test_motor_instance_does_not_depend_on_encos_or_ethercat_slots(self):
+        controller = (ROOT / "firmware/devices/motor/motor_instance.cpp").read_text()
+        for token in ("motor_dictionary.hpp", "encos_parameter_transactions.hpp", "encos_driver.hpp", "ENCOS_", "pdo_slot"):
+            self.assertNotIn(token, controller)
         self.assertNotRegex(controller, r"\b(?:mc_object|axis_feedback|axis_diagnostics)\s*\(")
 
     def test_raw_gateway_does_not_depend_on_axis_dictionary_or_pdo_parsing(self):
         for name in ("raw_can_gateway.hpp", "raw_can_gateway.cpp"):
-            text = (ROOT / "firmware/app/motor" / name).read_text()
+            self.assertFalse((ROOT / "firmware/app/motor" / name).exists())
+            text = (ROOT / "firmware/app/gateway" / name).read_text()
             with self.subTest(name=name):
                 for dependency in ("axis_controller.hpp", "motor_dictionary.hpp", "motor_pdo_codec.hpp",
                                    "encos_parameter_transactions.hpp", "AxisController", "mc_channel_config_t",
-                                   "mc_raw_t", "canfd_bus_pdo_t", "RawCanCycle", "stage_batch", "stage_full"):
+                                   "mc_raw_t", "canfd_bus_pdo_t", "RawCanCycle", "stage_batch", "stage_full",
+                                   "motor_policy.hpp", "can_bus_scheduler.hpp", "BusScheduler", "ENCOS_",
+                                   "device_config.h", "can_transport.h", "dcu_can_submit"):
+                    self.assertNotIn(dependency, text)
+
+    def test_can_transport_does_not_use_a_motor_topology_or_axis_transactions(self):
+        root = ROOT / "firmware/comm/canfd"
+        for name in ("can_transport.h", "hpm_mcan_transport.c", "detail/can_gateway_state.h"):
+            with self.subTest(name=name):
+                text = (root / name).read_text()
+                for dependency in ("ENCOS_", "device_config.h", "s_tx_axis", "dcu_can_cancel_axis",
+                                   "dcu_can_cancel_service", "dcu_can_completions"):
                     self.assertNotIn(dependency, text)
 
     def test_motor_motion_codec_has_no_retired_wire_api_or_driver_roundtrip(self):
@@ -148,23 +166,21 @@ class ProjectLayoutTest(unittest.TestCase):
             if path.suffix in (".c", ".cpp", ".h", ".hpp"):
                 self.assertNotRegex(path.read_text(), r"\b(?:ethercat_canfd_\w+|g_dcu_cycle_diagnostics)\s*\(")
         main = (ROOT / "firmware/app/main.c").read_text()
-        self.assertLess(main.index("dcu_timebase_init()"), main.index("dcu_mcan_init()"))
+        self.assertLess(main.index("dcu_timebase_init()"), main.index("dcu_mcan_init(profile->channels,"))
 
     def test_parameter_core_and_query_codec_do_not_depend_on_dictionary_or_axis(self):
-        for relative in ("app/motor/encos_parameter_transactions.cpp", "app/motor/encos_parameter_transactions.hpp",
-                         "app/motor/detail/encos_parameter_state.hpp", "protocols/encos/encos_service.h",
+        for relative in ("devices/motor/drivers/encos/encos_parameter_transactions.cpp",
+                         "devices/motor/drivers/encos/encos_parameter_transactions.hpp",
+                         "devices/motor/drivers/encos/detail/encos_parameter_state.hpp", "protocols/encos/encos_service.h",
                          "protocols/encos/encos_service.cpp"):
             with self.subTest(path=relative):
                 text = (ROOT / "firmware" / relative).read_text()
-                for dependency in ("motor_dictionary", "encos_interface.h", "motor_application.hpp",
+                for dependency in ("motor_dictionary", "encos_interface.h", "gateway_application.hpp",
                                    "motor_driver_binding.hpp", "axis_controller.hpp", "axis_object_base", "mc_object"):
                     self.assertNotIn(dependency, text)
 
     def test_axis_driver_and_protocol_types_are_not_ethercat_dtos(self):
-        paths = [ROOT / "firmware/app/motor" / name for name in (
-            "axis_contract.hpp", "axis_controller.hpp", "axis_controller.cpp", "detail/axis_state.hpp",
-            "motor_driver_binding.hpp", "motor_driver_binding.cpp")]
-        paths += list((ROOT / "firmware/devices/motor").rglob("*.hpp"))
+        paths = list((ROOT / "firmware/devices/motor").rglob("*.hpp"))
         paths += list((ROOT / "firmware/devices/motor").rglob("*.cpp"))
         paths += list((ROOT / "firmware/protocols/encos").rglob("*"))
         for path in paths:
@@ -173,7 +189,7 @@ class ProjectLayoutTest(unittest.TestCase):
             with self.subTest(path=path.relative_to(ROOT)):
                 text = path.read_text()
                 self.assertNotRegex(text, r"\bmc_\w+\b|\bMC_\w+\b")
-                for dependency in ("encos_interface.h", "motor_dictionary", "motor_pdo", "motor_application.hpp"):
+                for dependency in ("encos_interface.h", "motor_dictionary", "motor_pdo", "gateway_application.hpp"):
                     self.assertNotIn(dependency, text)
         for path in (ROOT / "firmware").rglob("*"):
             if path.suffix in (".h", ".hpp", ".c", ".cpp"):

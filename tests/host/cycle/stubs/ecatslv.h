@@ -6,10 +6,19 @@ typedef struct { uint16_t u16SyncType; } test_sync_parameters_t;
 extern test_sync_parameters_t sSyncManOutPar, sSyncManInPar;
 extern bool bDcSyncActive;
 extern uint16_t nPdOutputSize;
+extern uint16_t LatchInputSync0Value, LatchInputSync0Counter;
+extern uint8_t nAlStatus;
+extern uint8_t u8LocalErrorState;
+extern uint16_t u16LocalErrorCode;
+extern bool bEcatWaitForAlControlRes;
 #define SYNCTYPE_DCSYNC0 2U
 #define STATE_SAFEOP 4U
+#define STATE_INIT 1U
+#define STATE_PREOP 2U
+#define STATE_MASK 0x0fU
 #define ALSTATUSCODE_NOERROR 0U
 #define ALSTATUSCODE_SYNCERROR 0x1AU
+#define ALSTATUSCODE_SMWATCHDOG 0x1BU
 #define ALSTATUSCODE_SYNCHRONNOTSUPPORTED 0x28U
 #define ALSTATUSCODE_DCINVALIDSYNCCFG 0x30U
 #define ALSTATUSCODE_DCSYNC0CYCLETIME 0x36U

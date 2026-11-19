@@ -17,18 +17,22 @@ class ApplicationCoreTest(unittest.TestCase):
         work = tempfile.TemporaryDirectory(prefix="dcu-application-core-")
         cls.addClassCleanup(work.cleanup)
         cls.executable = Path(work.name) / "application"
-        flags = ["-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
+        flags = ["-DDCU_HOST_ENGINE_TEST", "-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             flags += ["-g", "-fsanitize=address,undefined,float-cast-overflow", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
-        # Compile every motor business source without generated/EtherCAT/SSC/HPM/RTOS headers.
-        for include in ("firmware/app/motor", "firmware/comm/canfd", "firmware/devices/motor",
-                        "firmware/devices/motor/drivers/encos", "firmware/protocols/encos",
+        # Compile the gateway application and motor devices without generated/EtherCAT/SSC/HPM/RTOS headers.
+        for include in ("firmware/app/gateway", "firmware/comm/canfd", "firmware/devices/motor",
+                        "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408", "firmware/protocols/encos",
                         "firmware/cfg", "firmware/ports"):
             flags.extend(("-I", str(ROOT / include)))
         sources = [ROOT / "tests/host/motor/application_core_test.cpp"]
-        for directory in ("firmware/app/motor", "firmware/devices/motor", "firmware/protocols/encos"):
+        for directory in ("firmware/app/gateway", "firmware/devices/motor", "firmware/protocols/encos"):
             sources.extend(sorted((ROOT / directory).rglob("*.cpp")))
-        cls.run_command([cxx, *flags, *(str(source) for source in sources), "-o", str(cls.executable)])
+        readiness = Path(work.name) / "readiness.o"
+        c_flags = [flag for flag in flags if flag not in ("-std=c++17", "-fno-exceptions", "-fno-rtti")]
+        cls.run_command(["cc", "-std=c11", *c_flags, "-c",
+                         str(ROOT / "firmware/app/gateway/gateway_readiness.c"), "-o", str(readiness)])
+        cls.run_command([cxx, *flags, str(readiness), *(str(source) for source in sources), "-o", str(cls.executable)])
 
     @staticmethod
     def run_command(command):

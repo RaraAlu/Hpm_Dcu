@@ -22,11 +22,11 @@ class ParameterTransactionsTest(unittest.TestCase):
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             command += ["-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         # No dictionary, generated types, devices, axis, SSC, HPM or RTOS stubs.
-        for include in ("firmware/app/motor", "firmware/comm/canfd", "firmware/protocols/encos",
+        for include in ("firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/comm/canfd", "firmware/protocols/encos",
                         "firmware/cfg", "firmware/ports"):
             command.extend(("-I", str(ROOT / include)))
         cls.run_command([*command, str(ROOT / "tests/host/motor/parameter_transactions_test.cpp"),
-                         str(ROOT / "firmware/app/motor/encos_parameter_transactions.cpp"),
+                         str(ROOT / "firmware/devices/motor/drivers/encos/encos_parameter_transactions.cpp"),
                          str(ROOT / "firmware/protocols/encos/encos_service.cpp"), "-o", str(cls.executable)])
 
     @staticmethod
@@ -37,6 +37,9 @@ class ParameterTransactionsTest(unittest.TestCase):
 
     def test_request_is_copied_and_write_readback_completes_the_original_sequence(self):
         self.run_command([str(self.executable), "request"])
+
+    def test_reply_requires_matching_hardware_completion_and_is_not_completion_itself(self):
+        self.run_command([str(self.executable), "tx_then_reply"])
 
     def test_rejected_and_duplicate_requests_do_not_change_inflight_state(self):
         self.run_command([str(self.executable), "admission"])

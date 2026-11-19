@@ -10,15 +10,19 @@ extern "C" {
 
 /* Initialize once before scheduler start. All remaining calls belong to the
  * ecat-can task; ISR paths use the cycle/CAN handoff instead. */
-void motor_control_init(void);
-void motor_control_process(void);
+bool motor_control_init(void);
+bool motor_control_boot_startup(uint64_t boot_id, uint64_t (*issue_session)(void));
+/* Returns false only while a staged PDO still awaits processing. */
+bool motor_control_process(void);
 void motor_control_operational(bool operational);
+void motor_control_discard_profile(void);
 void motor_control_cycle_fault(void);
 void motor_control_output(const void *data);
 
 uint16_t motor_control_mapping(uint16_t *input_size, uint16_t *output_size);
-void motor_control_input(void *data);
 void motor_control_prepare_input(void);
+/* SSC-owned RAM storage, borrowed once before the worker starts. */
+void *dcu_ssc_txpdo_buffer(uint16_t *capacity);
 
 uint8_t MC_AssignWrite(uint16_t index, uint8_t subindex, uint32_t bytes,
                        uint16_t *data, uint8_t complete);

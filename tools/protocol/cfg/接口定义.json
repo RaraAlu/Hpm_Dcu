@@ -10,6 +10,15 @@
     "MC_STATUS_ARMED_QUERY_ONLY": "0x2000u"
   },
   "types": {
+    "mc_profile_update_t": [
+      {"name": "Candidate", "type": "uint8_t", "count": 36, "label": "Candidate", "access": "wo", "default": 0},
+      {"name": "CommitRevision", "type": "uint32_t", "label": "CommitRevision", "access": "wo", "default": 0},
+      {"name": "Result", "type": "uint16_t", "label": "Result", "access": "ro", "default": 0},
+      {"name": "ProfileId", "type": "uint32_t", "label": "ProfileId", "access": "ro", "default": 0},
+      {"name": "ActiveRevision", "type": "uint32_t", "label": "ActiveRevision", "access": "ro", "default": 0},
+      {"name": "StagedRevision", "type": "uint32_t", "label": "StagedRevision", "access": "ro", "default": 0},
+      {"name": "ReadinessTtlMs", "type": "uint32_t", "label": "ReadinessTtlMs", "access": "ro", "default": 0}
+    ],
     "mc_board_rx_t": [
       {
         "name": "CycleSeq",
@@ -1428,22 +1437,22 @@
         "name": "AxisConfiguredMask",
         "type": "uint32_t",
         "label": "AxisConfiguredMask",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "MaxCommandLeaseMs",
         "type": "uint16_t",
         "label": "MaxCommandLeaseMs",
-        "access": "rw",
-        "default": 10
+        "access": "ro",
+        "default": 0
       },
       {
         "name": "FeedbackTimeoutMs",
         "type": "uint16_t",
         "label": "FeedbackTimeoutMs",
-        "access": "rw",
-        "default": 20
+        "access": "ro",
+        "default": 0
       },
       {
         "name": "ActivePdoProfile",
@@ -1458,49 +1467,49 @@
         "name": "Role",
         "type": "uint8_t",
         "label": "Role",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "FrameFormat",
         "type": "uint8_t",
         "label": "FrameFormat",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "NominalBitrate",
         "type": "uint32_t",
         "label": "NominalBitrate",
-        "access": "rw",
-        "default": 1000000
+        "access": "ro",
+        "default": 0
       },
       {
         "name": "DataBitrate",
         "type": "uint32_t",
         "label": "DataBitrate",
-        "access": "rw",
-        "default": 5000000
+        "access": "ro",
+        "default": 0
       },
       {
         "name": "ScheduleUs",
         "type": "uint32_t",
         "label": "ScheduleUs",
-        "access": "rw",
-        "default": 2000
+        "access": "ro",
+        "default": 0
       },
       {
         "name": "RawRateLimit",
         "type": "uint16_t",
         "label": "RawRateLimit",
-        "access": "rw",
-        "default": 2
+        "access": "ro",
+        "default": 0
       },
       {
         "name": "MotorConfiguredMask",
         "type": "uint8_t",
         "label": "MotorConfiguredMask",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       }
     ],
@@ -1509,14 +1518,14 @@
         "name": "ApplyGeneration",
         "type": "uint32_t",
         "label": "ApplyGeneration",
-        "access": "wo",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "SaveToken",
         "type": "uint32_t",
         "label": "SaveToken",
-        "access": "wo",
+        "access": "ro",
         "default": 0
       },
       {
@@ -1757,70 +1766,70 @@
         "name": "CanId",
         "type": "uint16_t",
         "label": "CanId",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "ModelProfileId",
         "type": "uint16_t",
         "label": "ModelProfileId",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "PositionLimitMin",
         "type": "int32_t",
         "label": "PositionLimitMin",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "PositionLimitMax",
         "type": "int32_t",
         "label": "PositionLimitMax",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "VelocityLimit",
         "type": "uint32_t",
         "label": "VelocityLimit",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "CurrentLimit",
         "type": "uint32_t",
         "label": "CurrentLimit",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "TorqueLimit",
         "type": "uint32_t",
         "label": "TorqueLimit",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "StopPolicy",
         "type": "uint8_t",
         "label": "StopPolicy",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "FeedbackPolicy",
         "type": "uint8_t",
         "label": "FeedbackPolicy",
-        "access": "rw",
-        "default": 1
+        "access": "ro",
+        "default": 0
       },
       {
         "name": "PowerQueryPeriodMs",
         "type": "uint16_t",
         "label": "PowerQueryPeriodMs",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       }
     ],
@@ -1829,42 +1838,42 @@
         "name": "AccelerationRaw",
         "type": "uint16_t",
         "label": "AccelerationRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "CommunicationMode",
         "type": "uint8_t",
         "label": "CommunicationMode",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "TorqueConstantRaw",
         "type": "uint16_t",
         "label": "TorqueConstantRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "CanTimeoutMs",
         "type": "uint16_t",
         "label": "CanTimeoutMs",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "ZeroOffsetRaw",
         "type": "int16_t",
         "label": "ZeroOffsetRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "BrakeEnable",
         "type": "uint8_t",
         "label": "BrakeEnable",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       }
     ],
@@ -1873,84 +1882,84 @@
         "name": "KpMin",
         "type": "uint16_t",
         "label": "KpMin",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "KpMax",
         "type": "uint16_t",
         "label": "KpMax",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "KdMin",
         "type": "uint16_t",
         "label": "KdMin",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "KdMax",
         "type": "uint16_t",
         "label": "KdMax",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "PosMinRaw",
         "type": "int16_t",
         "label": "PosMinRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "PosMaxRaw",
         "type": "int16_t",
         "label": "PosMaxRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "SpdMinRaw",
         "type": "int16_t",
         "label": "SpdMinRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "SpdMaxRaw",
         "type": "int16_t",
         "label": "SpdMaxRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "TorMinRaw",
         "type": "int16_t",
         "label": "TorMinRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "TorMaxRaw",
         "type": "int16_t",
         "label": "TorMaxRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "CurMinRaw",
         "type": "int16_t",
         "label": "CurMinRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "CurMaxRaw",
         "type": "int16_t",
         "label": "CurMaxRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       }
     ],
@@ -1959,42 +1968,42 @@
         "name": "CurrentKpRaw",
         "type": "uint16_t",
         "label": "CurrentKpRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "CurrentKiRaw",
         "type": "uint16_t",
         "label": "CurrentKiRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "SpeedKpRaw",
         "type": "uint16_t",
         "label": "SpeedKpRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "SpeedKiRaw",
         "type": "uint16_t",
         "label": "SpeedKiRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "PositionKpRaw",
         "type": "uint16_t",
         "label": "PositionKpRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "PositionKdRaw",
         "type": "uint16_t",
         "label": "PositionKdRaw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       }
     ],
@@ -2003,42 +2012,42 @@
         "name": "Group",
         "type": "uint8_t",
         "label": "Group",
-        "access": "rw",
-        "default": 1
+        "access": "ro",
+        "default": 0
       },
       {
         "name": "Kt1Raw",
         "type": "uint16_t",
         "label": "Kt1Raw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "Kt2Raw",
         "type": "uint16_t",
         "label": "Kt2Raw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "Kt3Raw",
         "type": "uint16_t",
         "label": "Kt3Raw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "Kt4Raw",
         "type": "uint16_t",
         "label": "Kt4Raw",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "CalibrationMode",
         "type": "uint8_t",
         "label": "CalibrationMode",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       }
     ],
@@ -2264,28 +2273,28 @@
         "name": "Opcode",
         "type": "uint16_t",
         "label": "Opcode",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "Argument0",
         "type": "int32_t",
         "label": "Argument0",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "Argument1",
         "type": "int32_t",
         "label": "Argument1",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
         "name": "RequestSeq",
         "type": "uint32_t",
         "label": "RequestSeq",
-        "access": "rw",
+        "access": "ro",
         "default": 0
       },
       {
@@ -2354,6 +2363,13 @@
       "name": "CAN{bus}.Config",
       "count": 4,
       "stride": 1
+    },
+    {
+      "index": "0x2100",
+      "type": "mc_profile_update_t",
+      "name": "Gateway.ProfileUpdate",
+      "count": 1,
+      "stride": 0
     },
     {
       "index": "0x2200",

@@ -31,7 +31,7 @@ class DeviceAbstractionTest(unittest.TestCase):
         ])
         for include in (
             "firmware/cfg", "firmware/generated/encos", "firmware/protocols/encos",
-            "firmware/devices/motor/drivers/encos", "firmware/app/motor", "firmware/comm/ethercat",
+            "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408", "firmware/comm/canfd", "firmware/comm/ethercat",
         ):
             flags.extend(("-I", str(ROOT / include)))
         cls.run_command([
@@ -39,7 +39,10 @@ class DeviceAbstractionTest(unittest.TestCase):
             str(ROOT / "tests/host/motor/encos_motion_reference.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),
-            str(ROOT / "firmware/app/motor/motor_driver_binding.cpp"),
+            str(ROOT / "firmware/devices/motor/drivers/encos/encos_session.cpp"),
+            str(ROOT / "firmware/devices/motor/drivers/cih408/cih408_driver.cpp"),
+            str(ROOT / "firmware/devices/motor/drivers/encos/encos_parameter_transactions.cpp"),
+            str(ROOT / "firmware/devices/motor/motor_driver_binding.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_service.cpp"), "-lm", "-o", str(cls.adapter),
         ])
@@ -104,7 +107,7 @@ class DeviceAbstractionTest(unittest.TestCase):
     def test_motor_driver_configuration_is_isolated_per_axis(self):
         self.run_command([str(self.adapter), "axis_isolation"])
 
-    def test_axis_adapter_maps_all_config_command_feedback_and_parameter_fields(self):
+    def test_axis_adapter_maps_command_feedback_and_diagnostic_fields(self):
         self.run_command([str(self.adapter), "field_mapping"])
 
 

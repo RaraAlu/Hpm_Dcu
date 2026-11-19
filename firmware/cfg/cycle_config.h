@@ -9,7 +9,8 @@
 #ifndef DCU_TX_PUBLISH_ADVANCE_US
 #define DCU_TX_PUBLISH_ADVANCE_US 250U
 #endif
-#define DCU_TX_BUILD_BUDGET_US 100U
+/* Include worker dispatch and preemption before the unchanged publish deadline. */
+#define DCU_TX_BUILD_BUDGET_US 600U
 
 #define DCU_IRQ_SYNC0_PRIORITY 5U
 #define DCU_IRQ_PDI_PRIORITY 4U

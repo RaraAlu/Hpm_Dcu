@@ -50,6 +50,13 @@ class ProtocolGenerationTest(unittest.TestCase):
         cls.generated = generator.outputs()
         cls.xml = ET.fromstring(cls.generated[ESI])
         cls.objects, cls.pdos = generator.expand(cls.schema)
+        cls.legacy_schema = copy.deepcopy(cls.schema)
+        del cls.legacy_schema['types']['mc_profile_update_t']
+        cls.legacy_schema['families'] = [row for row in cls.legacy_schema['families']
+                                         if row['type'] != 'mc_profile_update_t']
+        cls.legacy_objects, cls.legacy_pdos = generator.expand(cls.legacy_schema)
+        cls.legacy_xml = ET.fromstring(generator.esi((INPUTS / '设备模板.xml').read_bytes(),
+                                                     cls.legacy_objects, cls.legacy_pdos))
 
     def test_generation_works_without_existing_outputs_and_is_reproducible(self):
         with tempfile.TemporaryDirectory(prefix='dcu-protocol-') as directory:
@@ -73,15 +80,21 @@ class ProtocolGenerationTest(unittest.TestCase):
         for name, content in self.generated.items():
             self.assertEqual((ROOT / name).read_bytes(), content, name)
 
-    def test_wire_c_tokens_match_the_pre_migration_contract(self):
-        # Frozen from c8ea19f, before the new source definition/generator existed.
+    def test_wire_c_tokens_match_the_profile_owned_can_contract(self):
+        # Layout checksum remains from c8ea19f. Legacy configuration is reserved;
+        # board and channel fields are read-only Profile observations.
         expected = {
             'encos/encos_interface.h': '2b74c842d03b6c4b96322ca0cfe2d2c15d5ffe211132e876d7c4df743f0fbf16',
-            'encos/encos_storage.inc': '7ee9b5d6bcb4773d86fda06475d35b47def2ecb47c639528f90ce069b8dbddfd',
-            'ethercat/gatewayObjects.h': '1e8da1c060f6cb76fea7c4b3550792b3dbd5bae3988521931800c23c27171d45',
+            'encos/encos_storage.inc': 'b7fd8e1802ef1748cf7195e7980bce0cb068502372c92b9322e9a5f0c56ff968',
+            'ethercat/gatewayObjects.h': '1fbde950eabe4005566bd14009edf11728c1c5bb10ae419219887a4de43fb6c9',
+        }
+        existing = {
+            'encos/encos_interface.h': generator.header(self.legacy_schema),
+            'encos/encos_storage.inc': generator.storage(self.legacy_objects),
+            'ethercat/gatewayObjects.h': generator.gateway(self.legacy_schema, self.legacy_objects, self.legacy_pdos),
         }
         for name, checksum in expected.items():
-            text = self.generated['firmware/generated/' + name].decode()
+            text = existing[name]
             text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
             text = re.sub(r'^#define MC_.*$', '', text, flags=re.M)
             text = re.sub(r'0x[0-9a-fA-F]+', lambda m: m[0].lower(), text)
@@ -94,18 +107,33 @@ class ProtocolGenerationTest(unittest.TestCase):
             'MC_STATUS_ARMED_QUERY_ONLY': '0x2000u',
         })
 
-    def test_xml_object_and_pdo_contracts_match_the_pre_migration_esi(self):
+    def test_xml_has_read_only_can_settings_and_preserves_pdo_contracts(self):
         expected = {
-            './/Dictionary': '9b8995e239f439d7fbd1467ef84dbd95f884fbe331e9303d17104b5f4dec4933',
+            './/Dictionary': '237f9958cb31ff57e09d8b603f7dda01769eaa1cf82b0849ba5b2340e475adae',
             './/RxPdo': '0b821638565fbad3592fb6c81d826f597df70d0897e9709da49ab4a5efd0d233',
             './/TxPdo': 'ede08e6218a6d7982e3d339edcd92e4d91a43a4ab31cde8aba8bc7c34dfe68b5',
         }
         for path, checksum in expected.items():
-            payload = [xml_contract(node) for node in self.xml.findall(path)]
+            root = self.legacy_xml if path == './/Dictionary' else self.xml
+            payload = [xml_contract(node) for node in root.findall(path)]
             self.assertEqual(digest(json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()), checksum)
 
+    def test_profile_update_adds_only_an_unmapped_mailbox_object(self):
+        self.assertEqual({k: v for k, v in self.objects.items() if k != 0x2100}, self.legacy_objects)
+        self.assertEqual(self.pdos, self.legacy_pdos)
+        self.assertEqual(self.generated[SII], generator.sii(ET.tostring(self.legacy_xml), self.schema['sii']))
+        fields = self.objects[0x2100]['fields']
+        self.assertEqual([generator.field_size(field) for field in fields], [36, 4, 2, 4, 4, 4, 4])
+        self.assertEqual([field['access'] for field in fields], ['wo', 'wo', 'ro', 'ro', 'ro', 'ro', 'ro'])
+
+    def test_reserved_objects_have_no_configuration_values_or_writable_fields(self):
+        for name in ('routing', 'basic', 'range', 'gain', 'kt', 'action', 'maintenance'):
+            for field in self.schema['types'][f'mc_{name}_t']:
+                with self.subTest(type=name, field=field['name']):
+                    self.assertEqual((field['access'], field['default']), ('ro', 0))
+
     def test_all_three_assignments_retain_their_sizes_and_order(self):
-        self.assertEqual(len(self.objects), 394)
+        self.assertEqual(len(self.objects), 395)
         self.assertEqual(len(self.pdos), 77)
         for profile, expected in zip(self.schema['profiles'], ((736, 1024), (784, 1072), (544, 544))):
             sizes = []
@@ -233,7 +261,7 @@ class ProtocolGenerationTest(unittest.TestCase):
             subprocess.run(['cc', '-std=c11', '-Wall', '-Werror', *includes, '-c',
                             str(ROOT / 'firmware/comm/ethercat/encos_storage.c'), '-o', str(storage)], check=True, capture_output=True)
             cpp = work / 'main.cpp'
-            cpp.write_text('#include "encos_interface.h"\nint main() { return mc_object_count != 394 || !mc_objects[0].data; }\n')
+            cpp.write_text('#include "encos_interface.h"\nint main() { return mc_object_count != 395 || !mc_objects[0].data; }\n')
             subprocess.run(['c++', '-std=c++17', '-pedantic-errors', *includes, str(cpp), str(storage),
                             '-o', str(work / 'contract')], check=True, capture_output=True)
             subprocess.run([str(work / 'contract')], check=True)

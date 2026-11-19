@@ -314,8 +314,13 @@ void PDO_OutputMapping(void)
 
    }
 
-    HW_EscReadIsr(((MEM_ADDR *)aPdOutputData), nEscAddrOutputData, nPdOutputSize );
-    APPL_OutputMapping((UINT16*) aPdOutputData);
+#ifdef HW_EscStageOutputs
+    if (!HW_EscStageOutputs(nEscAddrOutputData, nPdOutputSize))
+#endif
+    {
+        HW_EscReadIsr(((MEM_ADDR *)aPdOutputData), nEscAddrOutputData, nPdOutputSize );
+        APPL_OutputMapping((UINT16*) aPdOutputData);
+    }
 
 
 #if ((MIN_PD_CYCLE_TIME == 0) || (PD_OUTPUT_CALC_AND_COPY_TIME == 0))

@@ -25,7 +25,7 @@ class ConfigurationLayoutTest(unittest.TestCase):
             "firmware/cfg/ecat_def.h",
             "firmware/cfg/dcu_compiler.h",
             "firmware/cfg/device_config.h",
-            "firmware/app/motor/cfg/motor_drivers.hpp",
+            "firmware/devices/motor/cfg/motor_drivers.hpp",
             "firmware/bsp/dcu_hpm5e31/cfg/tool_config.hpmpc",
             "scripts/cfg/board.example.json",
             "scripts/cfg/60-dcu-jlink.rules",

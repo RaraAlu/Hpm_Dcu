@@ -99,6 +99,11 @@ static bool motor_substitution()
     motor::Feedback feedback{};
     CHECK(device.decode(frame, feedback) == motor::Result::Ok);
     CHECK(feedback.position_urad == 12345 && feedback.valid_fields == motor::Position);
+    driver.dlc = 15;
+    driver.flags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+    CHECK(device.encode(command, frame) == motor::Result::Ok);
+    CHECK(frame.dlc == 15 && dcu_can_dlc_to_bytes(frame.dlc, true) == 64);
+    CHECK(device.decode(frame, feedback) == motor::Result::Ok);
     return true;
 }
 
@@ -116,6 +121,10 @@ static bool motor_failed_outputs_are_not_committed()
     driver.encode_result = motor::Result::Ok;
     driver.dlc = 9;
     CHECK(device.encode(command, frame) == motor::Result::InvalidFrame && frame.id == 999);
+    driver.dlc = 16;
+    driver.flags = DCU_CAN_FLAG_FD;
+    CHECK(device.encode(command, frame) == motor::Result::InvalidFrame && frame.id == 999);
+    driver.flags = 0;
     driver.dlc = 2;
     driver.id = 0x800;
     CHECK(device.encode(command, frame) == motor::Result::InvalidFrame && frame.id == 999);

@@ -20,7 +20,6 @@ class PdoPipelineTest(unittest.TestCase):
             cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors",
             "-I", str(ROOT / "firmware/app/cycle"),
             "-I", str(ROOT / "firmware/cfg"),
-            str(ROOT / "firmware/app/cycle/pdo_pipeline.c"),
             str(ROOT / "tests/host/cycle/pdo_pipeline_test.c"),
             "-o", str(cls.executable),
         ])
@@ -36,6 +35,9 @@ class PdoPipelineTest(unittest.TestCase):
 
     def test_command_changes_only_at_sync0_boundary(self):
         self.run_command([str(self.executable), "boundary"])
+
+    def test_sync0_can_only_latch_after_publish_exchange(self):
+        self.run_command([str(self.executable), "publication_edge"])
 
     def test_latest_complete_frame_wins_before_boundary(self):
         self.run_command([str(self.executable), "latest"])
@@ -54,6 +56,9 @@ class PdoPipelineTest(unittest.TestCase):
 
     def test_sync_interrupt_between_time_sample_and_check(self):
         self.run_command([str(self.executable), "preempted_time"])
+
+    def test_sync_interrupt_cannot_fault_a_completed_epoch(self):
+        self.run_command([str(self.executable), "preempted_watchdog"])
 
     def test_publish_timeout_and_sync_loss_are_latched(self):
         self.run_command([str(self.executable), "faults"])

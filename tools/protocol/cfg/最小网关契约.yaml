@@ -1,0 +1,190 @@
+schema_version: 1
+layout_id: gateway_probe_v1
+byte_order: little
+states:
+  BOOT: 0
+  PREPARING: 1
+  READY: 2
+  RUNNING: 3
+  HOLD: 4
+  FAULT: 5
+activation_results:
+  ACCEPTED: 0
+  NOT_READY: 1
+  CONFIG_MISMATCH: 2
+  STALE_CONTEXT: 3
+  BUSY: 4
+  INVALID: 5
+reasons:
+  NONE: 0
+  CONFIG_INVALID: 1
+  CAN_OFFLINE: 2
+  FEEDBACK_TIMEOUT: 3
+  MASTER_TIMEOUT: 4
+  PROTOCOL_MISMATCH: 5
+  INVALID_COMMAND: 6
+  BUSY: 7
+  COUNTER_EXHAUSTED: 8
+records:
+  can_echo:
+    size_bytes: 8
+    fields:
+      - name: probe_tag
+        type: u32
+        offset: 0
+      - name: probe_seq
+        type: u32
+        offset: 4
+  rxpdo:
+    size_bytes: 32
+    fields:
+      - name: layout_version
+        type: u16
+        offset: 0
+      - name: flags
+        type: u16
+        offset: 2
+      - name: session_id
+        type: u64
+        offset: 4
+      - name: cycle_seq
+        type: u32
+        offset: 12
+      - name: probe_tag
+        type: u32
+        offset: 16
+      - name: probe_seq
+        type: u32
+        offset: 20
+      - name: reserved
+        type: u64
+        offset: 24
+  txpdo:
+    size_bytes: 48
+    fields:
+      - name: layout_version
+        type: u16
+        offset: 0
+      - name: state
+        type: u8
+        offset: 2
+      - name: valid
+        type: u8
+        offset: 3
+      - name: session_id
+        type: u64
+        offset: 4
+      - name: publish_seq
+        type: u32
+        offset: 12
+      - name: accepted_cycle_seq
+        type: u32
+        offset: 16
+      - name: echo_tag
+        type: u32
+        offset: 20
+      - name: echo_seq
+        type: u32
+        offset: 24
+      - name: feedback_age_us
+        type: u32
+        offset: 28
+      - name: reason
+        type: u32
+        offset: 32
+      - name: can_rx_count
+        type: u32
+        offset: 36
+      - name: can_tx_count
+        type: u32
+        offset: 40
+      - name: reserved
+        type: u32
+        offset: 44
+  status:
+    size_bytes: 80
+    fields:
+      - name: layout_version
+        type: u16
+        offset: 0
+      - name: state
+        type: u8
+        offset: 2
+      - name: ready
+        type: u8
+        offset: 3
+      - name: profile_id
+        type: u32
+        offset: 4
+      - name: profile_revision
+        type: u32
+        offset: 8
+      - name: profile_digest
+        type: bytes32
+        offset: 12
+      - name: boot_id
+        type: u64
+        offset: 44
+      - name: ready_generation
+        type: u32
+        offset: 52
+      - name: active_request_id
+        type: u32
+        offset: 56
+      - name: session_id
+        type: u64
+        offset: 60
+      - name: reason
+        type: u32
+        offset: 68
+      - name: feedback_age_us
+        type: u32
+        offset: 72
+      - name: client_tag
+        type: u32
+        offset: 76
+  activate:
+    size_bytes: 64
+    fields:
+      - name: profile_id
+        type: u32
+        offset: 0
+      - name: profile_revision
+        type: u32
+        offset: 4
+      - name: profile_digest
+        type: bytes32
+        offset: 8
+      - name: boot_id
+        type: u64
+        offset: 40
+      - name: ready_generation
+        type: u32
+        offset: 48
+      - name: request_id
+        type: u32
+        offset: 52
+      - name: client_tag
+        type: u32
+        offset: 56
+      - name: reserved
+        type: u32
+        offset: 60
+  activation_result:
+    size_bytes: 16
+    fields:
+      - name: request_id
+        type: u32
+        offset: 0
+      - name: result
+        type: u16
+        offset: 4
+      - name: state
+        type: u8
+        offset: 6
+      - name: reserved
+        type: u8
+        offset: 7
+      - name: session_id
+        type: u64
+        offset: 8

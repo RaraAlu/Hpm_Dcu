@@ -2,7 +2,7 @@
 #define DCU_CAN_GATEWAY_STATE_H
 
 #include <stdint.h>
-#include "can_frame.h"
+#include "can_transport.h"
 #include "hpm_gpio_drv.h"
 
 typedef struct {
@@ -14,6 +14,11 @@ typedef struct {
     rx_item_t item[32];
     volatile uint8_t read, write;
 } rx_queue_t;
+
+typedef struct {
+    dcu_can_tx_id_t id;
+    bool revoked;
+} tx_slot_t;
 
 typedef struct {
     GPIO_Type *ctrl;

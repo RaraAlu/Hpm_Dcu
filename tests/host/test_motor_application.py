@@ -1,6 +1,7 @@
 import shutil
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,15 +18,21 @@ class MotorApplicationTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="dcu-motor-application-")
         cls.addClassCleanup(directory.cleanup)
         work = Path(directory.name)
-        flags = ["-O0", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
+        cls.run_command([
+            sys.executable, str(ROOT / "tools/protocol/generate_can_profile.py"),
+            "--profile", str(ROOT / "tests/host/motor/cfg/单路ENCOS验证配置.yaml"),
+            "--output", str(work / "dcu_can_profile_generated.h"),
+        ])
+        flags = ["-I", str(work), "-DDCU_HOST_ENGINE_TEST", "-O0", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             flags.extend(("-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"))
         for include in (
             "tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
             "firmware/generated/encos", "firmware/generated/ethercat",
-            "firmware/app/motor", "firmware/app/cycle", "firmware/protocols/encos", "firmware/comm/canfd",
+            "firmware/app/gateway", "firmware/app/cycle",
+            "firmware/protocols/encos", "firmware/comm/canfd",
             "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
-            "firmware/devices/motor", "firmware/devices/motor/drivers/encos",
+            "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408",
         ):
             flags.extend(("-I", str(ROOT / include)))
         storage = work / "storage.o"
@@ -33,16 +40,39 @@ class MotorApplicationTest(unittest.TestCase):
             cc, "-std=c11", *flags, "-c", str(ROOT / "firmware/comm/ethercat/encos_storage.c"),
             "-o", str(storage),
         ])
+        fixture = work / "fixture.o"
+        cls.run_command([
+            cc, "-std=c11", *flags, "-Ddcu_production_profile=host_fixture_profile",
+            "-c", str(ROOT / "firmware/app/gateway/production_profile.c"), "-o", str(fixture),
+        ])
+        readiness = work / "readiness.o"
+        cls.run_command([cc, "-std=c11", *flags, "-c",
+                         str(ROOT / "firmware/app/gateway/gateway_readiness.c"), "-o", str(readiness)])
+        mixed = work / "mixed.o"
+        cls.run_command([
+            sys.executable, str(ROOT / "tools/protocol/generate_can_profile.py"),
+            "--profile", str(ROOT / "tests/host/motor/cfg/混挂电机验证配置.yaml"),
+            "--output", str(work / "mixed/dcu_can_profile_generated.h"),
+        ])
+        cls.run_command([
+            cc, "-std=c11", "-I", str(work / "mixed"), *flags,
+            "-Ddcu_production_profile=host_mixed_profile",
+            "-c", str(ROOT / "firmware/app/gateway/production_profile.c"), "-o", str(mixed),
+        ])
         cls.executable = work / "motor_application"
         cls.run_command([
             cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", *flags,
             str(ROOT / "tests/host/motor/motor_application_test.cpp"),
-            str(ROOT / "firmware/app/motor/motor_application.cpp"),
-            str(ROOT / "firmware/app/motor/axis_controller.cpp"),
-            str(ROOT / "firmware/app/motor/raw_can_gateway.cpp"),
-            str(ROOT / "firmware/app/motor/motor_driver_binding.cpp"),
-            str(ROOT / "firmware/app/motor/encos_parameter_transactions.cpp"),
-            str(ROOT / "firmware/app/motor/can_bus_scheduler.cpp"),
+            str(ROOT / "firmware/app/gateway/gateway_application.cpp"),
+            str(ROOT / "firmware/app/gateway/gateway_publication.cpp"),
+            str(ROOT / "firmware/app/gateway/production_startup.cpp"),
+            str(ROOT / "firmware/app/gateway/profile_update.cpp"),
+            str(ROOT / "firmware/app/gateway/can_transactions.cpp"),
+            str(ROOT / "firmware/devices/motor/motor_instance.cpp"),
+            str(ROOT / "firmware/app/gateway/raw_can_gateway.cpp"),
+            str(ROOT / "firmware/devices/motor/motor_driver_binding.cpp"),
+            str(ROOT / "firmware/devices/motor/drivers/encos/encos_parameter_transactions.cpp"),
+            str(ROOT / "firmware/app/gateway/can_bus_scheduler.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_dictionary.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_coe.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_adapter.cpp"),
@@ -52,7 +82,9 @@ class MotorApplicationTest(unittest.TestCase):
             str(ROOT / "firmware/protocols/encos/encos_service.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),
-            str(storage), "-lm", "-o", str(cls.executable),
+            str(ROOT / "firmware/devices/motor/drivers/encos/encos_session.cpp"),
+            str(ROOT / "firmware/devices/motor/drivers/cih408/cih408_driver.cpp"),
+            str(storage), str(fixture), str(mixed), str(readiness), "-lm", "-o", str(cls.executable),
         ])
 
     @staticmethod
@@ -88,13 +120,16 @@ class MotorApplicationTest(unittest.TestCase):
     def test_all_three_pdo_profiles_keep_their_input_boundaries(self):
         self.run_command([str(self.executable), "profiles"])
 
+    def test_static_motor_slots_are_restored_after_raw_mapping(self):
+        self.run_command([str(self.executable), "latched_layouts"])
+
     def test_cycle_fault_clears_session_and_uses_existing_master_fault_bit(self):
         self.run_command([str(self.executable), "cycle_fault"])
 
     def test_invalid_pdo_does_not_override_stop_priority(self):
         self.run_command([str(self.executable), "invalid_stop"])
 
-    def test_initial_board_defaults_come_from_the_generated_dictionary(self):
+    def test_profile_supersedes_the_dictionary_and_legacy_objects_are_reserved(self):
         self.run_command([str(self.executable), "config_source"])
 
     def test_raw_ring_has_bounded_capacity_and_preserves_fifo_order(self):
@@ -102,12 +137,6 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_rejected_parameter_encoding_cannot_corrupt_the_next_transaction(self):
         self.run_command([str(self.executable), "service_rejected"])
-
-    def test_parameter_write_ack_and_readback_complete_the_same_transaction(self):
-        self.run_command([str(self.executable), "service_verify"])
-
-    def test_parameter_readback_mismatch_is_reported(self):
-        self.run_command([str(self.executable), "service_mismatch"])
 
     def test_parameter_timeout_completes_and_releases_the_transaction(self):
         self.run_command([str(self.executable), "service_timeout"])
@@ -124,17 +153,14 @@ class MotorApplicationTest(unittest.TestCase):
     def test_parameter_observations_update_axis_feedback(self):
         self.run_command([str(self.executable), "service_observations"])
 
-    def test_parameter_adapter_maps_all_supported_cache_fields_and_rejects_partial_updates(self):
+    def test_queries_preserve_telemetry_without_repopulating_old_config(self):
         self.run_command([str(self.executable), "service_cache"])
 
-    def test_kt_readback_and_encoder_queries_update_only_defined_cache_fields(self):
+    def test_encoder_query_updates_only_defined_cache_fields(self):
         self.run_command([str(self.executable), "service_extended"])
 
     def test_inflight_service_uses_captured_route_dialect_and_frame_format(self):
         self.run_command([str(self.executable), "service_snapshot"])
-
-    def test_maintenance_before_apply_matches_the_sent_can_id_and_holds_off(self):
-        self.run_command([str(self.executable), "service_maintenance"])
 
     def test_busy_transaction_blocks_owner_change_and_session_exit_completes_it(self):
         self.run_command([str(self.executable), "service_cancel"])
@@ -154,7 +180,7 @@ class MotorApplicationTest(unittest.TestCase):
     def test_axis_startup_expiration_and_first_feedback_deadline_across_wrap(self):
         self.run_command([str(self.executable), "axis_startup_deadlines"])
 
-    def test_pending_configuration_changes_do_not_replace_applied_driver_settings(self):
+    def test_axis_controls_use_a_copy_of_the_bound_settings(self):
         self.run_command([str(self.executable), "axis_config_snapshot"])
 
     def test_axis_safety_decisions_do_not_read_dictionary_or_snapshot_storage(self):
@@ -163,11 +189,8 @@ class MotorApplicationTest(unittest.TestCase):
     def test_axis_snapshot_reads_are_const_and_only_publication_acknowledges_events(self):
         self.run_command([str(self.executable), "axis_publication"])
 
-    def test_apply_resets_runtime_freshness_but_preserves_diagnostic_history(self):
+    def test_device_rebind_resets_runtime_freshness_but_preserves_diagnostic_history(self):
         self.run_command([str(self.executable), "axis_history"])
-
-    def test_preapply_maintenance_routes_to_a_nonzero_axis_on_another_bus(self):
-        self.run_command([str(self.executable), "service_other_axis"])
 
     def test_raw_objects_own_independent_queues_and_drop_counters(self):
         self.run_command([str(self.executable), "raw_objects"])
@@ -181,17 +204,46 @@ class MotorApplicationTest(unittest.TestCase):
     def test_raw_classic_and_fd_frames_charge_the_exact_shared_bus_cost(self):
         self.run_command([str(self.executable), "raw_costs"])
 
-    def test_raw_traffic_respects_cancelled_service_hold_until_deadline_or_session_reset(self):
-        self.run_command([str(self.executable), "raw_service_hold"])
-
     def test_raw_full_session_restarts_its_cycle_deduplication(self):
         self.run_command([str(self.executable), "raw_full_session"])
 
-    def test_raw_admission_uses_applied_routes_and_channel_configuration(self):
+    def test_raw_admission_ignores_writable_dictionary_storage(self):
         self.run_command([str(self.executable), "raw_applied_policy"])
 
     def test_raw_pdo_decoder_preserves_header_slot_and_flag_rules(self):
         self.run_command([str(self.executable), "raw_codec"])
+
+    def test_legacy_raw_pdo_never_sends_or_publishes_overlong_frames(self):
+        for scenario in ("raw_large_sideband", "raw_large_full"):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.executable), scenario])
+
+    def test_generated_profile_binds_without_legacy_sdo_and_unconfigured_slot_cannot_transmit(self):
+        self.run_command([str(self.executable), "can_profile_config"])
+
+    def test_dense_device_order_and_reply_identity_are_independent_of_wire_slot_and_can_id(self):
+        self.run_command([str(self.executable), "cross_bus_device_mapping"])
+
+    def test_mixed_cih408_and_encos_preserve_routing_transport_and_diagnostic_only_policy(self):
+        self.run_command([str(self.executable), "mixed_motor_profile"])
+
+    def test_production_reconnect_reuses_pdo_and_requires_neutral_after_link_loss(self):
+        self.run_command([str(self.executable), "production_startup"])
+
+    def test_production_startup_fails_closed_without_a_boot_journal(self):
+        self.run_command([str(self.executable), "production_no_journal"])
+
+    def test_dynamic_policy_is_validated_committed_and_enforced_without_changing_pdo(self):
+        candidate = self.executable.parent / "policy.bin"
+        self.run_command([
+            sys.executable, str(ROOT / "tools/protocol/encode_profile_update.py"),
+            str(ROOT / "tests/host/motor/cfg/动态策略验证配置.yaml"),
+            "--boot-epoch", "7", "--output", str(candidate),
+        ])
+        self.run_command([str(self.executable), "dynamic_policy", str(candidate)])
+
+    def test_empty_device_list_does_not_fall_back_to_legacy_can_ids(self):
+        self.run_command([str(self.executable), "empty_profile"])
 
     def test_raw_full_input_preserves_sequence_gates_and_dictionary_mirrors(self):
         self.run_command([str(self.executable), "raw_full_admission"])

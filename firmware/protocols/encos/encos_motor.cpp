@@ -1,4 +1,5 @@
 #include "encos_motor.hpp"
+#include "motor_limits.hpp"
 #include "detail/encos_math.hpp"
 #include <limits.h>
 #include <math.h>
@@ -37,12 +38,7 @@ bool encode_motion(const motor::Command &c, const motor::Routing &r,
         return false;
     if (c.current_cA < INT16_MIN || c.current_cA > INT16_MAX)
         return false;
-    if ((c.mode == ControlMode::Position || c.mode == ControlMode::Impedance) &&
-        (c.position_urad < r.position_min_urad || c.position_urad > r.position_max_urad))
-        return false;
-    if (fabs(static_cast<double>(c.velocity_urad_s)) > r.velocity_limit_urad_s ||
-        fabs(static_cast<double>(c.current_cA)) > r.current_limit_dA * 10.0 ||
-        fabs(static_cast<double>(c.torque_mNm)) > r.torque_limit_mNm)
+    if (!motor::within_limits(c, r))
         return false;
     if (c.mode != ControlMode::Position && c.mode != ControlMode::Impedance && c.position_urad)
         return false;
@@ -56,7 +52,7 @@ bool encode_motion(const motor::Command &c, const motor::Routing &r,
     if (c.mode != ControlMode::Impedance && (c.kp_centi || c.kd_milli))
         return false;
     if (c.mode == ControlMode::Position || c.mode == ControlMode::Velocity) {
-        if (!c.current_limit_dA || c.current_limit_dA > r.current_limit_dA)
+        if (!c.current_limit_dA)
             return false;
     } else if (c.current_limit_dA) {
         return false;

@@ -20,14 +20,12 @@ class RawCanGatewayTest(unittest.TestCase):
         flags = ["-std=c++17", "-fno-exceptions", "-fno-rtti", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             flags += ["-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
-        # No HPM stubs, axis, device, protocol, generated dictionary or SSC dependency.
-        for include in ("firmware/cfg", "firmware/ports",
-                        "firmware/app/motor", "firmware/comm/canfd"):
+        # Build the gateway without motor, transport, BSP or EtherCAT headers.
+        for include in ("firmware/ports", "firmware/app/gateway"):
             flags.extend(("-I", str(ROOT / include)))
         cls.run_command([
             cxx, *flags, str(ROOT / "tests/host/raw_can/raw_can_gateway_test.cpp"),
-            str(ROOT / "firmware/app/motor/raw_can_gateway.cpp"),
-            str(ROOT / "firmware/app/motor/can_bus_scheduler.cpp"), "-o", str(cls.executable),
+            str(ROOT / "firmware/app/gateway/raw_can_gateway.cpp"), "-o", str(cls.executable),
         ])
 
     @staticmethod
@@ -45,8 +43,11 @@ class RawCanGatewayTest(unittest.TestCase):
     def test_admission_bounds_and_drop_accounting(self):
         self.run_command([str(self.executable), "admission_bounds"])
 
-    def test_failure_and_reset_preserve_credit_rate_history_and_fifo(self):
+    def test_failed_submission_does_not_charge_rate_and_reset_preserves_fifo(self):
         self.run_command([str(self.executable), "rate_and_reset"])
+
+    def test_single_bus_is_selected_by_caller_policy(self):
+        self.run_command([str(self.executable), "single_bus"])
 
 
 if __name__ == "__main__":

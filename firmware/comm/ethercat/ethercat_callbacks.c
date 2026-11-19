@@ -34,6 +34,15 @@
 #include "encos_interface.h"
 #include "hpm_ecat_e2p_emulation.h"
 
+/* Fixed SSC process image; the ESC destination is still selected by SM3. */
+extern UINT16 aPdInputData[MAX_PD_INPUT_SIZE >> 1];
+
+void *dcu_ssc_txpdo_buffer(uint16_t *capacity)
+{
+    *capacity = sizeof(aPdInputData);
+    return aPdInputData;
+}
+
 
 UINT32 APPL_GetDipSw(void);
 void APPL_SetLed(UINT32 value);
@@ -68,7 +77,8 @@ void APPL_SetLed(UINT32 value);
 
 void    APPL_AckErrorInd(UINT16 stateTrans)
 {
-
+    if (stateTrans == SAFEOP_2_SAFEOP)
+        dcu_cycle_ack_safeop_error();
 }
 
 
@@ -102,6 +112,7 @@ UINT16 APPL_StartMailboxHandler(void)
 
 UINT16 APPL_StopMailboxHandler(void)
 {
+    motor_control_discard_profile();
     return ALSTATUSCODE_NOERROR;
 }
 
@@ -123,6 +134,7 @@ UINT16 APPL_StopMailboxHandler(void)
 UINT16 APPL_StartInputHandler(UINT16 *pIntMask)
 {
     (void)pIntMask;
+    motor_control_discard_profile();
     return dcu_cycle_configure();
 }
 
@@ -205,8 +217,8 @@ UINT16 APPL_GenerateMapping(UINT16 *pInputSize, UINT16 *pOutputSize)
 */
 void APPL_InputMapping(UINT16 *pData)
 {
-    /* 发布上一个 CAN 接收窗口，避免 ESC 读取期间被 ISR 改写。 */
-    motor_control_input(pData);
+    /* The DC worker has already filled aPdInputData. SSC publishes that image. */
+    (void)pData;
 }
 
 /**

@@ -1,4 +1,5 @@
 sdk_inc(canfd ethercat ethercat/port)
+sdk_compile_definitions(-DDCU_ECAT_CYCLE_PORT=1)
 sdk_src(
     canfd/hpm_mcan_transport.c
     canfd/can_tx_gate.c

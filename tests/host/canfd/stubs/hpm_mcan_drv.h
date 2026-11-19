@@ -3,11 +3,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "hpm_common.h"
-typedef struct { uint32_t TXBTO, TXBRP, TXFQS; } MCAN_Type;
+typedef struct { uint32_t TXBTO, TXBCF, TXBRP, TXBCR, TXFQS; } MCAN_Type;
 typedef struct {
     bool use_ext_id, rtr, canfd_frame, bitrate_switch;
     uint32_t ext_id, std_id;
-    uint8_t dlc, data_8[8];
+    uint8_t dlc, data_8[64];
 } mcan_tx_frame_t;
 typedef mcan_tx_frame_t mcan_rx_message_t;
 typedef struct { bool in_bus_off_state, in_error_passive_state, in_warning_state; } mcan_protocol_status_t;
@@ -29,6 +29,7 @@ typedef struct {
 #define MCAN_EVENT_ERROR 2U
 #define MCAN_INT_RXFIFO0_NEW_MSG 4U
 #define MCAN_DATA_FIELD_SIZE_8BYTES 8U
+#define MCAN_DATA_FIELD_SIZE_64BYTES 7U
 #define MCAN_TXFQS_TFFL_GET(value) (value)
 uint32_t mcan_get_interrupt_flags(MCAN_Type *base);
 void mcan_clear_interrupt_flags(MCAN_Type *base, uint32_t flags);

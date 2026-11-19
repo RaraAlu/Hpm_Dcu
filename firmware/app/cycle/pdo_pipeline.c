@@ -5,6 +5,8 @@
 
 _Static_assert(__GCC_ATOMIC_INT_LOCK_FREE == 2 && sizeof(uint32_t) == sizeof(unsigned int),
                "PDO handoff requires lock-free 32-bit atomics");
+_Static_assert(_Alignof(pdo_pipeline_slot_t) >= 4 && offsetof(pdo_pipeline_slot_t, data) % 4 == 0,
+               "PDO slot data must support aligned ESC word copies");
 
 static inline __attribute__((always_inline)) uint32_t load(const uint32_t *value)
 {
@@ -54,32 +56,63 @@ void pdo_pipeline_enable(pdo_pipeline_t *p, bool enabled)
     store(&p->enabled, enabled && p->period_us != 0U);
 }
 
+DCU_FAST_CODE uint8_t *pdo_pipeline_reserve(pdo_pipeline_t *p, uint16_t size, uint32_t *index)
+{
+    if (!load(&p->enabled) || size != p->output_size)
+        return NULL;
+    for (uint32_t i = 0; i < PDO_PIPELINE_SLOT_COUNT; ++i) {
+        pdo_pipeline_slot_t *slot = &p->slot[i];
+        if (claim(&slot->state, SLOT_FREE, SLOT_WRITING)) {
+            *index = i;
+            return slot->data;
+        }
+    }
+    return NULL;
+}
+
+DCU_FAST_CODE bool pdo_pipeline_commit(pdo_pipeline_t *p, uint32_t index, uint32_t sequence,
+                                      uint32_t image_complete_us)
+{
+    if (index >= PDO_PIPELINE_SLOT_COUNT ||
+        __atomic_load_n(&p->slot[index].state, __ATOMIC_RELAXED) != SLOT_WRITING)
+        return false;
+    pdo_pipeline_slot_t *slot = &p->slot[index];
+    if (!load(&p->enabled)) {
+        store(&slot->state, SLOT_FREE);
+        return false;
+    }
+    slot->sequence = sequence;
+    slot->ready_us = image_complete_us;
+    /* Sync0 only discovers this slot through the release exchange of ready. */
+    __atomic_store_n(&slot->state, SLOT_READY, __ATOMIC_RELAXED);
+    uint32_t old = exchange(&p->ready, index);
+    if (old < PDO_PIPELINE_SLOT_COUNT)
+        (void)claim(&p->slot[old].state, SLOT_READY, SLOT_FREE);
+    return true;
+}
+
 bool pdo_pipeline_stage(pdo_pipeline_t *p, const void *data,
                         uint16_t size, uint32_t sequence)
 {
     if (!load(&p->enabled) || size != p->output_size || data == NULL)
         return false;
-    for (uint32_t i = 0; i < PDO_PIPELINE_SLOT_COUNT; ++i) {
-        pdo_pipeline_slot_t *slot = &p->slot[i];
-        if (!claim(&slot->state, SLOT_FREE, SLOT_WRITING))
-            continue;
-        memcpy(slot->data, data, size);
-        slot->sequence = sequence;
-        store(&slot->state, SLOT_READY);
-        uint32_t old = exchange(&p->ready, i);
-        if (old < PDO_PIPELINE_SLOT_COUNT)
-            (void)claim(&p->slot[old].state, SLOT_READY, SLOT_FREE);
-        return true;
+    uint32_t index;
+    uint8_t *destination = pdo_pipeline_reserve(p, size, &index);
+    if (destination) {
+        memcpy(destination, data, size);
+        uint32_t complete_us = p->stage_clock_us ? p->stage_clock_us() : 0U;
+        return pdo_pipeline_commit(p, index, sequence, complete_us);
     }
     __atomic_fetch_add(&p->rx_drops, 1U, __ATOMIC_RELAXED);
     pdo_pipeline_fault(p, PDO_PIPELINE_RX_OVERRUN);
     return false;
 }
 
-DCU_FAST_CODE void pdo_pipeline_sync(pdo_pipeline_t *p, uint32_t now_us)
+DCU_FAST_CODE bool pdo_pipeline_sync(pdo_pipeline_t *p, uint32_t now_us)
 {
     if (!load(&p->enabled))
-        return;
+        return false;
+    bool first_missing = false;
     uint32_t epoch = load(&p->epoch) + 1U;
     if (load(&p->started) &&
         (!load(&p->published) || load(&p->published_epoch) != load(&p->epoch)))
@@ -99,10 +132,12 @@ DCU_FAST_CODE void pdo_pipeline_sync(pdo_pipeline_t *p, uint32_t now_us)
         }
         store(&p->received, 1U);
     } else if (load(&p->received)) {
-        pdo_pipeline_fault(p, PDO_PIPELINE_RX_MISSING);
+        const uint32_t old = __atomic_fetch_or(&p->faults, PDO_PIPELINE_RX_MISSING, __ATOMIC_RELEASE);
+        first_missing = !(old & PDO_PIPELINE_RX_MISSING);
     }
     store(&p->epoch, epoch);
     store(&p->started, 1U);
+    return first_missing;
 }
 
 bool pdo_pipeline_acquire(pdo_pipeline_t *p, pdo_pipeline_view_t *view)
@@ -113,7 +148,7 @@ bool pdo_pipeline_acquire(pdo_pipeline_t *p, pdo_pipeline_view_t *view)
         return false;
     const pdo_pipeline_slot_t *slot = &p->slot[index];
     *view = (pdo_pipeline_view_t){slot->data, index, slot->sequence,
-                                  slot->epoch, slot->sync_us};
+                                  slot->epoch, slot->sync_us, slot->ready_us};
     return true;
 }
 
@@ -127,9 +162,9 @@ bool pdo_pipeline_publish_due(const pdo_pipeline_t *p, uint32_t now_us)
 {
     uint32_t epoch = load(&p->epoch);
     uint32_t sync_us = load(&p->sync_us);
+    bool already_published = load(&p->published) && load(&p->published_epoch) == epoch;
     if (!load(&p->enabled) || !load(&p->started) || epoch != load(&p->epoch) ||
-        (int32_t)(now_us - sync_us) < 0 ||
-        (load(&p->published) && load(&p->published_epoch) == epoch))
+        (int32_t)(now_us - sync_us) < 0 || already_published)
         return false;
     return (uint32_t)(now_us - sync_us) >=
            p->period_us - p->advance_us - DCU_TX_BUILD_BUDGET_US;
@@ -156,12 +191,13 @@ uint32_t pdo_pipeline_check(pdo_pipeline_t *p, uint32_t now_us)
     if (load(&p->enabled) && load(&p->started)) {
         uint32_t epoch = load(&p->epoch);
         uint32_t elapsed = now_us - load(&p->sync_us);
+        bool already_published = load(&p->published) && load(&p->published_epoch) == epoch;
+        /* Sync0 can preempt this check and clear publication for the next epoch. */
         if (epoch != load(&p->epoch) || (int32_t)elapsed < 0)
             return load(&p->faults);
         if (elapsed > p->period_us * 2U)
             pdo_pipeline_fault(p, PDO_PIPELINE_SYNC_LOST);
-        if ((!load(&p->published) || load(&p->published_epoch) != epoch) &&
-            elapsed > p->period_us - p->advance_us)
+        if (!already_published && elapsed > p->period_us - p->advance_us)
             pdo_pipeline_fault(p, PDO_PIPELINE_TX_LATE);
     }
     return load(&p->faults);

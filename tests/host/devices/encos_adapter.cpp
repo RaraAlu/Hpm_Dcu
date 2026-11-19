@@ -1,4 +1,5 @@
 #include "motor_driver_binding.hpp"
+#include "can_transport.h"
 #include "encos_motor.h"
 #include "../motor/encos_motion_reference.hpp"
 #include "device_config.h"
@@ -13,7 +14,8 @@
 } } while (false)
 
 namespace motor = dcu::motor;
-namespace app = dcu::app;
+
+bool dcu_can_cancel_tx(unsigned, dcu_can_tx_id_t) { return false; }
 namespace codec = dcu::ethercat::motor_axis_codec;
 
 static bool encode_wire_command(const motor::MotorDevice &device, const mc_axis_rx_t &wire, motor::CanFrame &frame)
@@ -33,27 +35,28 @@ static bool decode_wire_feedback(const motor::MotorDevice &device, const motor::
 }
 
 struct Fixture {
-    mc_range_t range{0, 500, 0, 5, -1000, 1000, -2000, 2000, -100, 100, -100, 100};
-    mc_basic_t basic{};
-    mc_routing_t route{};
-    encos_profile_t profile{};
-    Fixture()
+    dcu::motor::MotorConfiguration config{
+        {1, -10000000, 10000000, 20000000, 10000, 100},
+        {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0},
+        0x8000, 0,
+    };
+
+    motor::MotorSessionDriver *bind(unsigned slot = 0) const
     {
-        basic.TorqueConstantRaw = 50;
-        basic.CanTimeoutMs = 100;
-        route.CanId = 1;
-        route.ModelProfileId = 0x8000;
-        route.FeedbackPolicy = 1;
-        route.PositionLimitMin = -10000000;
-        route.PositionLimitMax = 10000000;
-        route.VelocityLimit = 20000000;
-        route.CurrentLimit = 100;
-        route.TorqueLimit = 10000;
-        profile = codec::configuration(route, basic, range).encos.profile;
+        return motor::configure_motor_driver(slot, config, 0);
     }
-    app::MotorBinding bind(unsigned slot = 0) const
+
+    bool reference_encode(const mc_axis_rx_t &command, encos_frame_t &frame) const
     {
-        return app::configure_motor_driver(slot, codec::configuration(route, basic, range), 0);
+        const auto &route = config.route;
+        mc_routing_t wire{};
+        wire.CanId = route.can_id;
+        wire.PositionLimitMin = route.position_min_urad;
+        wire.PositionLimitMax = route.position_max_urad;
+        wire.VelocityLimit = route.velocity_limit_urad_s;
+        wire.CurrentLimit = route.current_limit_dA;
+        wire.TorqueLimit = route.torque_limit_mNm;
+        return legacy_reference::encode(&command, &wire, &config.encos.profile, &frame);
     }
 };
 
@@ -79,39 +82,41 @@ public:
 static bool registry()
 {
     Fixture f;
-    CHECK(app::motor_parameter_dialect(0x8000) == app::ParameterDialect::EncosLegacy);
-    CHECK(app::motor_parameter_dialect(0xFFFF) == app::ParameterDialect::None);
-    CHECK(f.bind().driver != nullptr && f.bind().parameter_dialect == app::ParameterDialect::EncosLegacy);
-    CHECK(f.bind(ENCOS_AXIS_COUNT).driver == nullptr);
-    f.route.ModelProfileId = 0xFFFF;
-    CHECK(!app::validate_motor_configuration(codec::configuration(f.route, f.basic, f.range), 0));
-    CHECK(f.bind().driver == nullptr);
+    CHECK(f.bind() != nullptr);
+    CHECK(f.bind(ENCOS_AXIS_COUNT) == nullptr);
+    f.config.model_profile_id = 0xFFFF;
+    CHECK(!motor::validate_motor_configuration(f.config, 0));
+    CHECK(f.bind() == nullptr);
     return true;
 }
 
 static bool validation()
 {
     Fixture original;
-    CHECK(app::validate_motor_configuration(codec::configuration(original.route, original.basic, original.range), 0));
-    for (unsigned which = 0; which < 14; ++which) {
-        Fixture f;
+    CHECK(motor::validate_motor_configuration(original.config, 0));
+    auto boundary = original.config;
+    boundary.route.position_max_urad = 1001000;
+    boundary.encos.profile.pos[1] = 1001 / 1000.0;
+    CHECK(motor::validate_motor_configuration(boundary, 0));
+    ++boundary.route.position_max_urad;
+    CHECK(!motor::validate_motor_configuration(boundary, 0));
+    for (unsigned which = 0; which < 12; ++which) {
+        auto config = original.config;
         switch (which) {
-        case 0: f.route.CanId = 0; break;
-        case 1: f.route.CanId = 9; break;
-        case 2: f.route.StopPolicy = 1; break;
-        case 3: f.route.FeedbackPolicy = 0; break;
-        case 4: f.basic.CanTimeoutMs = 0; break;
-        case 5: f.basic.CanTimeoutMs = 501; break;
-        case 6: f.route.PositionLimitMax = f.route.PositionLimitMin; break;
-        case 7: f.route.PositionLimitMin = -10000001; break;
-        case 8: f.route.VelocityLimit = 20000001; break;
-        case 9: f.route.CurrentLimit = 101; break;
-        case 10: f.route.TorqueLimit = 10001; break;
-        case 11: f.route.PowerQueryPeriodMs = 19; break;
-        case 12: f.basic.CommunicationMode = 1; break;
-        case 13: f.range.KpMax = f.range.KpMin; break;
+        case 0: config.route.can_id = 0; break;
+        case 1: config.route.can_id = 9; break;
+        case 2: config.encos.timeout_ms = 0; break;
+        case 3: config.encos.timeout_ms = 501; break;
+        case 4: config.route.position_max_urad = config.route.position_min_urad; break;
+        case 5: config.route.position_min_urad = -10000001; break;
+        case 6: config.route.velocity_limit_urad_s = 20000001; break;
+        case 7: config.route.current_limit_dA = 101; break;
+        case 8: config.route.torque_limit_mNm = 10001; break;
+        case 9: config.power_query_period_ms = 19; break;
+        case 10: config.encos.frame_format = 1; break;
+        case 11: config.encos.profile.kp[1] = config.encos.profile.kp[0]; break;
         }
-        CHECK(!app::validate_motor_configuration(codec::configuration(f.route, f.basic, f.range), 0));
+        CHECK(!motor::validate_motor_configuration(config, 0));
     }
     return true;
 }
@@ -120,9 +125,9 @@ static bool command_bytes()
 {
     Fixture f;
     const auto binding = f.bind();
-    CHECK(binding.driver != nullptr);
+    CHECK(binding != nullptr);
     motor::MotorDevice device;
-    device.bind(*binding.driver);
+    device.bind(*binding);
     uint32_t random = 17;
     for (unsigned i = 0; i < 1000; ++i) {
         random = random * 1664525U + 1013904223U;
@@ -140,7 +145,7 @@ static bool command_bytes()
         command.Kp = command.Mode == 4 ? 1234 : 0;
         command.Kd = command.Mode == 4 ? 2345 : 0;
         motor::CanFrame expected{}, actual{};
-        CHECK(legacy_reference::encode(&command, &f.route, &f.profile, &expected));
+        CHECK(f.reference_encode(command, expected));
         CHECK(encode_wire_command(device, command, actual));
         CHECK(actual.id == expected.id && actual.dlc == expected.dlc && actual.flags == expected.flags);
         CHECK(std::memcmp(actual.data, expected.data, 8) == 0);
@@ -152,7 +157,7 @@ static bool rejected_commands()
 {
     Fixture f;
     motor::MotorDevice device;
-    device.bind(*f.bind().driver);
+    device.bind(*f.bind());
     for (unsigned which = 0; which < 7; ++which) {
         mc_axis_rx_t command{};
         command.Mode = 3;
@@ -185,7 +190,7 @@ static bool feedback_bytes()
 {
     Fixture f;
     motor::MotorDevice device;
-    device.bind(*f.bind().driver);
+    device.bind(*f.bind());
     uint32_t random = 19;
     for (unsigned i = 0; i < 256; ++i) {
         motor::CanFrame frame{};
@@ -200,7 +205,7 @@ static bool feedback_bytes()
         std::memset(&expected, 0x5A, sizeof(expected));
         expected.ValidFlags = 64;
         actual = expected;
-        CHECK(legacy_reference::feedback(&frame, &f.profile, &expected));
+        CHECK(legacy_reference::feedback(&frame, &f.config.encos.profile, &expected));
         CHECK(decode_wire_feedback(device, frame, actual));
         CHECK(std::memcmp(&actual, &expected, sizeof(actual)) == 0);
     }
@@ -211,7 +216,7 @@ static bool feedback_rejection()
 {
     Fixture f;
     motor::MotorDevice device;
-    device.bind(*f.bind().driver);
+    device.bind(*f.bind());
     for (unsigned which = 0; which < 5; ++which) {
         motor::CanFrame frame{};
         frame.id = 1;
@@ -232,12 +237,12 @@ static bool feedback_rejection()
         CHECK(std::memcmp(&before, &after, sizeof(after)) == 0);
     }
     Fixture wide_current;
-    wide_current.range.CurMinRaw = -4000;
-    wide_current.range.CurMaxRaw = 4000;
-    wide_current.route.CurrentLimit = 4000;
+    wide_current.config.encos.profile.current[0] = -400;
+    wide_current.config.encos.profile.current[1] = 400;
+    wide_current.config.route.current_limit_dA = 4000;
     const auto binding = wide_current.bind();
-    CHECK(binding.driver != nullptr);
-    device.bind(*binding.driver);
+    CHECK(binding != nullptr);
+    device.bind(*binding);
     motor::CanFrame overflow{};
     overflow.id = 1;
     overflow.dlc = 8;
@@ -266,23 +271,17 @@ static bool feedback_rejection()
 static Fixture boundary_fixture(unsigned variant)
 {
     Fixture f;
+    auto &profile = f.config.encos.profile;
     if (variant == 1) {
-        f.range = {0, 17, 0, 3, -1234, 876, -3123, 2134, -456, 234, -473, 357};
-        f.basic.TorqueConstantRaw = 0;
-        f.route.CanId = 8;
-        f.route.PositionLimitMin = -12340000;
-        f.route.PositionLimitMax = 8760000;
-        f.route.VelocityLimit = 21340000;
-        f.route.CurrentLimit = 357;
-        f.route.TorqueLimit = 23400;
+        profile = {{0, 17}, {0, 3}, {-12.34, 8.76}, {-31.23, 21.34}, {-45.6, 23.4}, {-47.3, 35.7}, 0};
+        f.config.route = {8, -12340000, 8760000, 21340000, 23400, 357};
     } else if (variant == 2) {
-        f.range.CurMinRaw = f.range.TorMinRaw = -5000;
-        f.range.CurMaxRaw = f.range.TorMaxRaw = 5000;
-        f.basic.TorqueConstantRaw = UINT16_MAX;
-        f.route.CurrentLimit = 5000;
-        f.route.TorqueLimit = 500000;
+        profile.current[0] = profile.torque[0] = -500;
+        profile.current[1] = profile.torque[1] = 500;
+        profile.kt = UINT16_MAX / 100.;
+        f.config.route.current_limit_dA = 5000;
+        f.config.route.torque_limit_mNm = 500000;
     }
-    f.profile = codec::configuration(f.route, f.basic, f.range).encos.profile;
     return f;
 }
 
@@ -291,9 +290,9 @@ static bool command_boundaries()
     for (unsigned variant = 0; variant < 3; ++variant) {
         const auto f = boundary_fixture(variant);
         const auto binding = f.bind();
-        CHECK(binding.driver != nullptr);
+        CHECK(binding != nullptr);
         motor::MotorDevice device;
-        device.bind(*binding.driver);
+        device.bind(*binding);
         for (uint8_t mode = 1; mode <= 5; ++mode) {
             for (unsigned edge = 0; edge < 42; ++edge) {
                 mc_axis_rx_t command{};
@@ -301,25 +300,25 @@ static bool command_boundaries()
                 command.CurrentLimit = mode <= 2 ? 1 : 0;
                 switch (edge) {
                 case 0: break;
-                case 1: command.TargetPosition = f.route.PositionLimitMin; break;
-                case 2: command.TargetPosition = f.route.PositionLimitMax; break;
-                case 3: command.TargetPosition = f.route.PositionLimitMin - 1; break;
-                case 4: command.TargetPosition = f.route.PositionLimitMax + 1; break;
+                case 1: command.TargetPosition = f.config.route.position_min_urad; break;
+                case 2: command.TargetPosition = f.config.route.position_max_urad; break;
+                case 3: command.TargetPosition = f.config.route.position_min_urad - 1; break;
+                case 4: command.TargetPosition = f.config.route.position_max_urad + 1; break;
                 case 5: command.TargetVelocity = -1; break;
-                case 6: command.TargetVelocity = f.route.VelocityLimit; break;
-                case 7: command.TargetVelocity = f.route.VelocityLimit + 1; break;
-                case 8: command.TargetVelocity = -static_cast<int32_t>(f.route.VelocityLimit); break;
-                case 9: command.TargetVelocity = -static_cast<int32_t>(f.route.VelocityLimit) - 1; break;
+                case 6: command.TargetVelocity = f.config.route.velocity_limit_urad_s; break;
+                case 7: command.TargetVelocity = f.config.route.velocity_limit_urad_s + 1; break;
+                case 8: command.TargetVelocity = -static_cast<int32_t>(f.config.route.velocity_limit_urad_s); break;
+                case 9: command.TargetVelocity = -static_cast<int32_t>(f.config.route.velocity_limit_urad_s) - 1; break;
                 case 10: command.TargetCurrent = 1000; break;
                 case 11: command.TargetCurrent = 1001; break;
                 case 12: command.TargetCurrent = -1000; break;
                 case 13: command.TargetCurrent = -1001; break;
                 case 14: command.TargetCurrent = INT16_MIN; break;
                 case 15: command.TargetCurrent = INT16_MAX; break;
-                case 16: command.TargetTorque = f.route.TorqueLimit; break;
-                case 17: command.TargetTorque = f.route.TorqueLimit + 1; break;
-                case 18: command.TargetTorque = -static_cast<int32_t>(f.route.TorqueLimit); break;
-                case 19: command.TargetTorque = -static_cast<int32_t>(f.route.TorqueLimit) - 1; break;
+                case 16: command.TargetTorque = f.config.route.torque_limit_mNm; break;
+                case 17: command.TargetTorque = f.config.route.torque_limit_mNm + 1; break;
+                case 18: command.TargetTorque = -static_cast<int32_t>(f.config.route.torque_limit_mNm); break;
+                case 19: command.TargetTorque = -static_cast<int32_t>(f.config.route.torque_limit_mNm) - 1; break;
                 case 20: command.TargetTorque = 9; break;
                 case 21: command.TargetTorque = -9; break;
                 case 22: command.TargetTorque = 11; break;
@@ -329,8 +328,8 @@ static bool command_boundaries()
                 case 26: command.TargetTorque = INT16_MIN * 10 - 9; break;
                 case 27: command.TargetTorque = INT16_MIN * 10 - 10; break;
                 case 28: command.CurrentLimit = 0; break;
-                case 29: command.CurrentLimit = f.route.CurrentLimit; break;
-                case 30: command.CurrentLimit = f.route.CurrentLimit + 1; break;
+                case 29: command.CurrentLimit = f.config.route.current_limit_dA; break;
+                case 30: command.CurrentLimit = f.config.route.current_limit_dA + 1; break;
                 case 31: command.CurrentLimit = 4095; break;
                 case 32: command.CurrentLimit = 4096; break;
                 case 33: command.Kp = 1700; break;
@@ -346,7 +345,7 @@ static bool command_boundaries()
                 motor::CanFrame expected{}, actual{};
                 std::memset(&actual, 0x5A, sizeof(actual));
                 const auto before = actual;
-                const bool accepted = legacy_reference::encode(&command, &f.route, &f.profile, &expected);
+                const bool accepted = f.reference_encode(command, expected);
                 CHECK(encode_wire_command(device, command, actual) == accepted);
                 if (accepted) {
                     CHECK(actual.id == expected.id && actual.dlc == expected.dlc && actual.flags == expected.flags);
@@ -366,13 +365,13 @@ static bool feedback_boundaries()
     for (unsigned variant = 0; variant < 3; ++variant) {
         const auto f = boundary_fixture(variant);
         const auto binding = f.bind();
-        CHECK(binding.driver != nullptr);
+        CHECK(binding != nullptr);
         motor::MotorDevice device;
-        device.bind(*binding.driver);
+        device.bind(*binding);
         for (uint16_t position : positions) {
             for (unsigned raw = 0; raw < 4096; ++raw) {
                 motor::CanFrame frame{};
-                frame.id = f.route.CanId;
+                frame.id = f.config.route.can_id;
                 frame.flags = raw & 1 ? 24 : 0;
                 frame.dlc = 8;
                 frame.data[0] = 0x20 | (raw & 7);
@@ -388,7 +387,7 @@ static bool feedback_boundaries()
                 expected.ValidFlags = raw & 1 ? 0xFF : 0;
                 const auto before = expected;
                 auto actual = before;
-                const bool accepted = legacy_reference::feedback(&frame, &f.profile, &expected);
+                const bool accepted = legacy_reference::feedback(&frame, &f.config.encos.profile, &expected);
                 CHECK(decode_wire_feedback(device, frame, actual) == accepted);
                 CHECK(std::memcmp(&actual, accepted ? &expected : &before, sizeof(actual)) == 0);
             }
@@ -400,11 +399,11 @@ static bool feedback_boundaries()
 static bool axis_isolation()
 {
     Fixture first, second;
-    second.route.CanId = 7;
-    second.basic.TorqueConstantRaw = 0;
+    second.config.route.can_id = 7;
+    second.config.encos.profile.kt = 0;
     motor::MotorDevice a, b;
-    a.bind(*first.bind(0).driver);
-    b.bind(*second.bind(1).driver);
+    a.bind(*first.bind(0));
+    b.bind(*second.bind(1));
     CHECK(a.capabilities().torque_constant_Nm_A == 0.5 && b.capabilities().torque_constant_Nm_A == 0);
     CHECK((a.capabilities().feedback_fields & motor::Torque) && !(b.capabilities().feedback_fields & motor::Torque));
     CHECK(!a.capabilities().active_stop_command && !b.capabilities().active_stop_command);
@@ -413,33 +412,14 @@ static bool axis_isolation()
     motor::CanFrame x{}, y{};
     CHECK(encode_wire_command(a, command, x) && encode_wire_command(b, command, y));
     CHECK(x.id == 1 && y.id == 7);
-    second.route.ModelProfileId = 0xFFFF;
-    CHECK(second.bind(1).driver == nullptr);
+    second.config.model_profile_id = 0xFFFF;
+    CHECK(second.bind(1) == nullptr);
     CHECK(encode_wire_command(a, command, x) && x.id == 1);
     return true;
 }
 
 static bool field_mapping()
 {
-    Fixture f;
-    f.route.CurrentLimit = UINT32_MAX;
-    f.route.PowerQueryPeriodMs = 347;
-    f.route.StopPolicy = 2;
-    f.route.FeedbackPolicy = 3;
-    f.basic.CommunicationMode = 1;
-    f.range = {1, 502, 3, 7, -1234, 987, -2134, 1987, -334, 287, -434, 387};
-    const auto config = codec::configuration(f.route, f.basic, f.range);
-    CHECK(config.route.can_id == f.route.CanId && config.model_profile_id == f.route.ModelProfileId);
-    CHECK(config.route.position_min_urad == f.route.PositionLimitMin && config.route.position_max_urad == f.route.PositionLimitMax);
-    CHECK(config.route.current_limit_dA == UINT32_MAX && config.route.velocity_limit_urad_s == f.route.VelocityLimit);
-    CHECK(config.route.torque_limit_mNm == f.route.TorqueLimit && config.power_query_period_ms == 347);
-    CHECK(config.stop_policy == 2 && config.feedback_policy == 3 && config.encos.frame_format == 1);
-    CHECK(config.encos.timeout_ms == 100 && config.encos.profile.kt == 0.5);
-    const auto &p = config.encos.profile;
-    CHECK(p.kp[0] == 1 && p.kp[1] == 502 && p.kd[0] == 3 && p.kd[1] == 7);
-    CHECK(p.pos[0] == -12.34 && p.pos[1] == 9.87 && p.vel[0] == -21.34 && p.vel[1] == 19.87);
-    CHECK(p.torque[0] == -33.4 && p.torque[1] == 28.7 && p.current[0] == -43.4 && p.current[1] == 38.7);
-
     const mc_axis_rx_t wire{15, 4, 7, INT32_MIN, INT32_MAX, -12345, INT16_MIN, 123, 456, UINT16_MAX};
     const auto command = codec::command(wire);
     const auto copy = codec::command(command);
@@ -452,7 +432,7 @@ static bool field_mapping()
     const auto sdo_copy = codec::command(codec::command(sdo));
     CHECK(std::memcmp(&wire, &sdo_copy, sizeof(wire)) == 0);
 
-    app::AxisFeedback feedback{};
+    dcu::motor::MotorFeedback feedback{};
     feedback.sample = {63, -123, 456, -789, 2345, -1234, 3276, 7};
     feedback.mode = motor::ControlMode::Impedance;
     feedback.status_word = 0x1234;
@@ -473,7 +453,7 @@ static bool field_mapping()
         feedback.power_valid = false;
         CHECK(codec::feedback(feedback).ValidFlags == (1U << i));
     }
-    app::AxisDiagnostics diagnostic{1, 2, 3, 4, 5, 6, -7, -8, 9, 10};
+    dcu::motor::MotorDiagnostics diagnostic{1, 2, 3, 4, 5, 6, -7, -8, 9, 10};
     mc_diag_t mirror{};
     mirror.LastServiceError = 123;
     codec::diagnostics(diagnostic, mirror);
@@ -482,21 +462,6 @@ static bool field_mapping()
     CHECK(mirror.QueriedPosition == -7 && mirror.QueriedVelocity == -8);
     CHECK(mirror.PositionQueryAgeUs == 9 && mirror.VelocityQueryAgeUs == 10 && mirror.LastServiceError == 123);
 
-    mc_basic_t basic{};
-    basic.CommunicationMode = 1; basic.TorqueConstantRaw = 2; basic.CanTimeoutMs = 3;
-    mc_range_t range{4, 5, 6, 7, -8, 9, -10, 11, -12, 13, -14, 15};
-    mc_gain_t gain{16, 17, 18, 19, 20, 21};
-    mc_kt_t kt{};
-    kt.CalibrationMode = 2; kt.Group = 10;
-    kt.Kt1Raw = 22; kt.Kt2Raw = 23; kt.Kt3Raw = 24; kt.Kt4Raw = 25;
-    const uint16_t expected[][4] = {
-        {1}, {2}, {4, 5}, {6, 7}, {uint16_t(-8), 9}, {uint16_t(-10), 11},
-        {uint16_t(-12), 13}, {uint16_t(-14), 15}, {3}, {16, 17}, {18, 19}, {20, 21}, {2}, {22, 23, 24, 25}
-    };
-    for (uint16_t id = 2; id <= 15; ++id) {
-        const auto value = codec::parameter(id, basic, range, gain, kt);
-        CHECK(value.group == 10 && std::memcmp(value.words, expected[id - 2], sizeof(value.words)) == 0);
-    }
     return true;
 }
 

@@ -1,0 +1,26 @@
+# Overlay the locked SDK's restore point without modifying third-party sources.
+set(_dcu_rtos_dir "$ENV{HPM_SDK_BASE}/middleware/FreeRTOS/Source/portable/GCC/RISC-V")
+set(_dcu_rtos_source "${_dcu_rtos_dir}/portASM.S")
+set(_dcu_rtos_mask "${CMAKE_CURRENT_LIST_DIR}/detail/hpm_freertos_irq_mask.inc")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_dcu_rtos_source}")
+file(READ "${_dcu_rtos_source}" _dcu_rtos_asm)
+set(_dcu_rtos_anchor "    store_x t0, 0( t1 )                     /* Restore the critical nesting value for this task. */")
+string(FIND "${_dcu_rtos_asm}" "${_dcu_rtos_anchor}" _dcu_rtos_first)
+string(FIND "${_dcu_rtos_asm}" "${_dcu_rtos_anchor}" _dcu_rtos_last REVERSE)
+if(_dcu_rtos_first EQUAL -1 OR NOT _dcu_rtos_first EQUAL _dcu_rtos_last)
+    message(FATAL_ERROR "HPM FreeRTOS restore point changed; review the DCU PLIC overlay")
+endif()
+string(REPLACE "${_dcu_rtos_anchor}" "${_dcu_rtos_anchor}\n    dcu_restore_task_irq_mask"
+       _dcu_rtos_asm "${_dcu_rtos_asm}")
+set(_dcu_rtos_overlay "${CMAKE_CURRENT_BINARY_DIR}/portASM.S")
+file(CONFIGURE OUTPUT "${_dcu_rtos_overlay}"
+    CONTENT "#include \"${_dcu_rtos_mask}\"\n${_dcu_rtos_asm}" @ONLY)
+get_target_property(_dcu_rtos_sources ${HPM_SDK_GCC_LIB} SOURCES)
+if(NOT _dcu_rtos_source IN_LIST _dcu_rtos_sources)
+    message(FATAL_ERROR "HPM SDK no longer builds the expected FreeRTOS context port")
+endif()
+list(REMOVE_ITEM _dcu_rtos_sources "${_dcu_rtos_source}")
+list(APPEND _dcu_rtos_sources "${_dcu_rtos_overlay}")
+set_property(TARGET ${HPM_SDK_GCC_LIB} PROPERTY SOURCES "${_dcu_rtos_sources}")
+set_source_files_properties("${_dcu_rtos_overlay}" TARGET_DIRECTORY ${HPM_SDK_GCC_LIB}
+    PROPERTIES INCLUDE_DIRECTORIES "${_dcu_rtos_dir}")

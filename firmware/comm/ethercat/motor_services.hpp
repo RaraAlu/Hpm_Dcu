@@ -5,6 +5,6 @@
 
 namespace dcu::ethercat::motor_services {
 void initialize();
-bool commit(unsigned axis, bool maintenance, uint32_t now_ms, bool preop);
+bool commit(unsigned axis, uint32_t now_ms, bool preop);
 }
 #endif

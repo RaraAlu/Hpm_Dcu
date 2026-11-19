@@ -3,6 +3,40 @@
 #include <stdio.h>
 #include <string.h>
 
+static pdo_pipeline_t *preempt_pipeline;
+static unsigned epoch_reads;
+static pdo_pipeline_t *publication_preemption;
+static bool preempt_after_exchange;
+
+static uint32_t preemptible_load(const uint32_t *value, int order)
+{
+    uint32_t result = __atomic_load_n(value, order);
+    if (preempt_pipeline && value == &preempt_pipeline->epoch && --epoch_reads == 0) {
+        pdo_pipeline_t *p = preempt_pipeline;
+        preempt_pipeline = NULL;
+        pdo_pipeline_sync(p, 2100);
+    }
+    return result;
+}
+
+static uint32_t preemptible_exchange(uint32_t *value, uint32_t next, int order)
+{
+    pdo_pipeline_t *p = publication_preemption;
+    if (!p || value != &p->ready || next == PDO_PIPELINE_NO_SLOT)
+        return __atomic_exchange_n(value, next, order);
+    publication_preemption = NULL;
+    if (!preempt_after_exchange) pdo_pipeline_sync(p, 100);
+    uint32_t previous = __atomic_exchange_n(value, next, order);
+    if (preempt_after_exchange) pdo_pipeline_sync(p, 100);
+    return previous;
+}
+
+#define __atomic_load_n(value, order) preemptible_load(value, order)
+#define __atomic_exchange_n(value, next, order) preemptible_exchange(value, next, order)
+#include "pdo_pipeline.c"
+#undef __atomic_load_n
+#undef __atomic_exchange_n
+
 #define CHECK(expr) do { if (!(expr)) { \
     fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #expr); return 1; \
 } } while (0)
@@ -14,6 +48,33 @@ static int run(const char *name)
     unsigned char a[PDO_PIPELINE_RX_MAX], b[PDO_PIPELINE_RX_MAX];
     memset(a, 0xA5, sizeof(a));
     memset(b, 0x5A, sizeof(b));
+
+    if (!strcmp(name, "publication_edge")) {
+        for (unsigned after = 0; after <= 1; ++after) {
+            CHECK(pdo_pipeline_configure(&p, 1000000U, 399U, sizeof(a)));
+            pdo_pipeline_enable(&p, true);
+            uint32_t slot;
+            uint8_t *destination = pdo_pipeline_reserve(&p, sizeof(a), &slot);
+            CHECK(destination != NULL);
+            memcpy(destination, a, sizeof(a));
+            preempt_after_exchange = after != 0U;
+            publication_preemption = &p;
+            CHECK(pdo_pipeline_commit(&p, slot, 42, 99));
+            CHECK(publication_preemption == NULL && p.epoch == 1);
+            if (!after) {
+                CHECK(!pdo_pipeline_acquire(&p, &first));
+                CHECK(pdo_pipeline_mark_published(&p, 1, 701));
+                pdo_pipeline_sync(&p, 1100);
+            }
+            CHECK(pdo_pipeline_acquire(&p, &first));
+            CHECK(first.sequence == 42 && first.epoch == (after ? 1U : 2U) && first.ready_us == 99);
+            CHECK(!memcmp(first.data, a, sizeof(a)));
+            CHECK(!pdo_pipeline_acquire(&p, &second));
+            CHECK(pdo_pipeline_check(&p, after ? 100U : 1100U) == 0);
+            pdo_pipeline_release(&p, &first);
+        }
+        return 0;
+    }
 
     if (!strcmp(name, "configuration")) {
         CHECK(!pdo_pipeline_configure(&p, 999999U, 250U, 784));
@@ -105,8 +166,8 @@ static int run(const char *name)
     }
     if (!strcmp(name, "deadline")) {
         pdo_pipeline_sync(&p, 100);
-        CHECK(!pdo_pipeline_publish_due(&p, 1749));
-        CHECK(pdo_pipeline_publish_due(&p, 1750));
+        CHECK(!pdo_pipeline_publish_due(&p, 1249));
+        CHECK(pdo_pipeline_publish_due(&p, 1250));
         CHECK(pdo_pipeline_mark_published(&p, 1, 1850));
         CHECK(!pdo_pipeline_publish_due(&p, 1850));
         CHECK(pdo_pipeline_check(&p, 1850) == 0);
@@ -136,7 +197,18 @@ static int run(const char *name)
         /* A stale completion flag must not acknowledge a newer boundary. */
         p.published = 1;
         p.published_epoch = 1;
-        CHECK(pdo_pipeline_publish_due(&p, 3750));
+        CHECK(pdo_pipeline_publish_due(&p, 3250));
+        CHECK(pdo_pipeline_check(&p, 3851) & PDO_PIPELINE_TX_LATE);
+        return 0;
+    }
+    if (!strcmp(name, "preempted_watchdog")) {
+        pdo_pipeline_sync(&p, 100);
+        CHECK(pdo_pipeline_mark_published(&p, 1, 1750));
+        preempt_pipeline = &p;
+        epoch_reads = 2;
+        /* Sync0 advances the epoch while the watchdog inspects the old one. */
+        CHECK(pdo_pipeline_check(&p, 2099) == 0);
+        CHECK(p.epoch == 2 && preempt_pipeline == NULL);
         CHECK(pdo_pipeline_check(&p, 3851) & PDO_PIPELINE_TX_LATE);
         return 0;
     }
@@ -144,8 +216,8 @@ static int run(const char *name)
         p.epoch = UINT32_MAX;
         pdo_pipeline_sync(&p, UINT32_MAX - 1000U);
         CHECK(p.epoch == 0);
-        CHECK(!pdo_pipeline_publish_due(&p, 648));
-        CHECK(pdo_pipeline_publish_due(&p, 649));
+        CHECK(!pdo_pipeline_publish_due(&p, 148));
+        CHECK(pdo_pipeline_publish_due(&p, 149));
         CHECK(pdo_pipeline_mark_published(&p, 0, 699));
         CHECK(pdo_pipeline_check(&p, 700) == 0);
         return 0;

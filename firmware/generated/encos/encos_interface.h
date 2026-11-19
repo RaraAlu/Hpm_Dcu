@@ -12,6 +12,23 @@
 #define MC_STATUS_QUERY_SOURCE 0x1000u
 #define MC_STATUS_ARMED_QUERY_ONLY 0x2000u
 typedef struct __attribute__((packed)) {
+    uint8_t Candidate[36];
+    uint32_t CommitRevision;
+    uint16_t Result;
+    uint32_t ProfileId;
+    uint32_t ActiveRevision;
+    uint32_t StagedRevision;
+    uint32_t ReadinessTtlMs;
+} mc_profile_update_t;
+DCU_STATIC_ASSERT(sizeof(mc_profile_update_t)==58, "profile_update size");
+DCU_STATIC_ASSERT(offsetof(mc_profile_update_t,Candidate)==0, "profile_update.Candidate");
+DCU_STATIC_ASSERT(offsetof(mc_profile_update_t,CommitRevision)==36, "profile_update.CommitRevision");
+DCU_STATIC_ASSERT(offsetof(mc_profile_update_t,Result)==40, "profile_update.Result");
+DCU_STATIC_ASSERT(offsetof(mc_profile_update_t,ProfileId)==42, "profile_update.ProfileId");
+DCU_STATIC_ASSERT(offsetof(mc_profile_update_t,ActiveRevision)==46, "profile_update.ActiveRevision");
+DCU_STATIC_ASSERT(offsetof(mc_profile_update_t,StagedRevision)==50, "profile_update.StagedRevision");
+DCU_STATIC_ASSERT(offsetof(mc_profile_update_t,ReadinessTtlMs)==54, "profile_update.ReadinessTtlMs");
+typedef struct __attribute__((packed)) {
     uint32_t CycleSeq;
     uint16_t BoardControl;
     uint8_t ChannelEnableMask;

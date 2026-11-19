@@ -45,18 +45,24 @@ extern MEM_ADDR ESCMEM * pEsc;         /* pointer to the ESC */
 #if defined(HPM_IP_FEATURE_ESC_BYTE_READ) && HPM_IP_FEATURE_ESC_BYTE_READ
 /* Read operation supports byte by byte */
 #define     HW_EscRead(pData, Address, Len)             ESCMEMCPY((UINT8 *) (pData), &((UINT8 ESCMEM *) pEsc)[(Address)], (Len))
-#define     HW_EscReadIsr                               HW_EscRead
 #define     HW_EscReadMbxMem(pData, Address, Len)       ESCMEMCPY((UINT8 *) (pData), &((UINT8 ESCMEM *) pEsc)[(Address)], (Len))
 #else
 /* Read operation requires 4-byte alignment and reads 4 bytes at a time */
 #define     HW_EscRead(pData, Address, Len)             hw_esc_read_4bytes((UINT32 *) (pData), &((UINT32 ESCMEM *) pEsc)[((Address) >> 2)], (Len))
-#define     HW_EscReadIsr                               HW_EscRead
 #define     HW_EscReadMbxMem(pData, Address, Len)       hw_esc_read_4bytes((UINT32 *) (pData), &((UINT32 ESCMEM *) pEsc)[((Address) >> 2)], (Len))
+#endif
+
+#if defined(DCU_ECAT_CYCLE_PORT)
+#define     HW_EscReadIsr(pData, Address, Len)         hw_esc_read_isr((pData), (Address), (Len))
+#define     HW_EscStageOutputs(Address, Len)          hw_esc_stage_outputs((Address), (Len))
+#define     HW_EscWriteIsr(pData, Address, Len)        hw_esc_write_pdo(&((volatile UINT32 *) pEsc)[((Address) >> 2)], (pData), (Len))
+#else
+#define     HW_EscReadIsr(pData, Address, Len)         HW_EscRead((pData), (Address), (Len))
+#define     HW_EscWriteIsr(pData, Address, Len)        HW_EscWrite((pData), (Address), (Len))
 #endif
 
 /* Write Function */
 #define     HW_EscWrite(pData, Address, Len)            ESCMEMCPY(&((UINT32 ESCMEM *) pEsc)[((Address) >> 2)], (UINT32 *) (pData), (Len))
-#define     HW_EscWriteIsr                              HW_EscWrite
 #define     HW_EscWriteDWord(DWordValue, Address)       ((((volatile UINT32 *) pEsc)[(Address >> 2)]) = (DWordValue))
 #define     HW_EscWriteDWordIsr(DWordValue, Address)    HW_EscWriteDWord(DWordValue, Address)
 #define     HW_EscWriteMbxMem(pData, Address, Len)      ESCMBXMEMCPY(&((UINT32 ESCMEM *) pEsc)[((Address) >> 2)], (UINT32 *) (pData), (Len))
@@ -82,6 +88,9 @@ void HW_SetLed(UINT8 RunLed, UINT8 ErrLed);
 hpm_stat_t ecat_hardware_init(ESC_Type *esc_ptr);
 
 void hw_esc_read_4bytes(void *dest, const void *src, uint16_t size);
+void hw_esc_read_isr(void *dest, uint16_t address, uint16_t size);
+bool hw_esc_stage_outputs(uint16_t address, uint16_t size);
+void hw_esc_write_pdo(volatile uint32_t *dest, const void *src, uint16_t size);
 
 #if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
 UINT16 HW_EepromReload(void);
