@@ -1,0 +1,44 @@
+# 独立 EtherCAT 数据回环测试
+
+状态：已完成[首轮实板验收](../验证记录/2026-11-18-EtherCAT数据回环首轮实板测试记录.md)，通过 SDO 只读、固定映射和三组 PDO 回显。板卡随后切换至[MCAN 内部回环诊断镜像](独立EtherCAT到MCAN内部回环测试.md)。
+
+`hpm-ethercat-data` 是专用诊断镜像。它在 `hpm-ethercat-scan` 的 PHY/ESC 初始化基础上启用 SSC/CoE 邮箱和固定 PDO，回显只发生在 MCU 内存中。不初始化 CAN，不链接电机应用、生产对象字典、FreeRTOS 或 Flash EEPROM 仿真，不用 DC。它不是生产 Profile，也不验证 EtherCAT 到 CAN 的业务转发。
+
+## 固定映射
+
+诊断身份：Vendor `0x00010000`、Product `0x7fff0002`、Revision `1`。生产镜像和扫描镜像的身份不同，主站必须同时核对 SII 和 `0x1018`，不匹配就退出。
+
+| 阶段 | 方向 | ESC 地址 | 字节数 | 对象或映射 |
+| --- | --- | --- | ---: | --- |
+| PREOP / SDO | 主站写邮箱请求、读上传响应 | SM0 `0x1000` / SM1 `0x1080` | 各 128，含邮箱开销 | `0x1018`、`0x2100`、`0x2101`、固定 PDO 赋值与映射，仅上传 |
+| OP / RxPDO | 主站 → MCU | SM2 `0x1100` | 32 | `0x1c12:01 → 0x1600 → 0x7000:01..08` |
+| OP / TxPDO | MCU → 主站 | SM3 `0x1200` | 48 | `0x1c13:01 → 0x1a00 → 0x6000:01..0C` |
+
+SDO 按单个子索引读，不用 Complete Access。核对 `0x1018:01..04` 各 4 字节；`0x2100:00` 为 1 字节（值 3），子索引 `01..03` 各 2 字节（值依次为版本 1、Rx 32、Tx 48）。`0x2101:00` 是 12 字节，只读内容为 `01 23 45 67 89 ab cd ef 00 ff 5a a5`，用于验证非加急上传。PDO 赋值子索引 0 是 1 字节计数，子索引 1 是 2 字节映射索引；两个映射对象的子索引 0 是 1 字节计数，其余各 4 字节。按线上字节顺序，`0x1600:01` 为 `20 01 00 70`（位长、子索引、两字节小端对象索引）。镜像拒绝 SDO 下载，不用写请求验证读路径。
+
+每个 PDO 条目为连续 4 字节、无填充。以下是相对各自 PDO 首字节的偏移，**不是** IgH 域的绝对偏移：
+
+| 数据 | RxPDO 偏移 | TxPDO 偏移 | 验收 |
+| --- | ---: | ---: | --- |
+| 测试向量 / 原样回显 | 0–31 | 0–31 | 逐字节相等，不重排 |
+| 成功接收计数 | — | 32 | 小端 `u32`，每次接收完整 RxPDO 递增，不等同于主站周期计数 |
+| 本次接收长度 | — | 36 | 小端 `u32`，有效回显时为 32 |
+| 布局版本 | — | 40 | 小端 `u32`，为 1 |
+| 有效标志 | — | 44 | 小端 `u32`，完整接收后为 1；进入或离开 OP 时清零 |
+
+## 实板验收顺序
+
+1. 每轮测试先确认电机动力隔离、无 CAN 业务节点、主站链路只连本测试板。先备份 MCU Flash 保留区，再使用受保护下载；启动后不中断从站轮询，避免重现扫描阶段的 SII 超时。
+2. RK3588 上的 `DriverModule` 提供两份独立 AimRT 配置：`build/cfg/driver_ethercat_data_sdo.yaml` 和 `build/cfg/driver_ethercat_data_pdo.yaml`，都只启用该模块。先运行 SDO 配置：只允许链路已扫描完成、单个诊断从站处于 PREOP，上传身份、读向量、长度和全部映射，任何不符即退出；该配置不独占主站、不激活域、不进 OP。
+3. 再运行 PDO 配置：独占主站后重新核对 SDO 和固定映射，通过才按位置注册并记录 IgH 的实际字节和位偏移。只对诊断身份请求 OP，等待期间持续发送零向量；进入 OP 且 WKC 完整后，依次发送 `00..1f`、全零、全 `ff`，对照新计数、有效位及逐字节回显。该路径不走旧的逐项 SDO 配置，不发 SDO 下载，不重配 PDO。
+4. 保存主站状态、WKC、SDO 实测长度和十六进制、PDO 每项偏移与样本；停止后确认离开 OP 并复核保留区。没有这份实板证据不能宣称线上 SDO、PDO 或 EtherCAT-CAN 已通过。
+
+## 离线构建
+
+```bash
+python3 scripts/dcu.py build --preset hpm-ethercat-data
+python3 scripts/dcu.py check-image --preset hpm-ethercat-data
+python3 -m unittest discover -s tests/host -p test_ethercat_data.py -v
+```
+
+产物是 `build/hpm-ethercat-data/output/dcu.elf`。离线用例覆盖 SII 字节布局、SSC 对象长度与读取、PDO 回显和边界、SyncManager 地址拒绝及调试入口保护。实板和主站运行不在离线构建范围内。
