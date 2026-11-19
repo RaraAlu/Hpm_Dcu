@@ -85,9 +85,13 @@ class DevtoolsTest(unittest.TestCase):
 
     def test_programming_requires_backup_and_checks_it_afterward(self):
         script = dcu.transaction_script("/tmp/image.elf", self.board, "/tmp/backup.bin", flash=True)
-        self.assertLess(script.index("dump_image"), script.index("flash write_image erase"))
-        self.assertLess(script.index('verify_image "/tmp/image.elf"'),
-                        script.index('verify_image "/tmp/backup.bin"'))
+        for name, start, size in (("backup.bin", dcu.RETAINED_START, dcu.RETAINED_SIZE),
+                                  ("gateway-id-journal.bin", dcu.JOURNAL_START, dcu.JOURNAL_SIZE)):
+            dump = f'dump_image "/tmp/{name}" {start} {size}'
+            verify = f'verify_image "/tmp/{name}" {start} bin'
+            self.assertLess(script.index(dump), script.index(verify))
+            self.assertLess(script.index(verify), script.index("flash write_image erase"))
+            self.assertLess(script.index('verify_image "/tmp/image.elf"'), script.rindex(verify))
         self.assertNotIn("mass_erase", script)
         self.assertNotIn("resume", script)
         self.assertTrue(script.endswith("reset halt\nshutdown\n"))
@@ -96,9 +100,28 @@ class DevtoolsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             dcu.transaction_script("image.elf", self.board, flash=True)
 
+    def test_pre_reset_backup_is_verified_before_and_after_programming(self):
+        script = dcu.transaction_script("image.elf", self.board, "backup.bin", flash=True,
+                                        server=True, backup_before_reset=True)
+        steps = ["init\n", "halt\n", 'dump_image "backup.bin"', 'dump_image "gateway-id-journal.bin"',
+                 "DCU_RETAINED_BACKUP_COMPLETE", "reset init", "flash probe", 'verify_image "backup.bin"',
+                 'verify_image "gateway-id-journal.bin"', "flash write_image erase",
+                 'verify_image "image.elf"', "reset halt", "DCU_DEBUG_READY"]
+        self.assertEqual(sorted(script.index(step) for step in steps), [script.index(step) for step in steps])
+        self.assertEqual(script.count('verify_image "backup.bin"'), 2)
+        self.assertEqual(script.count('dump_image "backup.bin"'), 1)
+        self.assertEqual(script.count('verify_image "gateway-id-journal.bin"'), 2)
+
+    def test_pre_reset_backup_cannot_run_without_programming(self):
+        with mock.patch.object(dcu, "require_target") as require_target, contextlib.redirect_stderr(io.StringIO()):
+            result = dcu.main(["debug-server", "--backup-before-reset", "--confirm-target", "RESET_TARGET"])
+        self.assertEqual(result, 1)
+        require_target.assert_not_called()
+
     def test_verify_does_not_issue_flash_writes(self):
         script = dcu.transaction_script("image.elf", self.board)
         self.assertNotIn("write_image", script)
+        self.assertNotIn("dump_image", script)
         self.assertIn("verify_image", script)
 
     def test_server_is_ready_only_after_verification_and_final_reset(self):

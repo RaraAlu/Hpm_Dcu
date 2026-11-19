@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from image_guard import FLASH_BASE, RETAINED_START, inspect_image
+from image_guard import FLASH_BASE, JOURNAL_SIZE, JOURNAL_START, RETAINED_SIZE, RETAINED_START, inspect_image
 
 
 def make_elf(segments=None, machine=243, entry=FLASH_BASE + 0x3000):
@@ -39,6 +39,9 @@ class ImageGuardTest(unittest.TestCase):
         self.assertEqual(report["erase_start"], FLASH_BASE)
         self.assertEqual(report["erase_end_exclusive"], FLASH_BASE + 0x4000)
         self.assertFalse(report["hardware_geometry_verified"])
+        self.assertEqual(report["retained_end_exclusive"], JOURNAL_START)
+        self.assertEqual(report["journal_start"], JOURNAL_START)
+        self.assertEqual(report["journal_end_exclusive"], JOURNAL_START + JOURNAL_SIZE)
 
     def test_retained_region_direct_overlap_is_rejected(self):
         data = make_elf([(FLASH_BASE + 0x400, 4), (RETAINED_START, 4)])
@@ -46,12 +49,17 @@ class ImageGuardTest(unittest.TestCase):
             self.inspect(data)
 
     def test_hole_spanning_retained_region_is_rejected(self):
-        data = make_elf([(FLASH_BASE + 0x400, 4), (RETAINED_START + 0x10000, 4)])
+        data = make_elf([(FLASH_BASE + 0x400, 4), (RETAINED_START + RETAINED_SIZE - 4, 4)])
         with self.assertRaisesRegex(ValueError, "retained"):
             self.inspect(data)
 
+    def test_journal_overlap_is_rejected(self):
+        data = make_elf([(FLASH_BASE + 0x400, 4), (JOURNAL_START, 4)])
+        with self.assertRaisesRegex(ValueError, "gateway boot journal"):
+            self.inspect(data)
+
     def test_erase_rounding_can_make_an_otherwise_small_image_unsafe(self):
-        with self.assertRaisesRegex(ValueError, "retained"):
+        with self.assertRaisesRegex(ValueError, "gateway boot journal"):
             self.inspect(sector_size=0x100000)
 
     def test_image_may_end_exactly_before_retained_region(self):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject Flash images whose load/erase span can damage retained EtherCAT data."""
+"""Reject Flash images whose load/erase span can damage retained data."""
 
 import argparse
 import hashlib
@@ -13,6 +13,8 @@ FLASH_SIZE = 0x100000
 SECTOR_SIZE = 0x1000
 RETAINED_START = 0x80080000
 RETAINED_SIZE = 0x10000
+JOURNAL_START = 0x80090000
+JOURNAL_SIZE = 2 * SECTOR_SIZE
 
 
 def inspect_image(path, flash_size=FLASH_SIZE, sector_size=SECTOR_SIZE):
@@ -54,13 +56,16 @@ def inspect_image(path, flash_size=FLASH_SIZE, sector_size=SECTOR_SIZE):
     erase_end = (last + sector_size - 1) // sector_size * sector_size
     if erase_start < FLASH_BASE or erase_end > FLASH_BASE + flash_size:
         raise ValueError("Rounded erase span exceeds configured Flash")
-    if erase_start < RETAINED_START + RETAINED_SIZE and erase_end > RETAINED_START:
-        raise ValueError("Erase span overlaps the retained EEPROM region")
+    for name, start, size in (("gateway boot journal", JOURNAL_START, JOURNAL_SIZE),
+                              ("retained EEPROM", RETAINED_START, RETAINED_SIZE)):
+        if erase_start < start + size and erase_end > start:
+            raise ValueError(f"Erase span overlaps the {name} region")
     return {
         "elf": str(Path(path).resolve()), "sha256": hashlib.sha256(data).hexdigest(),
         "entry": entry, "flash_bytes": flash_size, "sector_bytes": sector_size,
         "loads": loads, "erase_start": erase_start, "erase_end_exclusive": erase_end,
         "retained_start": RETAINED_START, "retained_end_exclusive": RETAINED_START + RETAINED_SIZE,
+        "journal_start": JOURNAL_START, "journal_end_exclusive": JOURNAL_START + JOURNAL_SIZE,
         "hardware_geometry_verified": False,
     }
 
@@ -78,7 +83,7 @@ def main():
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
     print(f"Image guard PASS: erase 0x{report['erase_start']:08x}.."
-          f"0x{report['erase_end_exclusive']:08x}, retained EEPROM excluded")
+          f"0x{report['erase_end_exclusive']:08x}, retained EEPROM and gateway boot journal excluded")
 
 
 if __name__ == "__main__":

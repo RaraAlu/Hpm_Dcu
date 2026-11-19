@@ -12,7 +12,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from image_guard import FLASH_SIZE, RETAINED_SIZE, RETAINED_START, SECTOR_SIZE, inspect_image
+from image_guard import (
+    FLASH_SIZE, JOURNAL_SIZE, JOURNAL_START, RETAINED_SIZE, RETAINED_START, SECTOR_SIZE, inspect_image,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK = ROOT / "third_party/hpm_sdk"
@@ -147,21 +149,38 @@ def tcl_quote(value):
     return '"' + value + '"'
 
 
-def transaction_script(elf, board, backup=None, flash=False, server=False):
-    lines = [
-        "init", "reset init", "flash probe xpi0",
+def transaction_script(elf, board, backup=None, flash=False, server=False, backup_before_reset=False):
+    if flash and backup is None:
+        raise ValueError("A retained-data backup is mandatory before programming")
+    if backup_before_reset and not flash:
+        raise ValueError("--backup-before-reset requires a programming operation")
+    if flash:
+        journal = Path(backup).with_name("gateway-id-journal.bin")
+        if Path(backup) == journal:
+            raise ValueError("EEPROM and boot journal backups require distinct paths")
+        retained = [(tcl_quote(backup), RETAINED_START, RETAINED_SIZE),
+                    (tcl_quote(journal), JOURNAL_START, JOURNAL_SIZE)]
+        dumps = [f"dump_image {path} {start} {size}" for path, start, size in retained]
+        dumps.extend(f'if {{[file size {path}] != {size}}} {{ error "Incomplete retained-data backup" }}'
+                     for path, _, size in retained)
+        checks = [f"verify_image {path} {start} bin" for path, start, _ in retained]
+    lines = ["init"]
+    if backup_before_reset:
+        lines.extend(["halt", *dumps, 'echo "DCU_RETAINED_BACKUP_COMPLETE"'])
+    lines.extend([
+        "reset init", "flash probe xpi0",
         "set actual_bank [lindex [flash list] 0]",
         f"if {{[dict get $actual_bank size] != {board['flash_size_bytes']}}} {{ error \"Flash capacity mismatch\" }}",
         "flash info xpi0",
-    ]
+    ])
     if flash:
-        if backup is None:
-            raise ValueError("A retained-data backup is mandatory before programming")
+        if not backup_before_reset:
+            lines.extend(dumps)
         lines.extend([
-            f"dump_image {tcl_quote(backup)} {RETAINED_START} {RETAINED_SIZE}",
+            *checks,
             f"flash write_image erase {tcl_quote(elf)}",
             f"verify_image {tcl_quote(elf)}",
-            f"verify_image {tcl_quote(backup)} {RETAINED_START} bin",
+            *checks,
         ])
     else:
         # Do not debug current symbols against a different image in Flash.
@@ -175,6 +194,10 @@ def transaction_script(elf, board, backup=None, flash=False, server=False):
 
 
 def target_operation(args):
+    flashing = args.action == "flash" or getattr(args, "flash_first", False)
+    backup_before_reset = getattr(args, "backup_before_reset", False)
+    if backup_before_reset and not flashing:
+        raise ValueError("--backup-before-reset requires --flash-first with debug-server")
     board = require_target(args)
     if not args.skip_build:
         build(args.preset)
@@ -188,9 +211,9 @@ def target_operation(args):
     report = inspect_image(snapshot, board["flash_size_bytes"], board["flash_sector_size_bytes"])
     report["source_elf"] = str(image)
     backup = directory / "retained-eeprom.bin"
-    flashing = args.action == "flash" or getattr(args, "flash_first", False)
     script = directory / "transaction.cfg"
-    script.write_text(transaction_script(snapshot, board, backup, flashing, args.action == "debug-server"))
+    script.write_text(transaction_script(snapshot, board, backup, flashing, args.action == "debug-server",
+                                         backup_before_reset=backup_before_reset))
     (directory / "image-check.json").write_text(json.dumps(report, indent=2) + "\n")
     environment = os.environ.copy()
     environment.update({
@@ -223,6 +246,9 @@ def main(argv=None):
             command.add_argument("--board", type=Path, default=ROOT / "scripts/cfg/board.local.json")
             command.add_argument("--confirm-target", default=os.environ.get("DCU_TARGET_CONFIRM", ""))
             command.add_argument("--skip-build", action="store_true")
+            if action in ("flash", "debug-server"):
+                command.add_argument("--backup-before-reset", action="store_true",
+                                     help="Halt and back up retained data before the first reset")
             if action == "debug-server":
                 command.add_argument("--flash-first", action="store_true", help="Program before starting the debug server")
     args = parser.parse_args(argv)
