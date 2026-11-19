@@ -21,6 +21,8 @@ SDK = ROOT / "third_party/hpm_sdk"
 GCC = ROOT / ".tools/hpm-gcc-13.2.0/bin"
 OPENOCD = ROOT / "scripts/openocd.sh"
 PRESETS = ("hpm-debug", "hpm-release")
+TEST_PRESETS = ("hpm-can-loopback", "hpm-ethercat-scan", "hpm-ethercat-data", "hpm-ethercat-mcan")
+OFFLINE_PRESETS = ("hpm-gateway-profile", "hpm-gateway-session")
 CONFIRMATION = "RESET_TARGET"
 
 
@@ -241,7 +243,10 @@ def main(argv=None):
     sub.add_parser("usb-check", help="Check USB enumeration and permissions without opening the probe")
     for action in ("configure", "build", "check-image", "flash", "verify", "debug-server"):
         command = sub.add_parser(action)
-        command.add_argument("--preset", choices=PRESETS, default="hpm-debug")
+        presets = PRESETS + TEST_PRESETS
+        if action in ("configure", "build", "check-image"):
+            presets += OFFLINE_PRESETS
+        command.add_argument("--preset", choices=presets, default="hpm-debug")
         if action in ("flash", "verify", "debug-server"):
             command.add_argument("--board", type=Path, default=ROOT / "scripts/cfg/board.local.json")
             command.add_argument("--confirm-target", default=os.environ.get("DCU_TARGET_CONFIRM", ""))

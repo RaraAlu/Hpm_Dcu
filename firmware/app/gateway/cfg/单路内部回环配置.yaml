@@ -1,0 +1,25 @@
+schema_version: 1
+channels:
+  - bus: 0
+    mode: classic
+    nominal_bitrate_kbps: 1000
+    devices:
+      - id: probe0
+        protocol: internal_echo_v1
+        can_id_base: 0x600
+pdo:
+  rx:
+    mapping: 0x1600
+    object: 0x7000
+    words: 8
+  tx:
+    mapping: 0x1a00
+    object: 0x6000
+frame_timeout_ms: 5
+session:
+  profile_id: 1
+  revision: 1
+  probe_interval_ms: 10
+  readiness_ttl_ms: 50
+  activation_wait_s: 5
+  command_timeout_ms: 50
