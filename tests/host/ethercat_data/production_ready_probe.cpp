@@ -10,6 +10,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <memory>
 #include <sched.h>
 #include <string_view>
@@ -108,6 +109,14 @@ bool write_one_cycle_timing(const char *path, const std::vector<one_cycle::Sampl
 #ifdef DCU_ONE_CYCLE_ENDURANCE
     std::fputs(",slave_op", file);
 #endif
+#ifdef DCU_ONE_CYCLE_SM2_PREPARE_US
+    std::fputs(",sm2_entry_ns,sm2_wake_ns,sm2_prepared_ns,sm2_queued_ns,sm2_send_return_ns", file);
+#endif
+#ifdef DCU_ONE_CYCLE_COLLECT_TRACE
+    std::fputs(",collect_wait_entry_ns,collect_wake_ns,first_receive_begin_ns,first_receive_end_ns,first_domain_end_ns,"
+               "first_state_end_ns,last_state_end_ns,wkc_valid_ns,ack_checked_ns,match_ns,op_checked_ns,"
+               "receive_total_ns,domain_total_ns,state_total_ns,collect_polls", file);
+#endif
     std::fputc('\n', file);
     for (const auto &s : samples) {
         if (!s.sequence) break;
@@ -127,6 +136,19 @@ bool write_one_cycle_timing(const char *path, const std::vector<one_cycle::Sampl
 #endif
 #ifdef DCU_ONE_CYCLE_ENDURANCE
         std::fprintf(file, ",%d", s.slave_op);
+#endif
+#ifdef DCU_ONE_CYCLE_SM2_PREPARE_US
+        std::fprintf(file, ",%llu,%llu,%llu,%llu,%llu", static_cast<unsigned long long>(s.sm2_entry_ns),
+                     static_cast<unsigned long long>(s.sm2_wake_ns), static_cast<unsigned long long>(s.sm2_prepared_ns),
+                     static_cast<unsigned long long>(s.sm2_queued_ns), static_cast<unsigned long long>(s.sm2_send_return_ns));
+#endif
+#ifdef DCU_ONE_CYCLE_COLLECT_TRACE
+        const auto &t = s.collect;
+        for (auto n : {t.wait_entry_ns, t.wake_ns, t.first_receive_begin_ns, t.first_receive_end_ns, t.first_domain_end_ns,
+                       t.first_state_end_ns, t.last_state_end_ns, t.wkc_valid_ns, t.ack_checked_ns, t.match_ns, t.op_checked_ns,
+                       t.receive_total_ns, t.domain_total_ns, t.state_total_ns})
+            std::fprintf(file, ",%llu", static_cast<unsigned long long>(n));
+        std::fprintf(file, ",%u", t.polls);
 #endif
         std::fputc('\n', file);
     }
@@ -199,6 +221,7 @@ struct IghOneCyclePort {
     unsigned output_bytes;
     uint16_t lease;
     bool follow_hpm;
+    one_cycle::CollectWait collect_mode;
 #ifdef DCU_ONE_CYCLE_SOF_TRACE
     const one_cycle::FrameCounter &counter;
     one_cycle::FrameStats after_sm3{};
@@ -212,18 +235,36 @@ struct IghOneCyclePort {
 
     uint64_t now_ns() const { return ig::IghMonotonicTimeNs(); }
 
+#ifdef DCU_ONE_CYCLE_COLLECT_TRACE
+    void wait_collect(uint64_t ns)
+    {
+        if (collect_mode != one_cycle::CollectWait::absolute) return wait(ns);
+        if (now_ns() >= ns) return;
+        const timespec target{static_cast<time_t>(ns / 1000000000), static_cast<long>(ns % 1000000000)};
+        int rc;
+        do {
+            rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &target, nullptr);
+        } while (rc == EINTR);
+        require(rc == 0, "absolute SM3 collect wait failed");
+    }
+#endif
+
     void spin_until(uint64_t ns)
     {
         while (now_ns() < ns) {}
     }
 
-    void write(one_cycle::Sample &sample)
+    void prepare_output(const one_cycle::Sample &sample)
     {
         const auto image = ordinary(sample.sequence, lease);
         std::copy_n(image.data(), output_bytes, output_data);
         const auto app_time = ig::IghMonotonicTimeNs();
         check_igh("IgH application time", ecrt_master_application_time, master,
-                  follow_hpm ? sample.dc_tick_ns + (app_time - sample.due_ns) : app_time);
+                  follow_hpm ? one_cycle::dc_time_at(sample.dc_tick_ns, sample.due_ns, app_time) : app_time);
+    }
+
+    void queue_output()
+    {
         if (follow_hpm) {
             // Replace the four-byte FPWR with a four-byte read, not another frame.
             check_igh("IgH read-only DC monitor", ecrt_master_sync_monitor_queue, master);
@@ -232,8 +273,14 @@ struct IghOneCyclePort {
         }
         check_igh("IgH slave sync", ecrt_master_sync_slave_clocks, master);
         check_igh("IgH queue output write", ecrt_domain_queue, output);
-        sample.write_ns = ig::IghMonotonicTimeNs();
+    }
+
+    void send_output([[maybe_unused]] one_cycle::Sample &sample)
+    {
         check_igh("IgH send output write", ecrt_master_send, master);
+#ifdef DCU_ONE_CYCLE_SM2_PREPARE_US
+        sample.sm2_send_return_ns = ig::IghMonotonicTimeNs();
+#endif
 #ifdef DCU_ONE_CYCLE_SOF_TRACE
         const auto now = counter.read();
         if (now.valid && after_sm3.valid && now.frames >= after_sm3.frames && now.bytes >= after_sm3.bytes) {
@@ -274,34 +321,36 @@ struct IghOneCyclePort {
 #endif
     }
 
-    void collect_feedback(one_cycle::Sample &sample)
+    void receive_input() { check_igh("IgH receive input return", ecrt_master_receive, master); }
+    void process_input() { check_igh("IgH process input domain", ecrt_domain_process, input); }
+    bool input_wkc(one_cycle::Sample &sample)
     {
         ec_domain_state_t state{};
-        const auto deadline = sample.deadline_ns;
-        // Poll only for the already-sent read; never issue a fresh read after its deadline.
-        do {
-            check_igh("IgH receive input return", ecrt_master_receive, master);
-            check_igh("IgH process input domain", ecrt_domain_process, input);
-            check_igh("IgH input domain state", ecrt_domain_state, input, &state);
-        } while (state.wc_state != EC_WC_COMPLETE && ig::IghMonotonicTimeNs() < deadline);
+        check_igh("IgH input domain state", ecrt_domain_state, input, &state);
+        sample.input_wkc = state.working_counter;
+        return state.wc_state == EC_WC_COMPLETE;
+    }
+    uint32_t input_ack() const { return EC_READ_U32(input_data + 4); }
+    void check_op(one_cycle::Sample &sample)
+    {
         ec_slave_config_state_t status{};
         check_igh("IgH AL state", ecrt_slave_config_state, slave, &status);
-        sample.input_wkc = state.working_counter;
         sample.al = status.al_state;
 #ifdef DCU_ONE_CYCLE_ENDURANCE
         sample.slave_op = status.online && status.operational;
 #endif
-        sample.operational = sample.operational && status.online && status.operational &&
-                             state.wc_state == EC_WC_COMPLETE;
-        sample.ack = EC_READ_U32(input_data + 4);
-        sample.feedback_ns = ig::IghMonotonicTimeNs();
+        sample.operational = sample.operational && status.online && status.operational;
     }
+    void collect_feedback(one_cycle::Sample &sample) { one_cycle::collect_input(*this, sample); }
 };
 
 void run_one_cycle(ec_master_t *master, ec_slave_config_t *slave, unsigned mode, uint16_t lease,
-                   std::vector<one_cycle::Sample> &trace, bool follow_hpm)
+                   std::vector<one_cycle::Sample> &trace, bool follow_hpm, one_cycle::CollectWait collect_mode)
 {
     const unsigned rx_bytes = rx_lengths[mode], tx_bytes = tx_lengths[mode];
+#ifdef DCU_ONE_CYCLE_SM2_PREPARE_US
+    require(follow_hpm, "SM2 timing requires the HPM follower");
+#endif
 #ifdef DCU_ONE_CYCLE_ENDURANCE
     require(follow_hpm, "endurance observation requires a locked HPM reference");
     unsigned misses = 0, consecutive = 0;
@@ -324,7 +373,7 @@ void run_one_cycle(ec_master_t *master, ec_slave_config_t *slave, unsigned mode,
     const auto origin = ig::IghMonotonicTimeNs();
     ig::ActivateIgh(master, slave, true, origin);
     IghOneCyclePort port{master, slave, output, input, ecrt_domain_data(output), ecrt_domain_data(input),
-                         rx_bytes, lease, follow_hpm
+                         rx_bytes, lease, follow_hpm, collect_mode
 #ifdef DCU_ONE_CYCLE_SOF_TRACE
                          , counter
 #endif
@@ -364,6 +413,9 @@ void run_one_cycle(ec_master_t *master, ec_slave_config_t *slave, unsigned mode,
     const auto start_limit = Clock::now() + 8s;
     while (Clock::now() < start_limit && stable < 8) {
         warmup = exchange(true);
+#ifdef DCU_ONE_CYCLE_SM2_PREPARE_US
+        if (!warmup.sm2_send_return_ns) break;
+#endif
         if constexpr (one_cycle::sm3_prepare_ns) {
             if (warmup.read_ns >= warmup.deadline_ns) break;
         }
@@ -377,15 +429,29 @@ void run_one_cycle(ec_master_t *master, ec_slave_config_t *slave, unsigned mode,
         throw std::runtime_error("split cycle did not stabilize in OP");
     }
 #ifdef DCU_ONE_CYCLE_SOF_TRACE
-    std::printf("DC_MODE=%s warmup_seq=%u dc_tick=%llu sof=%u valid=%d locked=%d step_ns=%d\n",
+    const auto report_warmup = [&, locked=follower.locked(), step=follower.step_ns()] {
+        std::printf("DC_MODE=%s warmup_seq=%u dc_tick=%llu sof=%u valid=%d locked=%d step_ns=%d\n",
                 follow_hpm ? "hpm-reference" : "rk-reference", warmup.sequence,
                 static_cast<unsigned long long>(warmup.dc_tick_ns), warmup.dc_sof_ns,
-                warmup.dc_sof_valid, follower.locked(), follower.step_ns());
+                warmup.dc_sof_valid, locked, step);
+    };
+#ifndef DCU_ONE_CYCLE_SM2_PREPARE_US
+    report_warmup();
+#endif
     if (follow_hpm && (!follower.locked() || !warmup.servo_used)) {
         stop();
+#ifdef DCU_ONE_CYCLE_SM2_PREPARE_US
+        report_warmup();
+#endif
         throw std::runtime_error("RK did not lock to HPM by the end of the common OP warmup");
     }
 #endif
+    const auto finish = [&] {
+        stop();
+#ifdef DCU_ONE_CYCLE_SM2_PREPARE_US
+        report_warmup(); // No stdout in the gap between warmup feedback and the first scored SM2.
+#endif
+    };
     for (auto &sample : trace) {
         sample = exchange(false);
         if (!one_cycle::on_time(sample)) {
@@ -395,7 +461,7 @@ void run_one_cycle(ec_master_t *master, ec_slave_config_t *slave, unsigned mode,
 #endif
             std::fprintf(stderr, "ONE_CYCLE_MISS seq=%u ack=%u wkc=%u/%u al=%u\n",
                          sample.sequence, sample.ack, sample.output_wkc, sample.input_wkc, sample.al);
-            stop();
+            finish();
             throw std::runtime_error("command did not have matching valid feedback by the next tick");
         }
 #ifdef DCU_ONE_CYCLE_ENDURANCE
@@ -403,12 +469,12 @@ void run_one_cycle(ec_master_t *master, ec_slave_config_t *slave, unsigned mode,
 #endif
 #ifdef DCU_ONE_CYCLE_SOF_TRACE
         if (follow_hpm && !sample.servo_used) {
-            stop();
+            finish();
             throw std::runtime_error("lost same-frame HPM reference sample");
         }
 #endif
     }
-    stop();
+    finish();
 #ifdef DCU_ONE_CYCLE_ENDURANCE
     std::printf("ONE_CYCLE_ENDURANCE_COMPLETE commands=%zu misses=%u\n", trace.size(), misses);
     require(!misses, "completed observation with missed one-cycle deadlines");
@@ -420,7 +486,7 @@ void run(Ticket old, unsigned hold_cycles, std::chrono::microseconds period,
          std::chrono::microseconds spin, bool defer_dc_time, bool split_rx_timing, bool check_rx_switches,
          unsigned ack_lag_limit,
          std::string_view exit_mode, std::vector<TimingSample> &trace,
-         std::vector<one_cycle::Sample> &one_cycle_trace, bool follow_hpm)
+         std::vector<one_cycle::Sample> &one_cycle_trace, bool follow_hpm, one_cycle::CollectWait collect_mode)
 {
     std::unique_ptr<ec_master_t, decltype(&ecrt_release_master)> master(ecrt_request_master(0), ecrt_release_master);
     require(bool(master), "could not reserve IgH master");
@@ -449,7 +515,7 @@ void run(Ticket old, unsigned hold_cycles, std::chrono::microseconds period,
     auto *sc = ecrt_master_slave_config(master.get(), 0, 0, vendor, product);
     require(sc, "could not bind slave configuration");
     if (!one_cycle_trace.empty()) {
-        run_one_cycle(master.get(), sc, mode, lease, one_cycle_trace, follow_hpm);
+        run_one_cycle(master.get(), sc, mode, lease, one_cycle_trace, follow_hpm, collect_mode);
         return;
     }
     auto *domain = ecrt_master_create_domain(master.get());
@@ -665,7 +731,7 @@ int main(int argc, char **argv)
         std::chrono::microseconds period = default_period, spin{};
         bool defer_dc_time = false, split_rx_timing = false, check_rx_switches = false, strict_one_cycle = false;
         std::string_view exit_mode = "release";
-        std::string_view dc_mode;
+        std::string_view dc_mode, collect_wait;
         while (argc >= 3) {
             const auto option = std::string_view(argv[1]);
             if (option == "--hold-cycles")
@@ -694,6 +760,10 @@ int main(int argc, char **argv)
                 const auto value = number(argv[2]);
                 require(value <= 1, "check-rx-switches must be 0 or 1");
                 check_rx_switches = value;
+            } else if (option == "--collect-wait") {
+                require(collect_wait.empty(), "choose exactly one collect wait");
+                collect_wait = argv[2];
+                require(collect_wait == "legacy" || collect_wait == "absolute" || collect_wait == "early", "unknown collect wait");
             } else if (option == "--dc-mode") {
                 require(dc_mode.empty(), "choose exactly one DC mode");
                 dc_mode = argv[2];
@@ -711,7 +781,7 @@ int main(int argc, char **argv)
                 "usage: probe [--period-us N] [--hold-cycles N] [--ack-lag-cycles N] [--exit release|graceful|gap] "
                 "[--timing-file CSV] [--timing-cpu N] [--spin-us N] [--defer-dc-time 0|1] [--split-rx-timing 0|1] "
                 "[--check-rx-switches 0|1] [--one-cycle 0|1] [--dc-mode rk-reference|hpm-reference] "
-                "[OLD_EPOCH OLD_GENERATION OLD_CYCLE_SEQ]");
+                "[--collect-wait legacy|absolute|early] [OLD_EPOCH OLD_GENERATION OLD_CYCLE_SEQ]");
         require(period >= 1ms && period <= 5ms, "period must be 1000..5000 us");
         require(spin <= max_spin && (!spin.count() || timing_file), "spin requires timing mode and at most 50 us");
         require(!defer_dc_time || timing_file, "deferred DC time update requires timing mode");
@@ -719,6 +789,12 @@ int main(int argc, char **argv)
                 "split receive timing requires the original receive path and a timing file");
         require(!check_rx_switches || split_rx_timing, "thread switch check requires split receive timing");
         require(dc_mode.empty() || strict_one_cycle, "DC comparison requires the one-cycle probe");
+        require(collect_wait.empty() || strict_one_cycle, "collect wait requires the one-cycle probe");
+#ifndef DCU_ONE_CYCLE_COLLECT_TRACE
+        require(collect_wait.empty(), "collect wait requires DCU_ONE_CYCLE_COLLECT_TRACE");
+#endif
+        const auto collect_mode = collect_wait == "early" ? one_cycle::CollectWait::early :
+                                  collect_wait == "absolute" ? one_cycle::CollectWait::absolute : one_cycle::CollectWait::legacy;
         if (strict_one_cycle && dc_mode.empty()) dc_mode = "hpm-reference";
 #ifndef DCU_ONE_CYCLE_SOF_TRACE
         require(dc_mode != "hpm-reference", "following HPM requires a probe built with DCU_ONE_CYCLE_SOF_TRACE");
@@ -758,10 +834,24 @@ int main(int argc, char **argv)
                             static_cast<unsigned>(DCU_TX_PUBLISH_ADVANCE_US),
                             static_cast<unsigned>(DCU_TX_BUILD_BUDGET_US),
                             static_cast<unsigned long long>(one_cycle::sm3_prepare_ns / one_cycle::ns_per_us));
+#ifdef DCU_ONE_CYCLE_SM2_PREPARE_US
+            if (strict_one_cycle)
+                std::printf("SM2_TIMING prepare_us=%llu send_phase_us=0\n",
+                            static_cast<unsigned long long>(one_cycle::sm2_prepare_ns / one_cycle::ns_per_us));
+#endif
+#ifdef DCU_ONE_CYCLE_COLLECT_TRACE
+            if (strict_one_cycle) {
+                std::printf("COLLECT_TIMING wait=%s clock=monotonic\n", collect_wait.empty() ? "legacy" : collect_wait.data());
+                if (collect_mode == one_cycle::CollectWait::early)
+                    std::printf("COLLECT_PREWAKE wake_us=%llu gate_us=%llu\n",
+                                static_cast<unsigned long long>((one_cycle::collect_phase_ns - one_cycle::collect_advance_ns) / one_cycle::ns_per_us),
+                                static_cast<unsigned long long>(one_cycle::collect_phase_ns / one_cycle::ns_per_us));
+            }
+#endif
         }
         run(argc == 4 ? Ticket{number(argv[1]), number(argv[2]), number(argv[3])} : Ticket{},
             hold_cycles, period, spin, defer_dc_time, split_rx_timing, check_rx_switches, ack_lag_limit, exit_mode,
-            trace, one_cycle_trace, dc_mode == "hpm-reference");
+            trace, one_cycle_trace, dc_mode == "hpm-reference", collect_mode);
         if (timing_file) {
             const bool saved = strict_one_cycle ? write_one_cycle_timing(timing_file, one_cycle_trace) :
                                                   write_timing(timing_file, trace);

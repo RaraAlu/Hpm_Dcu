@@ -55,7 +55,10 @@ class EthercatDataTest(unittest.TestCase):
         bench = ("-DDCU_TX_PUBLISH_ADVANCE_US=399", "-DDCU_ONE_CYCLE_SYNC0_PHASE_US=255",
                  "-DDCU_ONE_CYCLE_SM3_READ_PHASE_US=870")
         prep = (*bench, "-DDCU_ONE_CYCLE_SM3_PREPARE_US=50")
-        for defines in ((), bench, prep, (*prep, "-DDCU_ONE_CYCLE_SOF_TRACE=1", "-DDCU_ONE_CYCLE_ENDURANCE=1")):
+        traced = (*prep, "-DDCU_ONE_CYCLE_SOF_TRACE=1", "-DDCU_ONE_CYCLE_ENDURANCE=1")
+        for defines in ((), bench, prep, traced, (*traced, "-DDCU_ONE_CYCLE_SM2_PREPARE_US=0"),
+                        (*traced, "-DDCU_ONE_CYCLE_SM2_PREPARE_US=50"),
+                        (*traced, "-DDCU_ONE_CYCLE_SM2_PREPARE_US=50", "-DDCU_ONE_CYCLE_COLLECT_TRACE=1")):
             with self.subTest(defines=defines):
                 subprocess.run([
                     cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic-errors", *defines,

@@ -36,6 +36,8 @@
 
 ## 条件与证据
 
+后续在不改 SM3 的情况下对 SM2 唤醒、准备和入队分别打点，见[SM2 提前准备与分段计时](单拍PDO主站SM2提前准备与分段计时.md)。新采样与本轮历史故障分开统计。
+
 - 1 kHz，RK 跟随 HPM；CPU6、FIFO 80、锁内存。SM2 784 B、SM3 1072 B；Sync0 +255 µs，SM3 在 +820 µs 开始准备、+870 µs 调用发送、+975 µs 起收取，MCU 的 600 µs 构建保护不变。启动前 CPU6 无其他可运行用户线程或可迁移设备 IRQ；临时亲和性已恢复。
 - 仅独立探针启用耐久记录：孤立无效回显计失败而不重发；SM2 WKC 异常、丢参考样本、从站不在 OP、未发出 SM3 或连续三次未按时确认则硬停。没有切生产 DriverModule；未接 CAN、未写 Profile、未改 PDO 布局。镜像和保留区在复位前已核对，未烧录；终态 IgH Idle、从站 PREOP、HPM 已暂停。SII 终检一致，启动日志保留，Profile 前后只读快照一致。
 - [逐拍汇总](../../artifacts/target/pdo-cpu6-prepare50-30min-20261119-6XioH2/summary.json) · [9 个未通过样本](../../artifacts/target/pdo-cpu6-prepare50-30min-20261119-6XioH2/misses.csv) · [主从联合故障快照](../../artifacts/target/pdo-cpu6-prepare50-30min-20261119-6XioH2/fault-window.json) · [时间标记与 IgH 原始日志](../../artifacts/target/pdo-cpu6-prepare50-30min-20261119-6XioH2/kernel-live.log) · [完整逐拍 CSV](../../artifacts/target/pdo-cpu6-prepare50-30min-20261119-6XioH2/hpm-reference-endurance.csv) · [历史 29:45 故障分析](2026-11-19-长测同步错误离线定位.md)。

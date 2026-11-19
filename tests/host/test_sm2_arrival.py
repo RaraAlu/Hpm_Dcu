@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "ethercat_data"))
 from summarize_sm2_arrival import joined, ring, sof_lead
 from summarize_probe_clock import capture_stats, sm3_comparison, sm3_segments_us, summarize
 from summarize_pdo_endurance import kernel_window, scan
+from summarize_sm2_send import sm2_segments
+from summarize_collect_timing import segments as collect_segments
 
 
 class ArrivalTest(unittest.TestCase):
@@ -25,6 +27,22 @@ class ArrivalTest(unittest.TestCase):
         self.assertEqual(self.lead(), 205_000)
         self.assertEqual(self.lead(dc_sof_ns=0), 155_000)
 
+    def test_collect_separates_late_entry_from_wait_and_checks_markers(self):
+        row = dict(due_ns=0, sent=7, ack=7, input_wkc=1, output_wkc=1, on_time=0,
+                   sm3_send_return_ns=872000, collect_wait_entry_ns=1001000, collect_wake_ns=1001300,
+                   first_receive_begin_ns=1001400, first_receive_end_ns=1002400, first_domain_end_ns=1003000,
+                   first_state_end_ns=1003700, last_state_end_ns=1003700, wkc_valid_ns=1003700,
+                   ack_checked_ns=1003800, match_ns=1003800, op_checked_ns=1004600, feedback_ns=1004800,
+                   receive_total_ns=1000, domain_total_ns=600, state_total_ns=700, collect_polls=1)
+        costs = collect_segments(row)
+        self.assertEqual((26000, 300, 26300), tuple(costs[k] for k in ("entry_late", "wait_overrun", "wait_return_late")))
+        self.assertEqual(sum(costs[k] for k in ("wake_to_receive", "receive", "domain", "wkc_query",
+                                               "retry_gaps", "ack_check", "op_check", "finalize")), costs["wake_to_verdict"])
+        for change in (dict(ack=6), dict(wkc_valid_ns=0), dict(receive_total_ns=0), dict(op_checked_ns=1002000)):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                collect_segments(dict(row, **change))
+        self.assertEqual(collect_segments(dict(row, ack=6, match_ns=0))["op_check"], 800)
+
     def test_sm3_only_attributes_measured_segments(self):
         row = {"due_ns": self.due, "read_ns": self.due + 906_000}
         self.assertEqual(sm3_segments_us(row, 870_000), {"plan_to_send_us": 36})
@@ -36,6 +54,20 @@ class ArrivalTest(unittest.TestCase):
         for stamp in (self.due+869_999, row["read_ns"]+1):
             with self.subTest(stamp=stamp), self.assertRaisesRegex(ValueError, "wait-return"):
                 sm3_segments_us({**row, "sm3_wait_return_ns": stamp}, 870_000)
+
+    def test_early_collect_does_not_count_spin_as_receive_or_accept_before_gate(self):
+        row = dict(due_ns=0, sent=1, ack=1, input_wkc=1, output_wkc=1, on_time=1,
+                   sm3_send_return_ns=872000, collect_wait_entry_ns=874000, collect_wake_ns=965000,
+                   first_receive_begin_ns=975100, first_receive_end_ns=979100, first_domain_end_ns=979400,
+                   first_state_end_ns=979700, last_state_end_ns=979700, wkc_valid_ns=979700,
+                   ack_checked_ns=979800, match_ns=979800, op_checked_ns=980100, feedback_ns=980200,
+                   receive_total_ns=4000, domain_total_ns=300, state_total_ns=300, collect_polls=1)
+        costs = collect_segments(row, 50000)
+        self.assertEqual((40000, 100, 5100), (costs["wait_return_late"], costs["gate_to_receive"], costs["receive_to_verdict"]))
+        with self.assertRaisesRegex(ValueError, "before"):
+            collect_segments(dict(row, first_receive_begin_ns=974999), 50000)
+        with self.assertRaisesRegex(ValueError, "unordered"):
+            collect_segments(row)
 
     def test_stale_or_unproven_frame_rejected(self):
         for change in ({"sm2_frames": 2}, {"sm2_frame_bytes": 80}, {"output_wkc": 0},
@@ -64,6 +96,25 @@ class ArrivalTest(unittest.TestCase):
                        sm3_send_return_ns=0, on_time=0, input_wkc=0)
         self.assertNotIn("plan_to_send_us", sm3_segments_us(skipped, 870_000, 50_000))
         self.assertEqual(sm3_comparison([skipped], 870_000, 50_000)["not_issued"], 1)
+
+    def test_sm2_separates_previous_work_wake_queue_and_send_gate(self):
+        due = self.due
+        pre = dict(due_ns=due, sm2_entry_ns=due-18000, sm2_wake_ns=due-17900,
+                   sm2_prepared_ns=due-17000, sm2_queued_ns=due-15000, write_ns=due+100,
+                   sm2_send_return_ns=due+2000, sm3_wait_return_ns=due+824000)
+        self.assertEqual(sm2_segments(pre, 50_000), dict(prior_work_past_plan=32000, dispatch=100,
+                         preparation=900, queue=2000, ready_headroom=15000, issue_after_ready_or_target=100, call_offset=100))
+        old = dict(pre, sm2_wake_ns=due+57831, sm2_prepared_ns=due+60831, sm2_queued_ns=due+62831,
+                   write_ns=due+62831, sm2_send_return_ns=due+64581)
+        self.assertEqual((sm2_segments(old, 0)["dispatch"], sm2_segments(old, 0)["queue"]), (57831, 2000))
+        for changed in (dict(write_ns=due-1000), dict(sm2_queued_ns=due+9000)):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                sm2_segments(dict(pre, **changed), 50_000)
+        expired = dict(pre, write_ns=due+255_000, sm2_send_return_ns=0,
+                       read_ns=0, sm3_send_return_ns=0, feedback_ns=0, on_time=0)
+        sm2_segments(expired, 50_000)
+        with self.assertRaisesRegex(ValueError, "flushed"):
+            sm2_segments(dict(expired, sm3_send_return_ns=due+873_000), 50_000)
 
     def test_sm3_only_run_keeps_strict_deadline_without_a_sync0_capture(self):
         with tempfile.TemporaryDirectory() as tmp:
