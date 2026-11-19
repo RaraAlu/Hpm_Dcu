@@ -1,0 +1,9 @@
+[cmake]
+profiles = [{ buildArgs = ["--preset", "hpm-debug"], buildDir = "build/hpm-debug", buildType = "debug", cmakeArgs = ["--preset", "hpm-debug"], env = {}, generator = "", name = "hpm-debug" }, { buildArgs = ["--preset", "hpm-release"], buildDir = "build/hpm-release", buildType = "release", cmakeArgs = ["--preset", "hpm-release"], env = {}, generator = "", name = "hpm-release" }]
+
+[languageServers.clangd]
+args = [
+    "--background-index",
+    "--header-insertion=never",
+    "--query-driver=**/.tools/hpm-gcc-13.2.0/bin/riscv32-unknown-elf-gcc,**/.tools/hpm-gcc-13.2.0/bin/riscv32-unknown-elf-g++",
+]
