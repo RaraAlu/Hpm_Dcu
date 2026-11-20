@@ -21,7 +21,7 @@ public:
     QuerySample query_sample(uint32_t now_ms) const override;
     void acknowledge_queries() override {}
     bool prepare_status_poll(uint32_t now_ms, StatusPoll &) override;
-    uint8_t max_rx_bytes() const override { return 16; }
+    uint8_t max_rx_bytes() const override;
     bool observe_status_reply(const CanFrame &, uint32_t stamp_ms, Feedback &, int32_t &, int32_t &) override;
 
 private:

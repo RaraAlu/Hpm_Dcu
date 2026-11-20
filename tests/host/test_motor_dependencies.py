@@ -6,14 +6,14 @@ ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = ROOT / "firmware"
 INCLUDE_ROOTS = tuple(FIRMWARE / path for path in (
     "app/gateway", "devices/motor", "devices/motor/drivers/encos", "devices/motor/drivers/bjcx",
-    "protocols/encos", "ports", "cfg", "comm/canfd",
+    "protocols/encos", "protocols/bjcx", "ports", "cfg", "comm/canfd",
 ))
 HEADERS = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
 
 
 class MotorDependenciesTest(unittest.TestCase):
     def test_business_device_and_codec_dependencies_have_explicit_direction(self):
-        for directory in ("app/gateway", "devices/motor", "protocols/encos"):
+        for directory in ("app/gateway", "devices/motor", "protocols/encos", "protocols/bjcx"):
             for path in (FIRMWARE / directory).rglob("*"):
                 suffixes = (".hpp", ".cpp") if directory == "app/gateway" else (".h", ".hpp", ".c", ".cpp")
                 if path.suffix not in suffixes:
@@ -29,6 +29,9 @@ class MotorDependenciesTest(unittest.TestCase):
                         allowed = relative.startswith(("ports/", "devices/motor/", "protocols/encos/"))
                         if directory == "devices/motor":
                             allowed |= relative in ("cfg/device_config.h", "comm/canfd/can_transport.h")
+                            allowed |= relative == "protocols/bjcx/bjcx_status.hpp"
+                        if directory == "protocols/bjcx":
+                            allowed = relative.startswith("protocols/bjcx/") or relative == "devices/motor/motor_driver.hpp"
                         if directory == "app/gateway":
                             allowed |= relative.startswith("app/gateway/") or relative in (
                                 "cfg/device_config.h", "cfg/cycle_config.h", "comm/canfd/can_transport.h",

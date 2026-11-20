@@ -182,7 +182,7 @@ class ProjectLayoutTest(unittest.TestCase):
     def test_axis_driver_and_protocol_types_are_not_ethercat_dtos(self):
         paths = list((ROOT / "firmware/devices/motor").rglob("*.hpp"))
         paths += list((ROOT / "firmware/devices/motor").rglob("*.cpp"))
-        paths += list((ROOT / "firmware/protocols/encos").rglob("*"))
+        paths += list((ROOT / "firmware/protocols").rglob("*"))
         for path in paths:
             if path.suffix not in (".h", ".hpp", ".c", ".cpp"):
                 continue

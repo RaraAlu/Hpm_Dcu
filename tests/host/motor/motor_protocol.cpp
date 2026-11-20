@@ -1,4 +1,5 @@
 #include "encos_motor.hpp"
+#include "bjcx_status.hpp"
 #include "encos_interface.h"
 
 #include <cstdio>
@@ -245,13 +246,47 @@ static bool floats()
     return true;
 }
 
+static bool bjcx_status()
+{
+    constexpr uint16_t id = 0x123;
+    const auto request = dcu::bjcx::status_request(id);
+    CHECK(request.id == id && request.flags == (DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS));
+    CHECK(request.dlc == 1 && request.data[0] == 0x17);
+
+    motor::CanFrame reply{id, 10, request.flags,
+        {0x80, 0x53, 0x45, 0x42, 0xb4, 0, 0, 0xc1, 0xf0, 0, 0, 0xff, 0x9c, 45, 51, 0}};
+    motor::Feedback out{};
+    CHECK(dcu::bjcx::decode_status_reply(id, reply, out));
+    CHECK(out.position_urad == 1570796 && out.velocity_urad_s == -3141593);
+    CHECK(out.current_cA == -100 && out.motor_temperature_deciC == -50 && out.mos_temperature_deciC == 10);
+    CHECK(out.motor_fault == 0x345 && out.valid_fields == (motor::Position | motor::Velocity |
+          motor::Current | motor::MotorTemperature | motor::MosTemperature));
+
+    reply.data[3] = 0x7f; reply.data[4] = 0xc0; // NaN affects only position.
+    CHECK(dcu::bjcx::decode_status_reply(id, reply, out));
+    CHECK(!(out.valid_fields & motor::Position) && (out.valid_fields & motor::Velocity) && out.motor_fault == 0x345);
+    reply.data[1] = 0x63;
+    CHECK(dcu::bjcx::decode_status_reply(id, reply, out));
+    CHECK(out.valid_fields == (motor::Current | motor::MotorTemperature | motor::MosTemperature));
+    for (unsigned error = 0; error < 4; ++error) {
+        auto bad = reply;
+        if (error == 0) ++bad.id;
+        if (error == 1) bad.flags = DCU_CAN_FLAG_FD;
+        if (error == 2) bad.dlc = 9;
+        if (error == 3) bad.data[0] = 0x17;
+        out.motor_fault = 0xabc;
+        CHECK(!dcu::bjcx::decode_status_reply(id, bad, out) && out.motor_fault == 0xabc);
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     const struct { const char *name; bool (*run)(); } cases[] = {
         {"abi", c_abi}, {"layout", layout}, {"profile", profile},
         {"commands", commands}, {"reject", rejected_commands},
         {"feedback", feedback}, {"parameters", parameters}, {"float", floats},
-        {"transactional", transactional_outputs}
+        {"transactional", transactional_outputs}, {"bjcx_status", bjcx_status}
     };
     if (argc != 2)
         return 2;

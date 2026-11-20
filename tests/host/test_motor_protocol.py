@@ -19,7 +19,7 @@ class MotorProtocolTest(unittest.TestCase):
         work = Path(directory.name)
         includes = (
             "firmware/cfg", "firmware/ports", "firmware/generated/encos",
-            "firmware/protocols/encos", "firmware/devices/motor",
+            "firmware/protocols/encos", "firmware/protocols/bjcx", "firmware/devices/motor",
         )
         flags = ["-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
@@ -35,6 +35,7 @@ class MotorProtocolTest(unittest.TestCase):
         cls.run_command([
             cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", *flags,
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
+            str(ROOT / "firmware/protocols/bjcx/bjcx_status.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_service.cpp"),
             str(ROOT / "tests/host/motor/motor_protocol.cpp"), *objects, "-lm",
             "-o", str(cls.executable),
@@ -63,6 +64,9 @@ class MotorProtocolTest(unittest.TestCase):
 
     def test_feedback_conversion(self):
         self.run_command([str(self.executable), "feedback"])
+
+    def test_bjcx_status_wire_and_partial_feedback(self):
+        self.run_command([str(self.executable), "bjcx_status"])
 
     def test_failed_motion_codec_outputs_are_not_committed(self):
         self.run_command([str(self.executable), "transactional"])

@@ -30,7 +30,7 @@ class DeviceAbstractionTest(unittest.TestCase):
             str(ROOT / "firmware/devices/imu/imu_device.cpp"), "-o", str(cls.core),
         ])
         for include in (
-            "firmware/cfg", "firmware/generated/encos", "firmware/protocols/encos",
+            "firmware/cfg", "firmware/generated/encos", "firmware/protocols/encos", "firmware/protocols/bjcx",
             "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx", "firmware/comm/canfd", "firmware/comm/ethercat",
         ):
             flags.extend(("-I", str(ROOT / include)))
@@ -44,6 +44,7 @@ class DeviceAbstractionTest(unittest.TestCase):
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_parameter_transactions.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver_binding.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
+            str(ROOT / "firmware/protocols/bjcx/bjcx_status.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_service.cpp"), "-lm", "-o", str(cls.adapter),
         ])
 

@@ -30,7 +30,7 @@ class MotorApplicationTest(unittest.TestCase):
             "tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
             "firmware/generated/encos", "firmware/generated/ethercat",
             "firmware/app", "firmware/app/gateway", "firmware/app/cycle",
-            "firmware/protocols/encos", "firmware/comm/canfd",
+            "firmware/protocols/encos", "firmware/protocols/bjcx", "firmware/comm/canfd",
             "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
             "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx",
         ):
@@ -80,6 +80,7 @@ class MotorApplicationTest(unittest.TestCase):
             str(ROOT / "firmware/comm/ethercat/motor_pdo.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_services.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
+            str(ROOT / "firmware/protocols/bjcx/bjcx_status.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_service.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),

@@ -22,11 +22,11 @@ class ApplicationCoreTest(unittest.TestCase):
             flags += ["-g", "-fsanitize=address,undefined,float-cast-overflow", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         # Compile the gateway application and motor devices without generated/EtherCAT/SSC/HPM/RTOS headers.
         for include in ("firmware/app/gateway", "firmware/comm/canfd", "firmware/devices/motor",
-                        "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx", "firmware/protocols/encos",
+                        "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx", "firmware/protocols/encos", "firmware/protocols/bjcx",
                         "firmware/cfg", "firmware/ports"):
             flags.extend(("-I", str(ROOT / include)))
         sources = [ROOT / "tests/host/motor/application_core_test.cpp"]
-        for directory in ("firmware/app/gateway", "firmware/devices/motor", "firmware/protocols/encos"):
+        for directory in ("firmware/app/gateway", "firmware/devices/motor", "firmware/protocols"):
             sources.extend(sorted((ROOT / directory).rglob("*.cpp")))
         readiness = Path(work.name) / "readiness.o"
         c_flags = [flag for flag in flags if flag not in ("-std=c++17", "-fno-exceptions", "-fno-rtti")]
