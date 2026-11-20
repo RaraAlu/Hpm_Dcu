@@ -3,8 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-
-enum { DCU_GATEWAY_DIGEST_BYTES = 32 };
+#include "readiness_profile.h"
 
 typedef enum {
     DCU_GATEWAY_BOOT = 0,
@@ -26,14 +25,6 @@ typedef enum {
     DCU_GATEWAY_REASON_BUSY,
     DCU_GATEWAY_REASON_COUNTER_EXHAUSTED,
 } dcu_gateway_reason_t;
-
-typedef struct {
-    uint32_t profile_id;
-    uint32_t revision;
-    uint8_t digest[DCU_GATEWAY_DIGEST_BYTES];
-    uint32_t readiness_ttl_ms;
-    uint32_t activation_wait_s; /* Only the explicit-session diagnostic uses this deadline. */
-} dcu_gateway_profile_t;
 
 typedef struct {
     dcu_gateway_state_t state;

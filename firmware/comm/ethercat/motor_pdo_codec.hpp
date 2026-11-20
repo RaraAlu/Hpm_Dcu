@@ -3,7 +3,7 @@
 
 #include <cstring>
 #include "motor_pdo_layout.hpp"
-#include "raw_can_gateway.hpp"
+#include "can/raw_can_gateway.hpp"
 #include "gateway_application.hpp"
 
 namespace dcu::ethercat::motor_pdo {

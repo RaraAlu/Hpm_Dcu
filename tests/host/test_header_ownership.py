@@ -13,19 +13,19 @@ PRIVATE_HEADERS = {
     "app/gateway/detail/gateway_application_impl.hpp": (
         "app/gateway/gateway_application.cpp", "app/gateway/gateway_publication.cpp",
     ),
-    "app/gateway/detail/can_transactions.hpp": (
-        "app/gateway/can_transactions.cpp", "app/gateway/detail/gateway_application_impl.hpp",
+    "app/gateway/can/detail/can_transactions.hpp": (
+        "app/gateway/can/can_transactions.cpp", "app/gateway/detail/gateway_application_impl.hpp",
     ),
-    "app/gateway/detail/production_startup.hpp": (
-        "app/gateway/production_startup.cpp", "app/gateway/detail/gateway_application_impl.hpp",
+    "app/gateway/startup/detail/production_startup.hpp": (
+        "app/gateway/startup/production_startup.cpp", "app/gateway/detail/gateway_application_impl.hpp",
     ),
-    "app/gateway/detail/raw_can_submit.hpp": "app/gateway/gateway_application.cpp",
+    "app/gateway/can/detail/raw_can_submit.hpp": "app/gateway/gateway_application.cpp",
     "devices/motor/drivers/encos/detail/encos_parameter_state.hpp": "devices/motor/drivers/encos/encos_parameter_transactions.cpp",
     "devices/motor/drivers/encos/detail/encos_session_state.hpp": "devices/motor/drivers/encos/encos_driver.hpp",
     "app/cycle/detail/ethercat_cycle_state.h": "app/cycle/ethercat_cycle.c",
     "app/cycle/detail/pdo_pipeline_slots.h": "app/cycle/pdo_pipeline.c",
     "app/runtime/detail/ethercat_can_task_state.h": "app/runtime/ethercat_can_task.c",
-    "app/gateway/detail/gateway_readiness_state.h": "app/gateway/gateway_readiness.c",
+    "app/gateway/startup/detail/gateway_readiness_state.h": "app/gateway/startup/gateway_readiness.c",
     "comm/ethercat/detail/motor_pdo_state.hpp": "comm/ethercat/motor_pdo.cpp",
     "comm/ethercat/detail/ethercat_dictionary_owner.h": "comm/ethercat/ethercat_callbacks.c",
     "comm/canfd/detail/can_gateway_state.h": "comm/canfd/hpm_mcan_transport.c",
@@ -61,20 +61,28 @@ class HeaderOwnershipTest(unittest.TestCase):
     def test_transport_wire_and_diagnostics_headers_need_no_hardware_or_rtos_stubs(self):
         includes = ("firmware/cfg", "firmware/ports", "firmware/comm/canfd", "firmware/comm/ethercat",
                     "firmware/generated/encos", "firmware/app/cycle", "firmware/app/runtime",
-                    "firmware/app/gateway")
+                    "firmware/app/gateway", "firmware/app/profile")
         headers = ("can_transport.h", "raw_can_pdo.h", "realtime_port.h",
-                   "ethercat_cycle.h", "ethercat_can_task.h", "gateway_readiness.h", "gateway_session.h")
+                   "ethercat_cycle.h", "ethercat_can_task.h", "startup/gateway_readiness.h", "startup/gateway_session.h")
         for compiler, language, standard in (("cc", "c", "c11"), ("c++", "c++", "c++17")):
             command = [compiler, "-x", language, f"-std={standard}", "-fsyntax-only",
                        "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
             for include in includes:
                 command.extend(("-I", str(ROOT / include)))
-            for header in (*headers, *(("motor_pdo_layout.hpp", "raw_can_gateway.hpp") if language == "c++" else ())):
+            for header in (*headers, *(("motor_pdo_layout.hpp", "can/raw_can_gateway.hpp") if language == "c++" else ())):
                 with self.subTest(language=language, header=header):
                     source = f'#include "{header}"\n#include "{header}"\nint main(void) {{ return 0; }}\n'
                     result = subprocess.run([*command, "-"], input=source, text=True,
                                             capture_output=True, timeout=30)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_production_profile_contract_needs_no_gateway(self):
+        includes = ("app/profile", "comm/canfd", "ports", "protocols/encos")
+        for compiler, language in (("cc", "c"), ("c++", "c++")):
+            with self.subTest(language=language):
+                subprocess.run([compiler, "-x", language, "-fsyntax-only",
+                                *(f"-I{FIRMWARE / path}" for path in includes), "-"],
+                               input='#include "production_profile.h"\n', text=True, check=True, timeout=30)
 
     def test_implementation_files_do_not_define_types_or_macros(self):
         declaration = re.compile(
@@ -131,7 +139,7 @@ class HeaderOwnershipTest(unittest.TestCase):
         motor_includes = (
             "tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
             "firmware/generated/encos", "firmware/generated/ethercat",
-            "firmware/app/gateway", "firmware/app/cycle", "firmware/protocols/encos",
+            "firmware/app/gateway", "firmware/app/profile", "firmware/app/cycle", "firmware/protocols/encos",
             "firmware/comm/canfd", "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
             "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx",
         )

@@ -29,7 +29,7 @@ class MotorApplicationTest(unittest.TestCase):
         for include in (
             "tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
             "firmware/generated/encos", "firmware/generated/ethercat",
-            "firmware/app", "firmware/app/gateway", "firmware/app/cycle",
+            "firmware/app", "firmware/app/gateway", "firmware/app/profile", "firmware/app/cycle",
             "firmware/protocols/encos", "firmware/protocols/bjcx", "firmware/comm/canfd",
             "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
             "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx",
@@ -43,11 +43,11 @@ class MotorApplicationTest(unittest.TestCase):
         fixture = work / "fixture.o"
         cls.run_command([
             cc, "-std=c11", *flags, "-Ddcu_production_profile=host_fixture_profile",
-            "-c", str(ROOT / "firmware/app/gateway/production_profile.c"), "-o", str(fixture),
+            "-c", str(ROOT / "firmware/app/profile/production_profile.c"), "-o", str(fixture),
         ])
         readiness = work / "readiness.o"
         cls.run_command([cc, "-std=c11", *flags, "-c",
-                         str(ROOT / "firmware/app/gateway/gateway_readiness.c"), "-o", str(readiness)])
+                         str(ROOT / "firmware/app/gateway/startup/gateway_readiness.c"), "-o", str(readiness)])
         mixed = work / "mixed.o"
         cls.run_command([
             sys.executable, str(ROOT / "tools/protocol/generate_can_profile.py"),
@@ -57,7 +57,7 @@ class MotorApplicationTest(unittest.TestCase):
         cls.run_command([
             cc, "-std=c11", "-I", str(work / "mixed"), *flags,
             "-Ddcu_production_profile=host_mixed_profile",
-            "-c", str(ROOT / "firmware/app/gateway/production_profile.c"), "-o", str(mixed),
+            "-c", str(ROOT / "firmware/app/profile/production_profile.c"), "-o", str(mixed),
         ])
         cls.executable = work / "motor_application"
         cls.run_command([
@@ -66,14 +66,14 @@ class MotorApplicationTest(unittest.TestCase):
             str(ROOT / "firmware/app/production_init.cpp"),
             str(ROOT / "firmware/app/gateway/gateway_application.cpp"),
             str(ROOT / "firmware/app/gateway/gateway_publication.cpp"),
-            str(ROOT / "firmware/app/gateway/production_startup.cpp"),
-            str(ROOT / "firmware/app/gateway/profile_update.cpp"),
-            str(ROOT / "firmware/app/gateway/can_transactions.cpp"),
+            str(ROOT / "firmware/app/gateway/startup/production_startup.cpp"),
+            str(ROOT / "firmware/app/gateway/policy/profile_update.cpp"),
+            str(ROOT / "firmware/app/gateway/can/can_transactions.cpp"),
             str(ROOT / "firmware/devices/motor/motor_instance.cpp"),
-            str(ROOT / "firmware/app/gateway/raw_can_gateway.cpp"),
+            str(ROOT / "firmware/app/gateway/can/raw_can_gateway.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver_binding.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_parameter_transactions.cpp"),
-            str(ROOT / "firmware/app/gateway/can_bus_scheduler.cpp"),
+            str(ROOT / "firmware/app/gateway/can/can_bus_scheduler.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_dictionary.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_coe.cpp"),
             str(ROOT / "firmware/comm/ethercat/motor_adapter.cpp"),

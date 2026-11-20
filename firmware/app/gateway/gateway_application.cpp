@@ -1,6 +1,6 @@
 #include "detail/gateway_application_impl.hpp"
-#include "detail/raw_can_submit.hpp"
-#include "cfg/gateway_schedule_policy.hpp"
+#include "can/detail/raw_can_submit.hpp"
+#include "can/cfg/gateway_schedule_policy.hpp"
 #include "motor_driver_binding.hpp"
 #include "can_transport.h"
 #include "realtime_port.h"

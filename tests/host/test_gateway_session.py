@@ -12,12 +12,14 @@ import tempfile
 import unittest
 from unittest import mock
 
-from test_static_gateway_profile import GATEWAY, ROOT, SDK, SSC, TARGET, dcu, header, load_yaml
+from test_static_gateway_profile import ROOT, SDK, SSC, TARGET, dcu, header, load_yaml
 from test_image_guard import make_elf
 from image_guard import FLASH_BASE, FLASH_SIZE, JOURNAL_SIZE, JOURNAL_START, RETAINED_START, RETAINED_SIZE
 from prepare_gateway_journal import prepare
 
 
+GATEWAY = ROOT / "firmware/app/gateway"
+IDENTITY = ROOT / "firmware/app/boot_identity"
 JOURNAL_BYTES = 8192
 SECTOR_BYTES = 4096
 PAGE_BYTES = 256
@@ -71,8 +73,8 @@ class JournalPreparationTest(unittest.TestCase):
     def test_reserved_layout_matches_firmware(self):
         board = (ROOT / "firmware/bsp/dcu_hpm5e31/board.h").read_text()
         ecat = (ROOT / "firmware/cfg/ecat_config.h").read_text()
-        port = (GATEWAY / "cfg/gateway_id_flash_config.h").read_text()
-        geometry = (GATEWAY / "cfg/gateway_id_journal_config.h").read_text()
+        port = (IDENTITY / "cfg/gateway_id_flash_config.h").read_text()
+        geometry = (IDENTITY / "cfg/gateway_id_journal_config.h").read_text()
 
         def hex_value(text, macro):
             return int(re.search(rf"#define\s+{macro}\s+\(?(0x[0-9a-fA-F]+)", text)[1], 16)
@@ -153,7 +155,7 @@ class GatewaySessionTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="dcu-gateway-session-")
         cls.addClassCleanup(directory.cleanup)
         work = Path(directory.name)
-        profile = GATEWAY / "cfg/单路内部回环配置.yaml"
+        profile = TARGET / "cfg/单路内部回环配置.yaml"
         subprocess.run([
             sys.executable, str(ROOT / "tools/protocol/generate_static_profile.py"),
             "--profile", str(profile), "--output", str(work / "dcu_static_profile_generated.h"),
@@ -162,7 +164,7 @@ class GatewaySessionTest(unittest.TestCase):
         cls.profile = load_yaml(profile)
         flags = ["cc", "-std=gnu11", "-ffunction-sections", "-fdata-sections",
                  "-DDCU_DATA_STATIC_PROFILE=1", "-DDCU_DATA_BACKEND_MCAN=1", "-DDCU_DATA_SESSION_GATE=1",
-                 *(f"-I{p}" for p in (work, GATEWAY, TARGET, ROOT / "firmware/ports"))]
+                 *(f"-I{p}" for p in (work, GATEWAY, IDENTITY, ROOT / "firmware/app/profile", TARGET, ROOT / "firmware/ports"))]
         mcan = work / "mcan.o"
         fake = work / "fake.o"
         host = ROOT / "tests/host/ethercat_data"
@@ -180,9 +182,8 @@ class GatewaySessionTest(unittest.TestCase):
             *flags, "-Wno-pointer-to-int-cast", *(f"-I{p}" for p in includes),
             str(TARGET / "ssc_app.c"), str(TARGET / "data_contract.c"), str(TARGET / "session_bridge.c"),
             str(SSC / "objdef.c"), str(mcan), str(fake), str(host / "test_session_gate.c"),
-            str(host / "session_id_file.c"),
-            *(str(GATEWAY / source) for source in (
-                "static_profile.c", "gateway_readiness.c", "gateway_task.c", "gateway_identity.c")),
+            str(host / "session_id_file.c"), str(TARGET / "static_profile.c"),
+            str(TARGET / "gateway_task.c"), str(GATEWAY / "startup/gateway_readiness.c"), str(IDENTITY / "gateway_identity.c"),
             "-Wl,--gc-sections,--wrap=OBJ_Write", "-o", str(cls.binary),
         ], check=True, timeout=30)
 

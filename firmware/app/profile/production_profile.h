@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include "can_transport.h"
 #include "encos_motor.h"
-#include "gateway_readiness.h"
+#include "readiness_profile.h"
 
 typedef struct {
     const char *id;

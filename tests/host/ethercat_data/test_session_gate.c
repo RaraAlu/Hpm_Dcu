@@ -2,7 +2,7 @@
 #include "ecatslv.h"
 #include "applInterface.h"
 #include "data_contract.h"
-#include "gateway_session.h"
+#include "startup/gateway_session.h"
 #include "mcan_echo.h"
 #include "session_bridge.h"
 #include "gateway_identity.h"

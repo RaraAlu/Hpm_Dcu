@@ -70,9 +70,9 @@ class ProjectLayoutTest(unittest.TestCase):
     def test_renamed_modules_have_no_retired_source_copies(self):
         modules = (
             ("firmware/app/gateway", "motor_application", "gateway_application", ("cpp", "hpp")),
-            ("firmware/app/gateway", "bus_scheduler", "can_bus_scheduler", ("cpp", "hpp")),
+            ("firmware/app/gateway/can", "bus_scheduler", "can_bus_scheduler", ("cpp", "hpp")),
             ("firmware/devices/motor/drivers/encos", "parameter_transactions", "encos_parameter_transactions", ("cpp", "hpp")),
-            ("firmware/app/gateway/cfg", "motor_policy", "gateway_schedule_policy", ("hpp",)),
+            ("firmware/app/gateway/can/cfg", "motor_policy", "gateway_schedule_policy", ("hpp",)),
             ("firmware/app/cycle", "cycle_runtime", "ethercat_cycle", ("c", "h")),
             ("firmware/app/cycle/cfg", "runtime_config", "ethercat_cycle_policy", ("h",)),
             ("firmware/app/runtime", "app_runtime", "ethercat_can_task", ("c", "h")),
@@ -126,7 +126,7 @@ class ProjectLayoutTest(unittest.TestCase):
     def test_raw_gateway_does_not_depend_on_axis_dictionary_or_pdo_parsing(self):
         for name in ("raw_can_gateway.hpp", "raw_can_gateway.cpp"):
             self.assertFalse((ROOT / "firmware/app/motor" / name).exists())
-            text = (ROOT / "firmware/app/gateway" / name).read_text()
+            text = (ROOT / "firmware/app/gateway/can" / name).read_text()
             with self.subTest(name=name):
                 for dependency in ("axis_controller.hpp", "motor_dictionary.hpp", "motor_pdo_codec.hpp",
                                    "encos_parameter_transactions.hpp", "AxisController", "mc_channel_config_t",

@@ -25,7 +25,7 @@ class RawCanGatewayTest(unittest.TestCase):
             flags.extend(("-I", str(ROOT / include)))
         cls.run_command([
             cxx, *flags, str(ROOT / "tests/host/raw_can/raw_can_gateway_test.cpp"),
-            str(ROOT / "firmware/app/gateway/raw_can_gateway.cpp"), "-o", str(cls.executable),
+            str(ROOT / "firmware/app/gateway/can/raw_can_gateway.cpp"), "-o", str(cls.executable),
         ])
 
     @staticmethod

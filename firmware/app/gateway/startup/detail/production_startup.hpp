@@ -1,7 +1,7 @@
 #ifndef DCU_PRODUCTION_STARTUP_HPP
 #define DCU_PRODUCTION_STARTUP_HPP
 
-#include "gateway_readiness.h"
+#include "startup/gateway_readiness.h"
 #include "device_config.h"
 
 namespace dcu::app::gateway_application::detail {

@@ -21,7 +21,7 @@ class ApplicationCoreTest(unittest.TestCase):
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             flags += ["-g", "-fsanitize=address,undefined,float-cast-overflow", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         # Compile the gateway application and motor devices without generated/EtherCAT/SSC/HPM/RTOS headers.
-        for include in ("firmware/app/gateway", "firmware/comm/canfd", "firmware/devices/motor",
+        for include in ("firmware/app/gateway", "firmware/app/profile", "firmware/comm/canfd", "firmware/devices/motor",
                         "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx", "firmware/protocols/encos", "firmware/protocols/bjcx",
                         "firmware/cfg", "firmware/ports"):
             flags.extend(("-I", str(ROOT / include)))
@@ -31,7 +31,7 @@ class ApplicationCoreTest(unittest.TestCase):
         readiness = Path(work.name) / "readiness.o"
         c_flags = [flag for flag in flags if flag not in ("-std=c++17", "-fno-exceptions", "-fno-rtti")]
         cls.run_command(["cc", "-std=c11", *c_flags, "-c",
-                         str(ROOT / "firmware/app/gateway/gateway_readiness.c"), "-o", str(readiness)])
+                         str(ROOT / "firmware/app/gateway/startup/gateway_readiness.c"), "-o", str(readiness)])
         cls.run_command([cxx, *flags, str(readiness), *(str(source) for source in sources), "-o", str(cls.executable)])
 
     @staticmethod

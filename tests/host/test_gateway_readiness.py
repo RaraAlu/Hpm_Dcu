@@ -24,7 +24,7 @@ class GatewayReadinessTest(unittest.TestCase):
             flags = ["-O1", "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-no-pie"]
         cls.run_checked([
             cc, "-std=c11", *flags, "-Wall", "-Wextra", "-Werror", "-pedantic-errors",
-            "-I", str(CORE), str(CORE / "gateway_readiness.c"), str(SUITE), "-o", str(cls.runner),
+            "-I", str(CORE), "-I", str(ROOT / "firmware/app/profile"), str(CORE / "startup/gateway_readiness.c"), str(SUITE), "-o", str(cls.runner),
         ])
 
     @staticmethod

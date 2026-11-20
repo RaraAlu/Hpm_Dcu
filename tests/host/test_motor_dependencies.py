@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = ROOT / "firmware"
 INCLUDE_ROOTS = tuple(FIRMWARE / path for path in (
-    "app/gateway", "devices/motor", "devices/motor/drivers/encos", "devices/motor/drivers/bjcx",
+    "app/gateway", "app/profile", "devices/motor", "devices/motor/drivers/encos", "devices/motor/drivers/bjcx",
     "protocols/encos", "protocols/bjcx", "ports", "cfg", "comm/canfd",
 ))
 HEADERS = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
@@ -34,7 +34,7 @@ class MotorDependenciesTest(unittest.TestCase):
                             allowed = relative.startswith("protocols/bjcx/") or relative == "devices/motor/motor_driver.hpp"
                         if directory == "app/gateway":
                             allowed |= relative.startswith("app/gateway/") or relative in (
-                                "cfg/device_config.h", "cfg/cycle_config.h", "comm/canfd/can_transport.h",
+                                "app/profile/production_profile.h", "cfg/device_config.h", "cfg/cycle_config.h", "comm/canfd/can_transport.h",
                             )
                         self.assertTrue(allowed, f"Dependency crosses ownership: {path}: {relative}")
 

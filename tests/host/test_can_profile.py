@@ -10,7 +10,7 @@ from generate_can_profile import header, load_yaml
 
 class CanProfileTest(unittest.TestCase):
     def setUp(self):
-        self.profile = load_yaml(ROOT / "firmware/app/gateway/cfg/生产CAN配置.yaml")
+        self.profile = load_yaml(ROOT / "firmware/app/profile/cfg/生产CAN配置.yaml")
 
     def test_single_bus_is_encoded_without_a_default_entry(self):
         self.assertEqual(self.profile["channels"][0]["bus"], 2)

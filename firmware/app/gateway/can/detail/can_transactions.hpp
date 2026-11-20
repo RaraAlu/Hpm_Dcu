@@ -1,7 +1,7 @@
 #ifndef DCU_GATEWAY_CAN_TRANSACTIONS_HPP
 #define DCU_GATEWAY_CAN_TRANSACTIONS_HPP
 
-#include "can_bus_scheduler.hpp"
+#include "can/can_bus_scheduler.hpp"
 #include "gateway_application.hpp"
 #include "motor_instance.hpp"
 

@@ -1,6 +1,6 @@
-sdk_inc(cycle runtime gateway)
+sdk_inc(cycle runtime gateway profile boot_identity)
 set(_tools "${PROJECT_SOURCE_DIR}/tools/protocol")
-set(DCU_CAN_PROFILE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/gateway/cfg/生产CAN配置.yaml"
+set(DCU_CAN_PROFILE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/profile/cfg/生产CAN配置.yaml"
     CACHE FILEPATH "Production CAN Profile YAML")
 set(_can_profile_header "${CMAKE_CURRENT_BINARY_DIR}/dcu_can_profile_generated.h")
 add_custom_command(OUTPUT "${_can_profile_header}"
@@ -18,15 +18,15 @@ sdk_src(
     production_init.cpp
     gateway/gateway_application.cpp
     gateway/gateway_publication.cpp
-    gateway/can_bus_scheduler.cpp
-    gateway/can_transactions.cpp
-    gateway/raw_can_gateway.cpp
-    gateway/production_profile.c
-    gateway/production_startup.cpp
-    gateway/profile_update.cpp
-    gateway/gateway_readiness.c
-    gateway/gateway_identity.c
-    gateway/port/gateway_id_flash.c
+    gateway/can/can_bus_scheduler.cpp
+    gateway/can/can_transactions.cpp
+    gateway/can/raw_can_gateway.cpp
+    profile/production_profile.c
+    gateway/startup/production_startup.cpp
+    gateway/policy/profile_update.cpp
+    gateway/startup/gateway_readiness.c
+    boot_identity/gateway_identity.c
+    boot_identity/port/gateway_id_flash.c
 )
 sdk_src(cycle/pdo_pipeline.c cycle/ethercat_cycle.c)
 option(CONFIG_PDO_PHASE_TRACE "Trace PDO phase boundaries by command sequence" OFF)

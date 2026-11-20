@@ -1,9 +1,9 @@
 #ifndef DCU_RAW_CAN_SUBMIT_HPP
 #define DCU_RAW_CAN_SUBMIT_HPP
 
-#include "can_bus_scheduler.hpp"
+#include "can/can_bus_scheduler.hpp"
 #include "can_transport.h"
-#include "raw_can_gateway.hpp"
+#include "can/raw_can_gateway.hpp"
 
 namespace dcu::app::gateway_application::detail {
 

@@ -10,7 +10,6 @@ from unittest import mock
 
 from test_ethercat_data import ROOT, SDK, SSC, TARGET, dcu
 
-GATEWAY = ROOT / "firmware/app/gateway"
 ALTERNATE = Path(__file__).parent / "gateway/alternate_static_profile.yaml"
 sys.path.insert(0, str(ROOT / "tools/protocol"))
 from generate_static_profile import header, load_yaml, validate
@@ -66,9 +65,9 @@ class StaticGatewayProfileTest(unittest.TestCase):
         subprocess.run([
             "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors",
             "-DDCU_DATA_STATIC_PROFILE=1", "-DDCU_DATA_BACKEND_MCAN=1", "-DTEST_ALTERNATE_PROFILE=1",
-            *(f"-I{p}" for p in (self.directory, TARGET, GATEWAY, ROOT / "firmware/ports",
+            *(f"-I{p}" for p in (self.directory, TARGET, ROOT / "firmware/ports",
                                   ROOT / "tests/host/can_loopback/stubs")),
-            str(TARGET / "data_contract.c"), str(TARGET / "mcan_echo.c"), str(GATEWAY / "static_profile.c"),
+            str(TARGET / "data_contract.c"), str(TARGET / "mcan_echo.c"), str(TARGET / "static_profile.c"),
             str(ROOT / "tests/host/ethercat_data/test_mcan_echo.c"), "-o", str(runner),
         ], check=True, timeout=30)
         for scenario in ("exchange", "bad_id", "leave_op", "no_tx"):

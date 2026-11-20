@@ -1,7 +1,7 @@
 #ifndef DCU_GATEWAY_TASK_H
 #define DCU_GATEWAY_TASK_H
 
-#include "gateway_session.h"
+#include "startup/gateway_session.h"
 #include <stddef.h>
 
 typedef struct {

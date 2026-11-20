@@ -1,4 +1,4 @@
-#include "gateway_session.h"
+#include "startup/gateway_session.h"
 
 #include <assert.h>
 #include <stdio.h>

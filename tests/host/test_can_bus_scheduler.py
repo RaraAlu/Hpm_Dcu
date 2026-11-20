@@ -20,7 +20,7 @@ class CanBusSchedulerTest(unittest.TestCase):
             compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors",
             "-I", str(ROOT / "firmware/app/gateway"), "-I", str(ROOT / "firmware/cfg"),
             str(ROOT / "tests/host/motor/can_bus_scheduler_test.cpp"),
-            str(ROOT / "firmware/app/gateway/can_bus_scheduler.cpp"), "-o", str(cls.executable),
+            str(ROOT / "firmware/app/gateway/can/can_bus_scheduler.cpp"), "-o", str(cls.executable),
         ])
 
     @staticmethod

@@ -6,9 +6,10 @@
 #include "device_config.h"
 #include "can_frame.h"
 #include "motor_result.hpp"
-#include "raw_can_gateway.hpp"
+#include "can/raw_can_gateway.hpp"
 #include "production_profile.h"
-#include "profile_update.hpp"
+#include "startup/gateway_readiness.h"
+#include "policy/profile_update.hpp"
 
 namespace dcu::app::gateway_application {
 

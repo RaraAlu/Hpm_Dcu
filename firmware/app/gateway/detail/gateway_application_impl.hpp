@@ -2,12 +2,12 @@
 #define DCU_GATEWAY_APPLICATION_IMPL_HPP
 
 #include "motor_instance.hpp"
-#include "can_bus_scheduler.hpp"
+#include "can/can_bus_scheduler.hpp"
 #include "gateway_application.hpp"
 #include "gateway_configuration.hpp"
-#include "can_transactions.hpp"
-#include "production_startup.hpp"
-#include "raw_can_gateway.hpp"
+#include "can/detail/can_transactions.hpp"
+#include "startup/detail/production_startup.hpp"
+#include "can/raw_can_gateway.hpp"
 #include <cstdint>
 
 namespace dcu::app::gateway_application::detail {
