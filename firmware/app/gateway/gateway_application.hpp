@@ -2,13 +2,12 @@
 #define DCU_GATEWAY_APPLICATION_HPP
 
 #include <cstdint>
-#include "motor_driver_binding.hpp"
 #include "motor_feedback.hpp"
 #include "device_config.h"
 #include "can_frame.h"
 #include "motor_result.hpp"
 #include "raw_can_gateway.hpp"
-#include "gateway_readiness.h"
+#include "production_profile.h"
 #include "profile_update.hpp"
 
 namespace dcu::app::gateway_application {
@@ -16,19 +15,10 @@ namespace dcu::app::gateway_application {
 enum class OperatingMode : uint8_t { Motor, MotorWithRaw, Raw };
 enum Owner : uint8_t { OWNER_NONE, OWNER_PDO, OWNER_SDO };
 
-struct BoardConfiguration {
-    uint16_t max_command_lease_ms{}, feedback_timeout_ms{};
-};
 struct ChannelConfiguration {
     uint8_t role{}, frame_format{};
     uint16_t raw_rate_limit{};
     bool enabled{};
-};
-struct Configuration {
-    BoardConfiguration board{};
-    ChannelConfiguration channels[DCU_DEVICE_CAN_BUS_COUNT]{};
-    motor::MotorConfiguration devices[DCU_MOTOR_DEVICE_CAPACITY]{};
-    unsigned device_count{};
 };
 struct BoardCommand {
     uint32_t sequence{}, enabled_devices{};
@@ -93,7 +83,8 @@ struct Publication {
 };
 
 // One task owns all operations. Inputs are borrowed only for the duration of a call.
-bool initialize(const Configuration &profile);
+bool initialize_profile(const dcu_production_profile_t &profile);
+ChannelConfiguration channel_configuration(unsigned bus);
 bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id);
 bool startup_enabled();
 dcu::app::profile_update::Policy profile_policy();

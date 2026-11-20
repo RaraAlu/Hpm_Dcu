@@ -43,6 +43,9 @@ class ApplicationCoreTest(unittest.TestCase):
     def test_configuration_validation_and_mode_admission_need_no_dictionary(self):
         self.run_command([str(self.executable), "configuration"])
 
+    def test_production_profile_binds_drivers_on_applied_buses_without_ethercat(self):
+        self.run_command([str(self.executable), "production_profile"])
+
     def test_native_motion_and_publication_keep_stop_priority_and_private_state(self):
         self.run_command([str(self.executable), "stop"])
 

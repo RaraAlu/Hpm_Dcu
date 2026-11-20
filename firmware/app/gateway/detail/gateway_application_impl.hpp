@@ -4,6 +4,7 @@
 #include "motor_instance.hpp"
 #include "can_bus_scheduler.hpp"
 #include "gateway_application.hpp"
+#include "gateway_configuration.hpp"
 #include "can_transactions.hpp"
 #include "production_startup.hpp"
 #include "raw_can_gateway.hpp"
@@ -15,6 +16,9 @@ namespace dcu::app::gateway_application::detail {
 class GatewayApplication {
 public:
     bool initialize(const Configuration &profile);
+    ChannelConfiguration channel_configuration(unsigned bus) const {
+        return bus < DCU_DEVICE_CAN_BUS_COUNT ? state_.channels[bus] : ChannelConfiguration{};
+    }
     bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id);
     bool startup_enabled() const { return startup_.enforced(); }
     dcu_gateway_readiness_t readiness() const { return startup_.status(); }

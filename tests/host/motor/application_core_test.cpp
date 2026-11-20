@@ -1,4 +1,5 @@
 #include "gateway_application.hpp"
+#include "detail/gateway_configuration.hpp"
 #include "encos_parameter_transactions.hpp"
 #include "can_transport.h"
 #include "realtime_port.h"
@@ -22,7 +23,20 @@ static std::deque<dcu_can_frame_t> received[ENCOS_CHANNEL_COUNT];
 static std::vector<std::pair<unsigned, dcu_can_frame_t>> sent;
 static std::deque<dcu_can_tx_event_t> tx_events[ENCOS_CHANNEL_COUNT];
 static dcu_can_tx_id_t tx_serial;
+static const dcu_can_channel_config_t applied_channels[] = {
+    {2, 1000000, 5000000, true}, {0, 1000000, 0, false},
+};
+static const dcu_motor_device_profile_t classic_motor{
+    "test_motor", 0, 1, 0x8000, 0, -10000000, 10000000, 20000000, 10000, 100,
+    {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0}, 0, 0,
+};
 
+const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus)
+{
+    for (const auto &channel : applied_channels)
+        if (channel.bus == bus) return &channel;
+    return nullptr;
+}
 uint32_t dcu_time_now_ms(void) { return now_ms; }
 uint32_t dcu_time_now_us(void) { return now_us; }
 uint16_t dcu_can_bus_state(uint32_t) { return DCU_CAN_BUS_ERROR_ACTIVE; }
@@ -54,20 +68,15 @@ bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stamp)
     return true;
 }
 
-static app::Configuration configuration(bool motor_axis = true)
+static app::detail::Configuration configuration(bool motor_axis = true)
 {
-    app::Configuration config{};
+    app::detail::Configuration config{};
     config.board = {10, 20};
     config.device_count = motor_axis ? 1 : 0;
     for (auto &channel : config.channels)
         channel = {0, 0, 2, true};
-    if (motor_axis) {
-        config.channels[0].role = 1;
-        auto &axis = config.devices[0];
-        axis.route = {1, -10000000, 10000000, 20000000, 10000, 100};
-        axis.encos = {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0};
-        axis.model_profile_id = 0x8000;
-    }
+    if (motor_axis) config.channels[0].role = 1;
+    config.devices = motor_axis ? &classic_motor : nullptr;
     return config;
 }
 
@@ -91,10 +100,10 @@ static app::ProcessResult tick(app::CycleCommand *command = nullptr, uint32_t de
     return app::process(command);
 }
 
-static void initialize_core(const app::Configuration &config, app::OperatingMode mode = app::OperatingMode::Motor)
+static void initialize_core(const app::detail::Configuration &config, app::OperatingMode mode = app::OperatingMode::Motor)
 {
     parameters::initialize({});
-    CHECK(app::initialize(config));
+    CHECK(app::detail::initialize_fixture(config));
     CHECK(app::select_mode(mode));
 }
 
@@ -161,6 +170,8 @@ static void configuration_values()
     const auto valid = configuration();
     for (unsigned i = 0; i < 10; ++i) {
         auto invalid = valid;
+        dcu_motor_device_profile_t devices[]{classic_motor, classic_motor};
+        invalid.devices = devices;
         switch (i) {
         case 0: invalid.device_count = DCU_MOTOR_DEVICE_CAPACITY + 1; break;
         case 1: invalid.board.max_command_lease_ms = 1; break;
@@ -169,14 +180,11 @@ static void configuration_values()
         case 4: invalid.channels[0].frame_format = 2; break;
         case 5: invalid.channels[0].enabled = false; break;
         case 6: invalid.channels[0].raw_rate_limit = 9; break;
-        case 7: invalid.devices[0].bus = DCU_DEVICE_CAN_BUS_COUNT; break;
-        case 8: invalid.devices[0].route.current_limit_dA = 65536 + 100; break;
-        case 9:
-            invalid.device_count = 2;
-            invalid.devices[1] = invalid.devices[0];
-            break;
+        case 7: devices[0].bus = DCU_DEVICE_CAN_BUS_COUNT; break;
+        case 8: devices[0].current_limit_dA = 65536 + 100; break;
+        case 9: invalid.device_count = 2; break;
         }
-        CHECK(!app::initialize(invalid));
+        CHECK(!app::detail::initialize_fixture(invalid));
     }
     initialize_core(valid);
     CHECK(app::preop_access_allowed());
@@ -185,9 +193,63 @@ static void configuration_values()
     CHECK(!app::set_owner(static_cast<app::Owner>(3)));
     auto command = cycle_command();
     begin_session(command, app::OWNER_PDO);
-    CHECK(!app::preop_access_allowed() && !app::initialize(valid));
+    CHECK(!app::preop_access_allowed() && !app::detail::initialize_fixture(valid));
     CHECK(!app::select_mode(app::OperatingMode::MotorWithRaw));
     CHECK(app::select_mode(app::OperatingMode::Motor));
+}
+
+static dcu_motor_device_profile_t cih408_on_bus2()
+{
+    dcu_motor_device_profile_t status_motor{};
+    status_motor.bus = 2;
+    status_motor.can_id = classic_motor.can_id;
+    status_motor.model_profile_id = 0x8101;
+    status_motor.status_poll_period_ms = 100;
+    status_motor.status_reply_timeout_ms = 10;
+    return status_motor;
+}
+
+static void production_profile()
+{
+    const auto status_motor = cih408_on_bus2();
+    dcu_motor_device_profile_t devices[]{status_motor, classic_motor};
+    const dcu_production_profile_t valid{applied_channels, 2, devices, 2, 8, 15, {}};
+    for (unsigned i = 0; i < 11; ++i) {
+        auto invalid = valid;
+        dcu_can_channel_config_t channels[]{applied_channels[0], applied_channels[1]};
+        invalid.channels = channels;
+        auto bad_device = status_motor;
+        invalid.devices = &bad_device;
+        invalid.device_count = 1;
+        switch (i) {
+        case 0: invalid.channels = nullptr; break;
+        case 1: invalid.channel_count = 0; break;
+        case 2: invalid.channel_count = DCU_DEVICE_CAN_BUS_COUNT + 1; break;
+        case 3: channels[0].bus = DCU_DEVICE_CAN_BUS_COUNT; break;
+        case 4: channels[1] = channels[0]; break;
+        case 5: channels[0].bus = 1; break; // Not applied to CAN.
+        case 6: channels[0].fd = false; break;
+        case 7: ++channels[0].data_bitrate_bps; break;
+        case 8: invalid.devices = nullptr; break;
+        case 9: bad_device.bus = 1; break;
+        case 10: bad_device.status_reply_timeout_ms = 0; break;
+        }
+        CHECK(!app::initialize_profile(invalid));
+        CHECK(!app::channel_configuration(2).enabled && sent.empty());
+    }
+    parameters::initialize({});
+    CHECK(app::initialize_profile(valid) && !app::initialize_profile(valid));
+    CHECK(app::profile_policy().max_command_lease_ms == 8 && app::profile_policy().feedback_timeout_ms == 15);
+    CHECK(app::channel_configuration(2).role == 1 && app::channel_configuration(2).frame_format == 1);
+    CHECK(app::channel_configuration(0).role == 1 && app::channel_configuration(0).frame_format == 0);
+    CHECK(!app::channel_configuration(1).enabled && !app::channel_configuration(3).enabled && sent.empty());
+    CHECK(app::set_owner(app::OWNER_SDO));
+    CHECK(!app::read_parameter(0, {1, 0, 0x101}, now_ms, true).accepted);
+    CHECK(app::read_parameter(1, {1, 0, 0x101}, now_ms, true).accepted);
+    tick();
+    CHECK(sent.size() == 2);
+    CHECK(sent[0].first == 0 && sent[0].second.id == classic_motor.can_id && sent[0].second.dlc == 2);
+    CHECK(sent[1].first == 2 && sent[1].second.id == status_motor.can_id && sent[1].second.data[0] == 0x17);
 }
 
 static void stop_and_snapshots()
@@ -311,6 +373,7 @@ int main(int argc, char **argv)
 {
     CHECK(argc == 2);
     if (!std::strcmp(argv[1], "configuration")) configuration_values();
+    else if (!std::strcmp(argv[1], "production_profile")) production_profile();
     else if (!std::strcmp(argv[1], "stop")) stop_and_snapshots();
     else if (!std::strcmp(argv[1], "sdo")) sdo_sequence();
     else if (!std::strcmp(argv[1], "owner")) ownership();

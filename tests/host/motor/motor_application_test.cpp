@@ -6,7 +6,9 @@
 #include <tuple>
 #include <vector>
 #include "gateway_application.hpp"
+#include "detail/gateway_configuration.hpp"
 #include "motor_instance.hpp"
+#include "motor_driver_binding.hpp"
 #include "raw_can_gateway.hpp"
 #include "detail/raw_can_submit.hpp"
 #include "cfg/gateway_schedule_policy.hpp"
@@ -17,6 +19,7 @@
 #include "motor_axis_codec.hpp"
 #include "motor_adapter.hpp"
 #include "motor_ethercat.h"
+#include "production_init.h"
 #include "can_transport.h"
 #include "realtime_port.h"
 extern "C" {
@@ -803,11 +806,15 @@ int main(int argc, char **argv)
     if (!std::strcmp(argv[1], "cross_bus_device_mapping")) {
         two_bus_devices[0] = test_device;
         two_bus_devices[0].id = "first_in_profile";
-        two_bus_devices[0].bus = 1;
-        two_bus_devices[1] = test_device; // Same CAN ID, but on bus 0 and second in the Profile.
+        two_bus_devices[1] = test_device;
         test_profile.devices = two_bus_devices;
         test_profile.device_count = 2;
+        CHECK(!motor_control_init()); // Duplicate on the same bus: do not publish even the first slot.
+        CHECK(!adapter::configured_device(0) && !object<mc_board_config_t>(0x2001)->AxisConfiguredMask);
+        CHECK(sent.empty());
+        two_bus_devices[0].bus = 1; // The same CAN ID on two physical buses is valid.
         CHECK(motor_control_init());
+        CHECK(!motor_control_init());
         CHECK(adapter::device_for_slot(7) == 0 && adapter::device_for_slot(0) == 1);
         CHECK(adapter::slot_for_device(0) == 7 && adapter::slot_for_device(1) == 0);
         select_owner(OWNER_SDO);
@@ -878,11 +885,11 @@ int main(int argc, char **argv)
                              !std::strncmp(argv[1], "raw_large_", 10);
     if (raw_fixture) {
         // Exercise generic Raw CAN mechanics without giving the production Profile a Raw writer.
-        Configuration config{};
+        dcu::app::gateway_application::detail::Configuration config{};
         config.board = {10, 20};
         for (auto &channel : config.channels) channel = {2, 0, 8, true};
         parameters::initialize({});
-        CHECK(initialize(config));
+        CHECK(dcu::app::gateway_application::detail::initialize_fixture(config));
         CHECK(motor_pdo::bind_publication());
     } else {
         if (!std::strcmp(argv[1], "profiles") || !std::strcmp(argv[1], "latched_layouts") ||

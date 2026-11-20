@@ -29,7 +29,7 @@ class MotorApplicationTest(unittest.TestCase):
         for include in (
             "tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
             "firmware/generated/encos", "firmware/generated/ethercat",
-            "firmware/app/gateway", "firmware/app/cycle",
+            "firmware/app", "firmware/app/gateway", "firmware/app/cycle",
             "firmware/protocols/encos", "firmware/comm/canfd",
             "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
             "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408",
@@ -63,6 +63,7 @@ class MotorApplicationTest(unittest.TestCase):
         cls.run_command([
             cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", *flags,
             str(ROOT / "tests/host/motor/motor_application_test.cpp"),
+            str(ROOT / "firmware/app/production_init.cpp"),
             str(ROOT / "firmware/app/gateway/gateway_application.cpp"),
             str(ROOT / "firmware/app/gateway/gateway_publication.cpp"),
             str(ROOT / "firmware/app/gateway/production_startup.cpp"),

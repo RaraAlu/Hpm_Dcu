@@ -16,52 +16,30 @@ namespace layout = dcu::ethercat::pdo_layout;
 using namespace dcu::ethercat::motor_dictionary;
 
 namespace {
-// Task-owned scratch keeps full configuration/publication values off the 8 KiB task stack.
-application::Configuration configuration;
 const dcu_motor_device_profile_t *slot_profiles[ENCOS_AXIS_COUNT];
-const dcu_motor_device_profile_t *profile_devices;
+const dcu_production_profile_t *bound_profile;
 uint8_t device_slots[DCU_MOTOR_DEVICE_CAPACITY];
 unsigned device_count;
 uint32_t configured_slots;
 uint8_t configured_motors[ENCOS_CHANNEL_COUNT];
 adapter::detail::InputState input;
-bool bind_profile(const dcu_production_profile_t &profile)
+bool bind_slots(const dcu_production_profile_t &profile)
 {
-    if (profile.device_count > ENCOS_AXIS_COUNT || (profile.device_count && !profile.devices)) return false;
-    configuration.board = {profile.max_command_lease_ms, profile.feedback_timeout_ms};
-    configuration.device_count = profile.device_count;
-    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
-        const auto *active = dcu_can_channel_config(c);
-        configuration.channels[c] = {};
-        configuration.channels[c].enabled = active != nullptr;
-        configuration.channels[c].frame_format = active && active->fd;
-    }
+    if (bound_profile || profile.device_count > DCU_MOTOR_DEVICE_CAPACITY || profile.device_count > ENCOS_AXIS_COUNT ||
+        (profile.device_count && !profile.devices)) return false;
     uint8_t counts[ENCOS_CHANNEL_COUNT]{};
     uint8_t slots[DCU_MOTOR_DEVICE_CAPACITY]{};
     for (size_t i = 0; i < profile.device_count; ++i) {
-        const auto &device = profile.devices[i];
-        const unsigned bus = device.bus;
-        if (bus >= ENCOS_CHANNEL_COUNT || !configuration.channels[bus].enabled ||
-            counts[bus] >= ENCOS_MOTORS_PER_CHANNEL) return false;
+        const unsigned bus = profile.devices[i].bus;
+        if (bus >= ENCOS_CHANNEL_COUNT || counts[bus] >= ENCOS_MOTORS_PER_CHANNEL) return false;
         slots[i] = bus * ENCOS_MOTORS_PER_CHANNEL + counts[bus]++;
-        configuration.channels[bus].role = 1;
-        auto &motor = configuration.devices[i];
-        motor.route = {device.can_id, device.position_min_urad, device.position_max_urad,
-                       device.velocity_limit_urad_s, device.torque_limit_mNm, device.current_limit_dA};
-        motor.model_profile_id = device.model_profile_id;
-        motor.power_query_period_ms = device.power_query_period_ms;
-        motor.encos = device.encos;
-        motor.bus = bus;
-        motor.status_poll_period_ms = device.status_poll_period_ms;
-        motor.status_reply_timeout_ms = device.status_reply_timeout_ms;
     }
-    if (!application::initialize(configuration)) return false;
-    profile_devices = profile.devices;
+    bound_profile = &profile;
     device_count = profile.device_count;
     for (size_t i = 0; i < device_count; ++i) {
         const unsigned slot = slots[i];
         device_slots[i] = slot;
-        slot_profiles[slot] = &profile_devices[i];
+        slot_profiles[slot] = &profile.devices[i];
         configured_slots |= 1U << slot;
     }
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
@@ -72,15 +50,17 @@ bool bind_profile(const dcu_production_profile_t &profile)
 void publish_profile()
 {
     auto &board = *object<mc_board_config_t>(0x2001);
+    const auto policy = application::profile_policy();
     board.AxisConfiguredMask = configured_slots;
-    board.MaxCommandLeaseMs = configuration.board.max_command_lease_ms;
-    board.FeedbackTimeoutMs = configuration.board.feedback_timeout_ms;
+    board.MaxCommandLeaseMs = policy.max_command_lease_ms;
+    board.FeedbackTimeoutMs = policy.feedback_timeout_ms;
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
         auto &channel = *object<mc_channel_config_t>(0x2010 + c);
-        const auto *active = dcu_can_channel_config(c);
-        channel.Role = configuration.channels[c].role;
+        const auto config = application::channel_configuration(c);
+        const auto *active = config.enabled ? dcu_can_channel_config(c) : nullptr;
+        channel.Role = config.role;
         channel.MotorConfiguredMask = configured_motors[c];
-        channel.FrameFormat = active && active->fd;
+        channel.FrameFormat = config.frame_format;
         channel.NominalBitrate = active ? active->nominal_bitrate_bps : 0;
         channel.DataBitrate = active ? active->data_bitrate_bps : 0;
     }
@@ -95,19 +75,13 @@ void publish_owner()
 }
 }
 
-bool motor_control_init(void)
+bool adapter::initialize(const dcu_production_profile_t &profile)
 {
-    if (!bind_profile(*dcu_production_profile()) || !pdo::bind_publication()) return false;
+    if (!bind_slots(profile) || !pdo::bind_publication()) return false;
     dcu::ethercat::motor_services::initialize();
     publish_profile();
-    if (!application::select_mode(application::OperatingMode::MotorWithRaw)) return false;
     object<mc_board_info_t>(0x2000)->Capabilities = 7;
     return true;
-}
-
-bool motor_control_boot_startup(uint64_t boot_id)
-{
-    return application::boot_startup(dcu_production_profile()->readiness, boot_id);
 }
 
 void motor_control_output(const void *data)
@@ -172,7 +146,7 @@ const dcu_motor_device_profile_t *configured_device(unsigned slot)
 unsigned device_for_slot(unsigned slot)
 {
     const auto *profile = configured_device(slot);
-    return profile ? static_cast<unsigned>(profile - profile_devices) : DCU_MOTOR_DEVICE_CAPACITY;
+    return profile ? static_cast<unsigned>(profile - bound_profile->devices) : DCU_MOTOR_DEVICE_CAPACITY;
 }
 
 unsigned slot_for_device(unsigned device)

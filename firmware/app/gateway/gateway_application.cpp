@@ -1,6 +1,7 @@
 #include "detail/gateway_application_impl.hpp"
 #include "detail/raw_can_submit.hpp"
 #include "cfg/gateway_schedule_policy.hpp"
+#include "motor_driver_binding.hpp"
 #include "can_transport.h"
 #include "realtime_port.h"
 
@@ -16,6 +17,20 @@ bool newer(uint32_t a, uint32_t b)
 {
     uint32_t d = a - b;
     return d && d < 0x80000000u;
+}
+
+motor::MotorConfiguration motor_configuration(const dcu_motor_device_profile_t &device)
+{
+    motor::MotorConfiguration motor{};
+    motor.route = {device.can_id, device.position_min_urad, device.position_max_urad,
+                   device.velocity_limit_urad_s, device.torque_limit_mNm, device.current_limit_dA};
+    motor.encos = device.encos;
+    motor.model_profile_id = device.model_profile_id;
+    motor.power_query_period_ms = device.power_query_period_ms;
+    motor.bus = device.bus;
+    motor.status_poll_period_ms = device.status_poll_period_ms;
+    motor.status_reply_timeout_ms = device.status_reply_timeout_ms;
+    return motor;
 }
 
 }
@@ -242,6 +257,7 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         b->feedback_timeout_ms < 5 || b->feedback_timeout_ms > 20)
         return false;
     if (configuration.device_count > DCU_MOTOR_DEVICE_CAPACITY ||
+        (configuration.device_count && !configuration.devices) ||
         (state_.mode == OperatingMode::Raw && configuration.device_count))
         return false;
     for (const auto &channel : configuration.channels) {
@@ -256,11 +272,12 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         if (bus >= DCU_DEVICE_CAN_BUS_COUNT || ++counts[bus] > DCU_MOTOR_DEVICES_PER_BUS)
             return false;
         const auto &channel = configuration.channels[bus];
-        if (!channel.enabled || !(channel.role & 1) || !motor::validate_motor_configuration(device, channel.frame_format))
+        if (!channel.enabled || !(channel.role & 1) ||
+            !motor::validate_motor_configuration(motor_configuration(device), channel.frame_format))
             return false;
         for (unsigned previous = 0; previous < a; ++previous)
             if (configuration.devices[previous].bus == bus &&
-                configuration.devices[previous].route.can_id == device.route.can_id)
+                configuration.devices[previous].can_id == device.can_id)
                 return false;
     }
     state_.last_process_us = UINT32_MAX;
@@ -271,7 +288,7 @@ bool GatewayApplication::initialize(const Configuration &configuration)
     }
     for (unsigned a = 0; a < configuration.device_count; ++a) {
         const auto &device = configuration.devices[a];
-        if (!devices_[a].bind(a, device, state_.channels[device.bus].frame_format)) {
+        if (!devices_[a].bind(a, motor_configuration(device), state_.channels[device.bus].frame_format)) {
             stop_all(1);
             for (unsigned i = 0; i < device_count_; ++i) devices_[i].disable();
             device_count_ = 0;
@@ -548,7 +565,35 @@ dcu::app::gateway_application::detail::GatewayApplication application;
 }
 
 namespace dcu::app::gateway_application {
-bool initialize(const Configuration &profile) { return application.initialize(profile); }
+#if defined(DCU_HOST_ENGINE_TEST)
+bool detail::initialize_fixture(const Configuration &config) { return application.initialize(config); }
+#endif
+
+bool initialize_profile(const dcu_production_profile_t &profile)
+{
+    if (!profile.channels || !profile.channel_count || profile.channel_count > DCU_DEVICE_CAN_BUS_COUNT ||
+        profile.device_count > DCU_MOTOR_DEVICE_CAPACITY || (profile.device_count && !profile.devices)) return false;
+    detail::Configuration config{};
+    config.board = {profile.max_command_lease_ms, profile.feedback_timeout_ms};
+    config.devices = profile.devices;
+    config.device_count = profile.device_count;
+    for (size_t i = 0; i < profile.channel_count; ++i) {
+        const auto &channel = profile.channels[i];
+        if (channel.bus >= DCU_DEVICE_CAN_BUS_COUNT || config.channels[channel.bus].enabled) return false;
+        const auto *active = dcu_can_channel_config(channel.bus);
+        if (!active || active->fd != channel.fd || active->nominal_bitrate_bps != channel.nominal_bitrate_bps ||
+            active->data_bitrate_bps != channel.data_bitrate_bps) return false;
+        config.channels[channel.bus].enabled = true;
+        config.channels[channel.bus].frame_format = channel.fd;
+    }
+    for (size_t i = 0; i < profile.device_count; ++i) {
+        const unsigned bus = profile.devices[i].bus;
+        if (bus >= DCU_DEVICE_CAN_BUS_COUNT || !config.channels[bus].enabled) return false;
+        config.channels[bus].role = 1;
+    }
+    return application.initialize(config);
+}
+ChannelConfiguration channel_configuration(unsigned bus) { return application.channel_configuration(bus); }
 bool boot_startup(const dcu_gateway_profile_t &profile, uint64_t boot_id)
 { return application.boot_startup(profile, boot_id); }
 bool startup_enabled() { return application.startup_enabled(); }

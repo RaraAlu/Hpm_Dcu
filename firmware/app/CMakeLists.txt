@@ -15,6 +15,7 @@ add_dependencies(app dcu_can_profile_header)
 add_dependencies(hpm_sdk_lib dcu_can_profile_header)
 sdk_inc("${CMAKE_CURRENT_BINARY_DIR}")
 sdk_src(
+    production_init.cpp
     gateway/gateway_application.cpp
     gateway/gateway_publication.cpp
     gateway/can_bus_scheduler.cpp

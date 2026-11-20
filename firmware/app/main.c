@@ -16,7 +16,7 @@
 #include "hpm_mcan_transport.h"
 #include "production_profile.h"
 #include "gateway_identity.h"
-#include "motor_ethercat.h"
+#include "production_init.h"
 #include "ethercat_cycle.h"
 #include "ethercat_can_task.h"
 #include "cycle_timers.h"

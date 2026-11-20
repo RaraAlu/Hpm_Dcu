@@ -5,6 +5,8 @@
 #include "production_profile.h"
 
 namespace dcu::ethercat::motor_adapter {
+// Project the gateway's validated, immutable Profile into the SSC dictionary.
+bool initialize(const dcu_production_profile_t &profile);
 const dcu_motor_device_profile_t *configured_device(unsigned slot);
 // Unmapped slots/devices return the corresponding capacity sentinel.
 unsigned device_for_slot(unsigned slot);
