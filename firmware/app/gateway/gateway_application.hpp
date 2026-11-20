@@ -94,7 +94,7 @@ struct Publication {
 
 // One task owns all operations. Inputs are borrowed only for the duration of a call.
 bool initialize(const Configuration &profile);
-bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id, dcu_gateway_issue_session_fn);
+bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id);
 bool startup_enabled();
 dcu::app::profile_update::Policy profile_policy();
 bool apply_profile_policy(uint32_t profile, uint32_t base, uint32_t revision, const profile_update::Policy &);

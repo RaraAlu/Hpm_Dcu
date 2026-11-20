@@ -11,7 +11,7 @@ extern "C" {
 /* Initialize once before scheduler start. All remaining calls belong to the
  * ecat-can task; ISR paths use the cycle/CAN handoff instead. */
 bool motor_control_init(void);
-bool motor_control_boot_startup(uint64_t boot_id, uint64_t (*issue_session)(void));
+bool motor_control_boot_startup(uint64_t boot_id);
 /* Returns false only while a staged PDO still awaits processing. */
 bool motor_control_process(void);
 void motor_control_operational(bool operational);

@@ -1,4 +1,4 @@
-#include "gateway_readiness.h"
+#include "gateway_session.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -48,15 +48,32 @@ static void check(dcu_gateway_activation_t activation, uint64_t now_us,
 
 static void prepare(void)
 {
-    assert(dcu_gateway_boot(&profile, boot_id, issue_id, 100));
+    assert(dcu_gateway_boot_session(&profile, boot_id, issue_id, 100));
     assert(dcu_gateway_probe_verified(200, 201));
+}
+
+static void static_startup(void)
+{
+    dcu_gateway_profile_t fixed = profile;
+    fixed.activation_wait_s = 0;
+    assert(dcu_gateway_boot_static(&fixed, boot_id, 100));
+    assert(!dcu_gateway_boot_session(&profile, boot_id, issue_id, 101));
+    assert(!dcu_gateway_resume_static(101));
+    assert(dcu_gateway_probe_verified(200, 201));
+    dcu_gateway_activation_t valid = request(201);
+    check(valid, 201, DCU_GATEWAY_INVALID, 0);
+    assert(!dcu_gateway_start_run(100, 201));
+    assert(dcu_gateway_resume_static(201));
+    check(valid, 201, DCU_GATEWAY_INVALID, 0);
+    assert(dcu_gateway_readiness(201).state == DCU_GATEWAY_RUNNING && calls == 0);
 }
 
 static void startup(void)
 {
     assert(dcu_gateway_readiness(100).state == DCU_GATEWAY_BOOT);
-    assert(dcu_gateway_boot(&profile, boot_id, issue_id, 100));
-    assert(!dcu_gateway_boot(&profile, boot_id + 1, issue_id, 101));
+    assert(dcu_gateway_boot_session(&profile, boot_id, issue_id, 100));
+    assert(!dcu_gateway_boot_session(&profile, boot_id + 1, issue_id, 101));
+    assert(!dcu_gateway_boot_static(&profile, boot_id, 101));
     dcu_gateway_activation_t early = request(200);
     check(early, 200, DCU_GATEWAY_NOT_READY, 0);
     assert(calls == 0);
@@ -72,11 +89,13 @@ static void startup(void)
     assert(ready.feedback_age_us == 3);
     check(early, 205, DCU_GATEWAY_STALE_CONTEXT, 0);
     dcu_gateway_activation_t fresh = request(205);
+    assert(!dcu_gateway_resume_static(205));
     check(fresh, 205, DCU_GATEWAY_ACCEPTED, 100);
     ready = dcu_gateway_readiness(205);
     assert(ready.state == DCU_GATEWAY_READY);
     assert(ready.active_request_id == 9 && ready.client_tag == 11);
     assert(ready.session_id == 100 && calls == 1);
+    assert(!dcu_gateway_resume_static(205));
 }
 
 static void mismatch(void)
@@ -193,11 +212,22 @@ static void invalid_profile(void)
 {
     dcu_gateway_profile_t invalid = profile;
     invalid.readiness_ttl_ms = 0;
-    assert(!dcu_gateway_boot(&invalid, boot_id, issue_id, 100));
+    assert(!dcu_gateway_boot_session(&invalid, boot_id, issue_id, 100));
     dcu_gateway_readiness_t fault = dcu_gateway_readiness(101);
     assert(fault.state == DCU_GATEWAY_FAULT && fault.reason == DCU_GATEWAY_REASON_CONFIG_INVALID);
-    assert(!dcu_gateway_boot(&profile, boot_id, issue_id, 102));
+    assert(!dcu_gateway_boot_session(&profile, boot_id, issue_id, 102));
     assert(!dcu_gateway_probe_verified(103, 104));
+}
+
+static void invalid_session_boot(bool missing_issuer)
+{
+    dcu_gateway_profile_t diagnostic = profile;
+    if (!missing_issuer) diagnostic.activation_wait_s = 0;
+    assert(!dcu_gateway_boot_session(&diagnostic, boot_id, missing_issuer ? NULL : issue_id, 100));
+    dcu_gateway_readiness_t fault = dcu_gateway_readiness(101);
+    assert(fault.state == DCU_GATEWAY_FAULT && fault.reason == DCU_GATEWAY_REASON_CONFIG_INVALID);
+    assert(!dcu_gateway_boot_static(&profile, boot_id, 102));
+    assert(calls == 0);
 }
 
 static void exhausted(void)
@@ -229,7 +259,7 @@ static void reused_session(void)
 static void near_clock_limit(void)
 {
     const uint64_t base = UINT64_MAX - 80000;
-    assert(dcu_gateway_boot(&profile, boot_id, issue_id, base));
+    assert(dcu_gateway_boot_session(&profile, boot_id, issue_id, base));
     assert(!dcu_gateway_probe_verified(base, base + 50000));
     assert(dcu_gateway_probe_verified(base + 50001, base + 50001));
     check(request(base + 50001), base + 50001, DCU_GATEWAY_ACCEPTED, 100);
@@ -240,6 +270,9 @@ int main(int argc, char **argv)
 {
     assert(argc == 2);
     if (strcmp(argv[1], "startup") == 0) startup();
+    else if (strcmp(argv[1], "static_startup") == 0) static_startup();
+    else if (strcmp(argv[1], "missing_issuer") == 0) invalid_session_boot(true);
+    else if (strcmp(argv[1], "missing_deadline") == 0) invalid_session_boot(false);
     else if (strcmp(argv[1], "mismatch") == 0) mismatch();
     else if (strcmp(argv[1], "duplicate") == 0) duplicate();
     else if (strcmp(argv[1], "freshness") == 0) freshness();

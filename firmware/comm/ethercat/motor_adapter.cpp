@@ -105,9 +105,9 @@ bool motor_control_init(void)
     return true;
 }
 
-bool motor_control_boot_startup(uint64_t id, uint64_t (*issue_session)(void))
+bool motor_control_boot_startup(uint64_t boot_id)
 {
-    return application::boot_startup(dcu_production_profile()->readiness, id, issue_session);
+    return application::boot_startup(dcu_production_profile()->readiness, boot_id);
 }
 
 void motor_control_output(const void *data)

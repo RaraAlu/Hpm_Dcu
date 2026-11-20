@@ -69,7 +69,7 @@ int main(void)
         return 0;
     }
     const uint64_t boot_id = dcu_gateway_ids_boot(dcu_gateway_flash_storage());
-    if (!motor_control_boot_startup(boot_id, dcu_gateway_ids_next))
+    if (!motor_control_boot_startup(boot_id))
         printf("Gateway startup fault: business transmission inhibited\n");
     dcu_cycle_init();
     MainInit(); /* SSC Initilize the stack */

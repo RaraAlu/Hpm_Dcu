@@ -63,7 +63,7 @@ class HeaderOwnershipTest(unittest.TestCase):
                     "firmware/generated/encos", "firmware/app/cycle", "firmware/app/runtime",
                     "firmware/app/gateway")
         headers = ("can_transport.h", "raw_can_pdo.h", "realtime_port.h",
-                   "ethercat_cycle.h", "ethercat_can_task.h", "gateway_readiness.h")
+                   "ethercat_cycle.h", "ethercat_can_task.h", "gateway_readiness.h", "gateway_session.h")
         for compiler, language, standard in (("cc", "c", "c11"), ("c++", "c++", "c++17")):
             command = [compiler, "-x", language, f"-std={standard}", "-fsyntax-only",
                        "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]

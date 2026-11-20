@@ -15,7 +15,7 @@ namespace dcu::app::gateway_application::detail {
 class GatewayApplication {
 public:
     bool initialize(const Configuration &profile);
-    bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id, dcu_gateway_issue_session_fn);
+    bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id);
     bool startup_enabled() const { return startup_.enforced(); }
     dcu_gateway_readiness_t readiness() const { return startup_.status(); }
     profile_update::Policy profile_policy() const;

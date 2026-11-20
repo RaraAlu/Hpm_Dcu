@@ -1,4 +1,4 @@
-#include "gateway_readiness.h"
+#include "gateway_session.h"
 #include "detail/gateway_readiness_state.h"
 
 #include <string.h>
@@ -25,21 +25,33 @@ static uint64_t ready_limit_us(void)
     return (uint64_t)s_gateway.profile.readiness_ttl_ms * 1000U;
 }
 
-bool dcu_gateway_boot(const dcu_gateway_profile_t *profile, uint64_t boot_id,
-                      dcu_gateway_issue_session_fn issue_session, uint64_t now_us)
+static bool boot(const dcu_gateway_profile_t *profile, uint64_t boot_id, uint64_t now_us,
+                 bool startup_valid)
 {
     if (s_gateway.state != DCU_GATEWAY_BOOT) return false;
     s_gateway.boot_id = boot_id;
     s_gateway.now_us = now_us;
     if (!profile || !profile->profile_id || !profile->revision || !profile->readiness_ttl_ms ||
-        !profile->activation_wait_s || !boot_id || !issue_session) {
+        !boot_id || !startup_valid) {
         leave_ready(DCU_GATEWAY_FAULT, DCU_GATEWAY_REASON_CONFIG_INVALID);
         return false;
     }
     s_gateway.profile = *profile;
-    s_gateway.issue_session = issue_session;
     s_gateway.prepared_since_us = now_us;
     s_gateway.state = DCU_GATEWAY_PREPARING;
+    return true;
+}
+
+bool dcu_gateway_boot_static(const dcu_gateway_profile_t *profile, uint64_t boot_id, uint64_t now_us)
+{
+    return boot(profile, boot_id, now_us, true);
+}
+
+bool dcu_gateway_boot_session(const dcu_gateway_profile_t *profile, uint64_t boot_id,
+                              dcu_gateway_issue_session_fn issue_session, uint64_t now_us)
+{
+    if (!boot(profile, boot_id, now_us, profile && profile->activation_wait_s && issue_session)) return false;
+    s_gateway.issue_session = issue_session;
     return true;
 }
 
@@ -116,6 +128,7 @@ dcu_gateway_activation_result_t dcu_gateway_activate(const dcu_gateway_activatio
         result.code = DCU_GATEWAY_NOT_READY;
         return result;
     }
+    if (!s_gateway.issue_session) return result;
     bool same_profile = request->profile_id == s_gateway.profile.profile_id &&
         request->revision == s_gateway.profile.revision &&
         memcmp(request->digest, s_gateway.profile.digest, sizeof(request->digest)) == 0;
@@ -156,7 +169,7 @@ dcu_gateway_activation_result_t dcu_gateway_activate(const dcu_gateway_activatio
 bool dcu_gateway_resume_static(uint64_t now_us)
 {
     dcu_gateway_tick(now_us);
-    if (s_gateway.state != DCU_GATEWAY_READY || s_gateway.session_id) return false;
+    if (s_gateway.state != DCU_GATEWAY_READY || s_gateway.issue_session) return false;
     s_gateway.state = DCU_GATEWAY_RUNNING;
     return true;
 }

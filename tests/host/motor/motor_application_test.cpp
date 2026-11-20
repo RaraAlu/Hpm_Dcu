@@ -363,13 +363,7 @@ struct RawPdoFixture {
     }
 };
 
-static uint32_t startup_epoch;
-static uint32_t startup_sessions;
-
-static uint64_t issue_startup_session()
-{
-    return (uint64_t{startup_epoch} << 32) | ++startup_sessions;
-}
+static constexpr uint32_t startup_epoch = 7;
 
 static void startup_business(uint32_t seq, uint16_t control, bool enabled = true, uint32_t reserved = 0,
                              uint16_t lease = 10)
@@ -436,16 +430,15 @@ static void test_production_startup(bool journal_ok)
     CHECK(motor_control_init());
     select_wire_profile(1);
     auto *board = object<mc_board_tx_t>(0x6000);
-    startup_epoch = 7;
-    CHECK(motor_control_boot_startup(journal_ok ? uint64_t{startup_epoch} << 32 : 0,
-                                     issue_startup_session) == journal_ok);
+    CHECK(motor_control_boot_startup(journal_ok ? uint64_t{startup_epoch} << 32 : 0) == journal_ok);
     if (!journal_ok) {
         CHECK(startup_state() == DCU_GATEWAY_FAULT);
+        CHECK(readiness().reason == DCU_GATEWAY_REASON_CONFIG_INVALID);
         motor_control_operational(true);
         startup_business(1, 0, false);
         startup_business(2, MC_AXIS_ARM | MC_AXIS_START_MOTION);
         CHECK(!board->AcceptedCycleSeq);
-        CHECK(sent.empty() && !startup_sessions);
+        CHECK(sent.empty() && readiness().session_id == 0);
         return;
     }
     uint16_t requested_owner = OWNER_PDO;
@@ -476,7 +469,7 @@ static void test_production_startup(bool journal_ok)
     startup_business(1, 0, false, 1); // Previously used token bytes are reserved again.
     CHECK(!board->AcceptedCycleSeq);
     startup_business(1, 0, false);
-    CHECK(board->AcceptedCycleSeq == 1 && !startup_sessions);
+    CHECK(board->AcceptedCycleSeq == 1 && readiness().session_id == 0);
 
     // A valid PDO drives the real ENCOS encoder through the same scheduler used in firmware.
     startup_business(2, 0);
@@ -518,15 +511,18 @@ static void test_production_startup(bool journal_ok)
     }
     CHECK(startup_state() == DCU_GATEWAY_RUNNING && read > after_drop);
     CHECK(read_sdo<uint32_t>(0x2002, 2) > ready && read_sdo<uint32_t>(0x2002, 4) == 0);
+    startup_business(4, MC_AXIS_ARM | MC_AXIS_START_MOTION);
+    CHECK(!board->AcceptedCycleSeq);
+    serve_startup_reads(read, true); // No control frame before the new neutral baseline.
     startup_business(5, 0, false);
-    CHECK(board->AcceptedCycleSeq == 5);
+    CHECK(board->AcceptedCycleSeq == 5 && readiness().session_id == 0);
     startup_business(4, MC_AXIS_ARM | MC_AXIS_START_MOTION);
     CHECK(board->AcceptedCycleSeq == 5);
     startup_business(6, 0);
     CHECK(board->AcceptedCycleSeq == 6);
     test_ms += 10;
     startup_business(7, MC_AXIS_ARM | MC_AXIS_START_MOTION);
-    CHECK(!board->AcceptedCycleSeq && !startup_sessions);
+    CHECK(!board->AcceptedCycleSeq && readiness().session_id == 0);
     serve_startup_reads(read, true);
 }
 
@@ -542,8 +538,7 @@ static void test_dynamic_policy(const char *encoded)
     test_profile.readiness = {1, 1, {}, 1000, 5};
     CHECK(motor_control_init());
     select_wire_profile(1);
-    startup_epoch = 7;
-    CHECK(motor_control_boot_startup(uint64_t{startup_epoch} << 32, issue_startup_session));
+    CHECK(motor_control_boot_startup(uint64_t{startup_epoch} << 32));
     run_cycle();
     const auto result = [] { return static_cast<Status>(read_sdo<uint16_t>(object_index, 3)); };
     const auto offer = [&](unsigned bytes = sizeof(wire)) { return MC_OD_Write(object_index, 1, bytes, wire, 0); };
@@ -589,7 +584,7 @@ static void test_dynamic_policy(const char *encoded)
     startup_business(1, 0, false);
     CHECK(!object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq);
     startup_business(1, 0, false, 0, 8);
-    CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 1 && !startup_sessions && sent.empty());
+    CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 1 && readiness().session_id == 0 && sent.empty());
     motor_control_operational(false);
     active(2, 8, 15, 750);
 }

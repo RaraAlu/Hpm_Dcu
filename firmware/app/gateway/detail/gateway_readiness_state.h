@@ -1,11 +1,11 @@
 #ifndef DCU_GATEWAY_READINESS_STATE_H
 #define DCU_GATEWAY_READINESS_STATE_H
 
-#include "../gateway_readiness.h"
+#include "../gateway_session.h"
 
 typedef struct {
     dcu_gateway_profile_t profile;
-    dcu_gateway_issue_session_fn issue_session;
+    dcu_gateway_issue_session_fn issue_session; /* Non-null only after a successful diagnostic boot. */
     dcu_gateway_state_t state;
     dcu_gateway_reason_t reason;
     uint64_t boot_id;

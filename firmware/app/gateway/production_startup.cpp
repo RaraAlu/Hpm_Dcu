@@ -9,14 +9,13 @@ uint64_t ProductionStartup::time_us(uint32_t now)
     return time_us_;
 }
 
-bool ProductionStartup::boot(const dcu_gateway_profile_t &profile, uint64_t boot_id,
-                             dcu_gateway_issue_session_fn issue, uint32_t now)
+bool ProductionStartup::boot(const dcu_gateway_profile_t &profile, uint64_t boot_id, uint32_t now)
 {
     if (boot_called_) return false;
     boot_called_ = true;
     clock_ms_ = now;
     ttl_ms_ = profile.readiness_ttl_ms;
-    return dcu_gateway_boot(&profile, boot_id, issue, time_us_);
+    return dcu_gateway_boot_static(&profile, boot_id, time_us_);
 }
 
 bool ProductionStartup::enforced() const

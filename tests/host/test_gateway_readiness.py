@@ -36,6 +36,14 @@ class GatewayReadinessTest(unittest.TestCase):
     def test_ready_before_master_and_first_confirmation(self):
         self.run_checked([str(self.runner), "startup"])
 
+    def test_static_startup_rejects_explicit_activation(self):
+        self.run_checked([str(self.runner), "static_startup"])
+
+    def test_session_startup_requires_an_allocator_and_activation_deadline(self):
+        for case in ("missing_issuer", "missing_deadline"):
+            with self.subTest(case=case):
+                self.run_checked([str(self.runner), case])
+
     def test_profile_and_context_validation(self):
         self.run_checked([str(self.runner), "mismatch"])
 

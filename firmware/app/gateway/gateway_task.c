@@ -29,7 +29,7 @@ bool dcu_gateway_task_boot(const dcu_gateway_task_config_t *config, const dcu_ga
         pdo_bytes > DCU_GATEWAY_TASK_MAX_PDO || pdo_bytes % 8U || !config->probe_interval_ms ||
         config->probe_interval_ms >= config->profile.readiness_ttl_ms || !config->command_timeout_ms)
         return false;
-    if (!dcu_gateway_boot(&config->profile, boot_id, session, now_us)) return false;
+    if (!dcu_gateway_boot_session(&config->profile, boot_id, session, now_us)) return false;
     s_task = (dcu_gateway_task_state_t){
         .io = *io, .bytes = pdo_bytes,
         .probe_interval_ms = config->probe_interval_ms, .command_timeout_ms = config->command_timeout_ms,

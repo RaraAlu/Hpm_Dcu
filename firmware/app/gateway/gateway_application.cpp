@@ -65,10 +65,9 @@ void GatewayApplication::stop_all(uint16_t fault)
     state_.session_armed = false;
 }
 
-bool GatewayApplication::boot_startup(const dcu_gateway_profile_t &profile, uint64_t id,
-                                      dcu_gateway_issue_session_fn issue)
+bool GatewayApplication::boot_startup(const dcu_gateway_profile_t &profile, uint64_t boot_id)
 {
-    return state_.config_ready && startup_.boot(profile, id, issue, dcu_time_now_ms());
+    return state_.config_ready && startup_.boot(profile, boot_id, dcu_time_now_ms());
 }
 
 profile_update::Policy GatewayApplication::profile_policy() const
@@ -550,8 +549,8 @@ dcu::app::gateway_application::detail::GatewayApplication application;
 
 namespace dcu::app::gateway_application {
 bool initialize(const Configuration &profile) { return application.initialize(profile); }
-bool boot_startup(const dcu_gateway_profile_t &profile, uint64_t id, dcu_gateway_issue_session_fn issue)
-{ return application.boot_startup(profile, id, issue); }
+bool boot_startup(const dcu_gateway_profile_t &profile, uint64_t boot_id)
+{ return application.boot_startup(profile, boot_id); }
 bool startup_enabled() { return application.startup_enabled(); }
 profile_update::Policy profile_policy() { return application.profile_policy(); }
 bool apply_profile_policy(uint32_t profile, uint32_t base, uint32_t revision, const profile_update::Policy &policy)
