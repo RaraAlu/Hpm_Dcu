@@ -532,7 +532,8 @@ static void test_production_startup(bool journal_ok)
 static void test_dynamic_policy(const char *encoded)
 {
     using namespace dcu::app::profile_update;
-    uint16_t wire[candidate_bytes / sizeof(uint16_t)]{};
+    constexpr uint16_t object_index = 0x2100;
+    uint16_t wire[36 / sizeof(uint16_t)]{};
     auto *file = std::fopen(encoded, "rb");
     CHECK(file && std::fread(wire, 1, sizeof(wire), file) == sizeof(wire) && std::fgetc(file) == EOF);
     std::fclose(file);
@@ -560,8 +561,10 @@ static void test_dynamic_policy(const char *encoded)
     active(1, 10, 20, 1000);
     CHECK(offer(sizeof(wire) - 2) == ABORTIDX_PARAM_LENGTH_ERROR && result() == Status::Aborted);
     CHECK(commit(2) == ABORTIDX_VALUE_EXCEEDED);
+    CHECK(!offer() && result() == Status::Staged);
     wire[17] ^= 1;
     CHECK(offer() == ABORTIDX_VALUE_EXCEEDED && result() == Status::Invalid);
+    CHECK(!read_sdo<uint32_t>(object_index, 6) && commit(2) == ABORTIDX_VALUE_EXCEEDED);
     wire[17] ^= 1;
     CHECK(!offer());
     test_ms += 5000;

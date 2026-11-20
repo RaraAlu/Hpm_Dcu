@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = ROOT / "firmware"
 PRIVATE_HEADERS = {
     "app/gateway/detail/gateway_configuration.hpp": "app/gateway/detail/gateway_application_impl.hpp",
-    "app/gateway/detail/profile_update_state.hpp": "app/gateway/profile_update.cpp",
     "devices/motor/detail/motor_instance_state.hpp": "devices/motor/motor_instance.hpp",
     "app/gateway/detail/gateway_application_impl.hpp": (
         "app/gateway/gateway_application.cpp", "app/gateway/gateway_publication.cpp",

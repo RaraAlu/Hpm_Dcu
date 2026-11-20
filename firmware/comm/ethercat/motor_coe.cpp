@@ -18,6 +18,43 @@ namespace profile_update = dcu::app::profile_update;
 namespace pdo_layout = dcu::ethercat::pdo_layout;
 namespace adapter = dcu::ethercat::motor_adapter;
 
+namespace {
+constexpr uint16_t profile_update_index = 0x2100;
+constexpr unsigned candidate_bytes = sizeof(mc_profile_update_t::Candidate);
+
+uint32_t load_le(const uint8_t *p, unsigned n)
+{
+    uint32_t value = 0;
+    for (unsigned i = 0; i < n; ++i) value |= uint32_t{p[i]} << (8U * i);
+    return value;
+}
+
+uint32_t crc32(const uint8_t *p, unsigned n)
+{
+    uint32_t crc = UINT32_MAX;
+    for (unsigned i = 0; i < n; ++i) {
+        crc ^= p[i];
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ ((crc & 1u) ? 0xedb88320u : 0u);
+    }
+    return ~crc;
+}
+
+bool stage_profile_candidate(const void *data, size_t bytes)
+{
+    const auto *p = static_cast<const uint8_t *>(data);
+    if (!p || bytes != candidate_bytes || load_le(p, 2) != 1 || load_le(p + 2, 2) != bytes ||
+        crc32(p, candidate_bytes - 4) != load_le(p + 32, 4))
+        return profile_update::stage(nullptr);
+    const profile_update::Candidate next{
+        uint64_t{load_le(p + 20, 4)} << 32 | load_le(p + 16, 4),
+        load_le(p + 4, 4), load_le(p + 8, 4), load_le(p + 12, 4),
+        {static_cast<uint16_t>(load_le(p + 24, 2)),
+         static_cast<uint16_t>(load_le(p + 26, 2)), load_le(p + 28, 4)}};
+    return profile_update::stage(&next);
+}
+}
+
 static bool preop()
 {
     return (nAlStatus & STATE_MASK) == STATE_PREOP && preop_access_allowed();
@@ -79,7 +116,7 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         std::memcpy(data, &values[sub - 1], bytes);
         return 0;
     }
-    if (index == profile_update::object_index) {
+    if (index == profile_update_index) {
         if (sub < 3) return ABORTIDX_WRITE_ONLY_ENTRY;
         if (sub > 7) return ABORTIDX_SUBINDEX_NOT_EXISTING;
         if (bytes != (sub == 3 ? 2U : 4U)) return ABORTIDX_PARAM_LENGTH_ERROR;
@@ -155,13 +192,13 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
     if (!command && !owner && !preop())
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     if (bytes != field->bytes) {
-        if (index == profile_update::object_index && sub == 1)
+        if (index == profile_update_index && sub == 1)
             profile_update::discard();
         return ABORTIDX_PARAM_LENGTH_ERROR;
     }
-    if (index == profile_update::object_index) {
+    if (index == profile_update_index) {
         if (sub == 1)
-            return profile_update::stage(data, bytes) ? 0 : ABORTIDX_VALUE_EXCEEDED;
+            return stage_profile_candidate(data, bytes) ? 0 : ABORTIDX_VALUE_EXCEEDED;
         uint32_t revision = 0;
         memcpy(&revision, data, sizeof(revision));
         if (!profile_update::commit(revision)) return ABORTIDX_VALUE_EXCEEDED;

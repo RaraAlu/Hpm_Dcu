@@ -1,5 +1,4 @@
 #include "profile_update.hpp"
-#include "detail/profile_update_state.hpp"
 #include "gateway_application.hpp"
 #include "realtime_port.h"
 
@@ -7,29 +6,10 @@ namespace dcu::app::profile_update {
 namespace application = gateway_application;
 
 namespace {
-using detail::Candidate;
 Candidate pending{};
 Status result = Status::Idle;
 uint32_t committed{};
 uint32_t staged_at_ms{};
-
-uint32_t load_le(const uint8_t *p, unsigned n)
-{
-    uint32_t value = 0;
-    for (unsigned i = 0; i < n; ++i) value |= uint32_t{p[i]} << (8U * i);
-    return value;
-}
-
-uint32_t crc32(const uint8_t *p, unsigned n)
-{
-    uint32_t crc = UINT32_MAX;
-    for (unsigned i = 0; i < n; ++i) {
-        crc ^= p[i];
-        for (unsigned bit = 0; bit < 8; ++bit)
-            crc = (crc >> 1) ^ ((crc & 1u) ? 0xedb88320u : 0u);
-    }
-    return ~crc;
-}
 
 bool matches_active(const Candidate &candidate)
 {
@@ -54,19 +34,12 @@ bool valid(const Policy &policy)
            policy.readiness_ttl_ms >= 100 && policy.readiness_ttl_ms <= 10000;
 }
 
-bool stage(const void *data, size_t bytes)
+bool stage(const Candidate *candidate)
 {
     pending = {};
     result = Status::Invalid;
-    if (!data || bytes != candidate_bytes) return false;
-    const auto *p = static_cast<const uint8_t *>(data);
-    if (load_le(p, 2) != 1 || load_le(p + 2, 2) != candidate_bytes ||
-        crc32(p, candidate_bytes - 4) != load_le(p + 32, 4)) return false;
-    const Candidate next{uint64_t{load_le(p + 20, 4)} << 32 | load_le(p + 16, 4),
-                         load_le(p + 4, 4), load_le(p + 8, 4), load_le(p + 12, 4),
-                         {static_cast<uint16_t>(load_le(p + 24, 2)),
-                          static_cast<uint16_t>(load_le(p + 26, 2)), load_le(p + 28, 4)}};
-    if (!valid(next.policy)) return false;
+    if (!candidate || !valid(candidate->policy)) return false;
+    const auto &next = *candidate;
     if (!matches_active(next)) {
         result = Status::Stale;
         return false;
