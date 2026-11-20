@@ -2,7 +2,7 @@
 #define DCU_ETHERCAT_DATA_CONFIG_H
 
 #define DCU_DATA_VENDOR 0x00010000U
-#ifdef DCU_DATA_CIH408_MIT_ONCE
+#ifdef DCU_DATA_BJCX_MIT_ONCE
 #define DCU_DATA_PRODUCT 0x7fff0006U
 #elif defined(DCU_DATA_STATIC_PROFILE)
 #include "dcu_static_profile_generated.h"

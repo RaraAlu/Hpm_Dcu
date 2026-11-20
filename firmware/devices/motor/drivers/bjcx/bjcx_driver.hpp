@@ -1,11 +1,11 @@
-#ifndef DCU_CIH408_DRIVER_HPP
-#define DCU_CIH408_DRIVER_HPP
+#ifndef DCU_BJCX_DRIVER_HPP
+#define DCU_BJCX_DRIVER_HPP
 
 #include "motor_session_driver.hpp"
 
 namespace dcu::motor {
 
-class Cih408MotorDriver final : public MotorSessionDriver {
+class BjcxMotorDriver final : public MotorSessionDriver {
 public:
     static bool validate(uint16_t can_id, uint16_t period_ms, uint16_t timeout_ms) noexcept;
     bool configure(uint16_t can_id, uint16_t period_ms, uint16_t timeout_ms) noexcept;

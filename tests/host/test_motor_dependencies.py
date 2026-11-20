@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = ROOT / "firmware"
 INCLUDE_ROOTS = tuple(FIRMWARE / path for path in (
-    "app/gateway", "devices/motor", "devices/motor/drivers/encos", "devices/motor/drivers/cih408",
+    "app/gateway", "devices/motor", "devices/motor/drivers/encos", "devices/motor/drivers/bjcx",
     "protocols/encos", "ports", "cfg", "comm/canfd",
 ))
 HEADERS = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)

@@ -134,7 +134,7 @@ class HeaderOwnershipTest(unittest.TestCase):
             "firmware/generated/encos", "firmware/generated/ethercat",
             "firmware/app/gateway", "firmware/app/cycle", "firmware/protocols/encos",
             "firmware/comm/canfd", "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
-            "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408",
+            "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx",
         )
         groups = (
             (cxx, "c++", "c++17", motor_includes,

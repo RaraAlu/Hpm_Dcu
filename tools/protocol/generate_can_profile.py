@@ -24,7 +24,7 @@ def pair(value, name, *, minimum=-32768, maximum=32767, crosses_zero=True):
 def device_line(device, channels, names, can_ids, slots):
     common = {"id", "protocol", "bus", "can_id"}
     protocol = device.get("protocol") if isinstance(device, dict) else None
-    require(protocol in ("encos", "cih408"), "device: unsupported protocol")
+    require(protocol in ("encos", "bjcx"), "device: unsupported protocol")
     fields = ({"model_profile_id", "limits", "encoding", "power_query_period_ms"} if protocol == "encos"
               else {"model", "status_poll_period_ms", "status_reply_timeout_ms"})
     keys(device, common | fields, "device")
@@ -40,11 +40,11 @@ def device_line(device, channels, names, can_ids, slots):
     slot = slots.get(bus, 0)
     require(slot < 7, f"bus {bus}: too many devices for the fixed PDO slots")
     slots[bus] = slot + 1
-    if protocol == "cih408":
-        require(channels[bus], f"{name}: CiH408 requires CAN FD+BRS at 1000/5000 kbps")
+    if protocol == "bjcx":
+        require(channels[bus], f"{name}: bjcx requires CAN FD+BRS at 1000/5000 kbps")
         models = {"HRA40H-101": 0x8101, "HRA55H-101": 0x8102}
         model = device["model"]
-        require(type(model) is str and model in models, f"{name}: unsupported CiH408 model")
+        require(type(model) is str and model in models, f"{name}: unsupported bjcx model")
         timeout = bounded(device["status_reply_timeout_ms"], 2, 20, "status_reply_timeout_ms")
         period = bounded(device["status_poll_period_ms"], 2 * timeout, 1000, "status_poll_period_ms")
         unused_encos = "{ {{0}, {0}, {0}, {0}, {0}, {0}, 0}, 0, 0 }"

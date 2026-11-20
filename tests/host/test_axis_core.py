@@ -22,7 +22,7 @@ class AxisCoreTest(unittest.TestCase):
             flags += ["-g", "-fsanitize=address,undefined,float-cast-overflow", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         # No generated, EtherCAT, HPM, RTOS or application-implementation headers.
         for include in ("firmware/comm/canfd", "firmware/devices/motor",
-                        "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408", "firmware/protocols/encos",
+                        "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx", "firmware/protocols/encos",
                         "firmware/cfg", "firmware/ports"):
             flags.extend(("-I", str(ROOT / include)))
         sources = (
@@ -30,7 +30,7 @@ class AxisCoreTest(unittest.TestCase):
             "firmware/devices/motor/motor_driver_binding.cpp", "firmware/devices/motor/drivers/encos/encos_parameter_transactions.cpp",
             "firmware/devices/motor/motor_driver.cpp", "firmware/devices/motor/drivers/encos/encos_driver.cpp",
             "firmware/devices/motor/drivers/encos/encos_session.cpp",
-            "firmware/devices/motor/drivers/cih408/cih408_driver.cpp",
+            "firmware/devices/motor/drivers/bjcx/bjcx_driver.cpp",
             "firmware/protocols/encos/encos_motor.cpp", "firmware/protocols/encos/encos_service.cpp",
         )
         cls.run_command([cxx, *flags, *(str(ROOT / source) for source in sources), "-o", str(cls.executable)])

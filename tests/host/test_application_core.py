@@ -22,7 +22,7 @@ class ApplicationCoreTest(unittest.TestCase):
             flags += ["-g", "-fsanitize=address,undefined,float-cast-overflow", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         # Compile the gateway application and motor devices without generated/EtherCAT/SSC/HPM/RTOS headers.
         for include in ("firmware/app/gateway", "firmware/comm/canfd", "firmware/devices/motor",
-                        "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408", "firmware/protocols/encos",
+                        "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx", "firmware/protocols/encos",
                         "firmware/cfg", "firmware/ports"):
             flags.extend(("-I", str(ROOT / include)))
         sources = [ROOT / "tests/host/motor/application_core_test.cpp"]

@@ -11,7 +11,7 @@
 ## 离线演练
 
 ```sh
-python3 -m unittest discover -s tests/host -p 'test_cih408_mit_once.py' -v
+python3 -m unittest discover -s tests/host -p 'test_bjcx_mit_once.py' -v
 ```
 
 主机夹具模拟 RK 产生带非零序号的诊断 RxPDO、HPM 单次发帧、真实历史反馈字节回放、SM3 写完和 RK 校验。只接受匹配物理通道、TX 令牌、后于 TX EOF 的同 ID 标准 FD+BRS 反馈；RK 只收 WKC 3、OP、对应序号的新结果。错误路由/格式、重复命令、取消、拒绝提交、出 OP 和超期都有回归。夹具的 32/48 B 是隔离的诊断数据，不是生产 PDO 契约；601 µs 是用于演练的片上截止，不是本轮实测。
@@ -20,4 +20,4 @@ python3 -m unittest discover -s tests/host -p 'test_cih408_mit_once.py' -v
 
 - 不自动使能、不切换反馈格式、不重试。全零 MIT 不是失能或停机。模式与使能前提须按实机手册确认；本次离线结果不说明未使能时该电机会如何处理 `0x11`。
 - 默认 `0x80` 不携带请求序号。实际接入需单节点、独占诊断通道，无周期查询和主动上报；发前清陈旧 RX，按同一 MCAN 时基的 TX/RX EOF 匹配，并关闭 MCAN 自动重传。不能用软件先读到哪个队列替代硬件时序。
-- 实板还需把诊断事务接到 RK/HPM 和 MCAN，超期撤销未完成 TX，核对真正的 SM3 写完和下一帧读回。生产 CiH408 目前仍只读，不应借 Raw PDO 绕过，也未将离线夹具编入任何镜像。
+- 实板还需把诊断事务接到 RK/HPM 和 MCAN，超期撤销未完成 TX，核对真正的 SM3 写完和下一帧读回。生产 bjcx 目前仍只读，不应借 Raw PDO 绕过，也未将离线夹具编入任何镜像。

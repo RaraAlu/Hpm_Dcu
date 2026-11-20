@@ -199,7 +199,7 @@ static void configuration_values()
     CHECK(app::select_mode(app::OperatingMode::Motor));
 }
 
-static dcu_motor_device_profile_t cih408_on_bus2()
+static dcu_motor_device_profile_t bjcx_on_bus2()
 {
     dcu_motor_device_profile_t status_motor{};
     status_motor.bus = 2;
@@ -212,7 +212,7 @@ static dcu_motor_device_profile_t cih408_on_bus2()
 
 static void production_profile()
 {
-    const auto status_motor = cih408_on_bus2();
+    const auto status_motor = bjcx_on_bus2();
     dcu_motor_device_profile_t devices[]{status_motor, classic_motor};
     const dcu_production_profile_t valid{applied_channels, 2, devices, 2, 8, 15, {}};
     for (unsigned i = 0; i < 11; ++i) {
@@ -255,7 +255,7 @@ static void production_profile()
 
 static void query_before_sideband()
 {
-    const auto motor = cih408_on_bus2();
+    const auto motor = bjcx_on_bus2();
     auto config = configuration(false);
     config.devices = &motor;
     config.device_count = 1;

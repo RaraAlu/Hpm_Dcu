@@ -5,7 +5,7 @@
 #include <array>
 #include <cstdint>
 
-namespace cih408_mit_once {
+namespace bjcx_mit_once {
 
 using RxPdo = std::array<uint8_t, 32>;
 using TxPdo = std::array<uint8_t, 48>;
@@ -138,4 +138,4 @@ private:
     TxPdo pdo_{};
 };
 
-} // namespace cih408_mit_once
+} // namespace bjcx_mit_once

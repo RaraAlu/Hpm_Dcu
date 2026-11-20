@@ -8,7 +8,7 @@
 #ifdef DCU_DATA_SESSION_GATE
 #include "session_bridge.h"
 #endif
-#ifdef DCU_DATA_CIH408_MIT_ONCE
+#ifdef DCU_DATA_BJCX_MIT_ONCE
 #include "mit_once.h"
 #endif
 
@@ -169,7 +169,7 @@ UINT16 APPL_StopOutputHandler(void)
     dcu_data_session_step(false);
 #elif defined(DCU_DATA_BACKEND_MCAN)
     dcu_data_mcan_disable();
-#elif defined(DCU_DATA_CIH408_MIT_ONCE)
+#elif defined(DCU_DATA_BJCX_MIT_ONCE)
     mit_once_stop();
 #endif
     dcu_data_reset();
@@ -183,7 +183,7 @@ void APPL_OutputMapping(UINT16 *data)
         dcu_data_session_pdo(data, nPdOutputSize);
 #elif defined(DCU_DATA_BACKEND_MCAN)
     (void)dcu_data_mcan_stage(data, nPdOutputSize);
-#elif defined(DCU_DATA_CIH408_MIT_ONCE)
+#elif defined(DCU_DATA_BJCX_MIT_ONCE)
     mit_once_stage(data, nPdOutputSize);
 #else
     (void)dcu_data_capture(data, nPdOutputSize);
@@ -192,7 +192,7 @@ void APPL_OutputMapping(UINT16 *data)
 
 void APPL_InputMapping(UINT16 *data)
 {
-#ifdef DCU_DATA_CIH408_MIT_ONCE
+#ifdef DCU_DATA_BJCX_MIT_ONCE
     mit_once_input(data, nPdInputSize);
 #else
     (void)dcu_data_copy(data, nPdInputSize);

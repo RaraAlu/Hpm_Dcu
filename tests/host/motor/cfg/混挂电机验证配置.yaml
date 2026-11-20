@@ -38,14 +38,14 @@ devices:
       torque_constant_cNm_A: 50
       can_timeout_ms: 100
   - id: fixture_hra40
-    protocol: cih408
+    protocol: bjcx
     model: HRA40H-101
     bus: 2
     can_id: 36
     status_poll_period_ms: 100
     status_reply_timeout_ms: 10
   - id: fixture_hra55
-    protocol: cih408
+    protocol: bjcx
     model: HRA55H-101
     bus: 0
     can_id: 3

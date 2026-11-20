@@ -18,7 +18,7 @@
 #ifdef DCU_DATA_SESSION_GATE
 #include "session_bridge.h"
 #endif
-#ifdef DCU_DATA_CIH408_MIT_ONCE
+#ifdef DCU_DATA_BJCX_MIT_ONCE
 #include "mit_once.h"
 #endif
 
@@ -52,7 +52,7 @@ static void data_poll(void)
 #ifdef DCU_DATA_BACKEND_MCAN
         dcu_data_mcan_poll();
 #endif
-#ifdef DCU_DATA_CIH408_MIT_ONCE
+#ifdef DCU_DATA_BJCX_MIT_ONCE
         mit_once_poll();
 #endif
         uint32_t now_ms = dcu_time_now_ms();
@@ -68,7 +68,7 @@ int main(void)
     board_init();
     dcu_data_reset();
     bool ready = dcu_timebase_init();
-#ifdef DCU_DATA_CIH408_MIT_ONCE
+#ifdef DCU_DATA_BJCX_MIT_ONCE
     ready = ready && mit_once_init();
 #endif
 #ifdef DCU_DATA_BACKEND_MCAN

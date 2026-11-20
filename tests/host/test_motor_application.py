@@ -32,7 +32,7 @@ class MotorApplicationTest(unittest.TestCase):
             "firmware/app", "firmware/app/gateway", "firmware/app/cycle",
             "firmware/protocols/encos", "firmware/comm/canfd",
             "firmware/comm/ethercat", "third_party/beckhoff_ssc/Src",
-            "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/cih408",
+            "firmware/devices/motor", "firmware/devices/motor/drivers/encos", "firmware/devices/motor/drivers/bjcx",
         ):
             flags.extend(("-I", str(ROOT / include)))
         storage = work / "storage.o"
@@ -84,7 +84,7 @@ class MotorApplicationTest(unittest.TestCase):
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_session.cpp"),
-            str(ROOT / "firmware/devices/motor/drivers/cih408/cih408_driver.cpp"),
+            str(ROOT / "firmware/devices/motor/drivers/bjcx/bjcx_driver.cpp"),
             str(storage), str(fixture), str(mixed), str(readiness), "-lm", "-o", str(cls.executable),
         ])
 
@@ -225,7 +225,7 @@ class MotorApplicationTest(unittest.TestCase):
     def test_dense_device_order_and_reply_identity_are_independent_of_wire_slot_and_can_id(self):
         self.run_command([str(self.executable), "cross_bus_device_mapping"])
 
-    def test_mixed_cih408_and_encos_preserve_routing_transport_and_diagnostic_only_policy(self):
+    def test_mixed_bjcx_and_encos_preserve_routing_transport_and_diagnostic_only_policy(self):
         self.run_command([str(self.executable), "mixed_motor_profile"])
 
     def test_production_reconnect_reuses_pdo_and_requires_neutral_after_link_loss(self):

@@ -1,8 +1,8 @@
-#include "cih408_mit_once.hpp"
+#include "bjcx_mit_once.hpp"
 #include <algorithm>
 #include <cassert>
 
-using namespace cih408_mit_once;
+using namespace bjcx_mit_once;
 
 namespace {
 constexpr unsigned bus = 1;

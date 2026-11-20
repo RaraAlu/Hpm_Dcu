@@ -1,4 +1,4 @@
-sdk_inc(motor motor/drivers/encos motor/drivers/cih408 imu)
+sdk_inc(motor motor/drivers/encos motor/drivers/bjcx imu)
 sdk_src(
     motor/motor_driver.cpp
     motor/motor_driver_binding.cpp
@@ -6,6 +6,6 @@ sdk_src(
     motor/drivers/encos/encos_driver.cpp
     motor/drivers/encos/encos_session.cpp
     motor/drivers/encos/encos_parameter_transactions.cpp
-    motor/drivers/cih408/cih408_driver.cpp
+    motor/drivers/bjcx/bjcx_driver.cpp
     imu/imu_device.cpp
 )
