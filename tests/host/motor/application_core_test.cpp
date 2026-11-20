@@ -18,6 +18,7 @@ namespace app = dcu::app::gateway_application;
 namespace parameters = dcu::motor::encos_parameters;
 namespace motor = dcu::motor;
 static uint32_t now_ms, now_us;
+static uint16_t bus_states[DCU_DEVICE_CAN_BUS_COUNT];
 static unsigned canceled;
 static std::deque<dcu_can_frame_t> received[ENCOS_CHANNEL_COUNT];
 static std::vector<std::pair<unsigned, dcu_can_frame_t>> sent;
@@ -39,7 +40,7 @@ const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus)
 }
 uint32_t dcu_time_now_ms(void) { return now_ms; }
 uint32_t dcu_time_now_us(void) { return now_us; }
-uint16_t dcu_can_bus_state(uint32_t) { return DCU_CAN_BUS_ERROR_ACTIVE; }
+uint16_t dcu_can_bus_state(uint32_t bus) { return bus_states[bus]; }
 uint32_t dcu_can_rx_drops(unsigned) { return 0; }
 bool dcu_can_pending(unsigned) { return false; }
 unsigned dcu_can_tx_free(unsigned) { return 8; }
@@ -252,6 +253,38 @@ static void production_profile()
     CHECK(sent[1].first == 2 && sent[1].second.id == status_motor.can_id && sent[1].second.data[0] == 0x17);
 }
 
+static void query_before_sideband()
+{
+    const auto motor = cih408_on_bus2();
+    auto config = configuration(false);
+    config.devices = &motor;
+    config.device_count = 1;
+    config.channels[0].role = 2;
+    config.channels[2] = {1, 1, 0, true};
+    initialize_core(config, app::OperatingMode::MotorWithRaw);
+    CHECK(app::set_owner(app::OWNER_PDO));
+    app::operational(true);
+    auto command = cycle_command();
+    command.board.enabled_channels = command.board.enabled_devices = command.board.control_bits = 0;
+    command.channels[0].expected_role = 2;
+    command.channels[2].expected_role = 1;
+    bus_states[1] = bus_states[2] = DCU_CAN_BUS_OFF;
+    CHECK(tick(&command).accepted && sent.empty());
+
+    // Bus 1 stays off. Bus 2's newly eligible query must precede bus 0's Raw frame in this cycle.
+    bus_states[2] = DCU_CAN_BUS_ERROR_ACTIVE;
+    command.board.enabled_channels = command.board.control_bits = 1;
+    auto &raw = command.raw[0];
+    raw.sequence = raw.count = 1;
+    raw.valid = true;
+    raw.slots[0].frame.id = 0x321;
+    raw.slots[0].frame.dlc = 1;
+    const auto result = tick(&command);
+    CHECK(result.accepted && result.raw_mirrored && sent.size() == 2);
+    CHECK(sent[0].first == 2 && sent[0].second.id == motor.can_id && sent[0].second.data[0] == 0x17);
+    CHECK(sent[1].first == 0 && sent[1].second.id == 0x321);
+}
+
 static void stop_and_snapshots()
 {
     auto command = cycle_command();
@@ -374,6 +407,7 @@ int main(int argc, char **argv)
     CHECK(argc == 2);
     if (!std::strcmp(argv[1], "configuration")) configuration_values();
     else if (!std::strcmp(argv[1], "production_profile")) production_profile();
+    else if (!std::strcmp(argv[1], "query_before_sideband")) query_before_sideband();
     else if (!std::strcmp(argv[1], "stop")) stop_and_snapshots();
     else if (!std::strcmp(argv[1], "sdo")) sdo_sequence();
     else if (!std::strcmp(argv[1], "owner")) ownership();

@@ -46,6 +46,9 @@ class ApplicationCoreTest(unittest.TestCase):
     def test_production_profile_binds_drivers_on_applied_buses_without_ethercat(self):
         self.run_command([str(self.executable), "production_profile"])
 
+    def test_faulted_bus_does_not_skip_later_queries_and_raw_stays_last(self):
+        self.run_command([str(self.executable), "query_before_sideband"])
+
     def test_native_motion_and_publication_keep_stop_priority_and_private_state(self):
         self.run_command([str(self.executable), "stop"])
 

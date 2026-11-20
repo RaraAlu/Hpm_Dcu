@@ -351,102 +351,7 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
     check_timeouts(now);
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; c++) {
         if (!state_.channels[c].enabled) continue;
-        collect_tx_events(c);
-        transactions_.expire_poll(c, now);
-        schedule_[c].refill(now);
-        dcu_can_frame_t f;
-        uint32_t stamp;
-        for (unsigned n = 0; n < 32 && dcu_can_receive(c, &f, &stamp); n++) {
-            if (transactions_.awaiting_tx(c))
-                collect_tx_events(c);
-            const bool routed = consume_feedback(c, f, stamp, now);
-            const bool raw_channel = state_.channels[c].role >= 2;
-            if (f.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD) {
-                if (!routed || raw_channel) ++state_.legacy_rx_drop[c];
-            } else if (raw_channel) raw_.receive(c, f);
-        }
-        if (dcu_can_bus_state(c) == 3) {
-            state_.board_fault |= 8;
-            transactions_.cancel(c, RESULT_IO);
-            for (unsigned j = 0; j < bus_device_count_[c]; ++j)
-                devices_[devices_on_bus_[c][j]].stop(5);
-            continue;
-        }
-        transactions_.expire_legacy(c, now);
-        /* Do not queue a delayed start after its query snapshot has expired. */
-        for (unsigned j = 0; j < bus_device_count_[c]; ++j)
-            devices_[devices_on_bus_[c][j]].check_startup(now);
-        auto controls = controls_on_bus(c);
-        if (schedule_[c].stalled(now, dcu_can_tx_progress(c),
-                                 dcu_can_pending(c), state_.config.feedback_timeout_ms)) {
-            /* 只把“队列持续无任何发送完成”视为真正的 TX 卡死。
-             * 正常多轴流水发送时 TXBRP 可以跨调度周期保持非零。 */
-            dcu_can_cancel(c);
-            ++state_.channel_tx_drop[c];
-            ++state_.tx_total;
-            state_.board_fault |= 32;
-            for (unsigned j = 0; j < bus_device_count_[c]; ++j)
-                if (auto &device = devices_[devices_on_bus_[c][j]]; device.active()) {
-                    device.record_tx_drop();
-                    device.stop(6);
-                }
-            continue;
-        }
-        if (startup_.running() && state_.operational && state_.session_armed && state_.mode != OperatingMode::Raw) {
-            unsigned cost = 2u * frame_us(c, 8);
-            bool ready = !dcu_can_pending(c) && dcu_can_tx_free(c) > 0;
-            int selected = schedule_[c].next_control(controls, now_us, cost, ready);
-            if (selected >= 0) {
-                unsigned slot = static_cast<unsigned>(selected);
-                auto &device = devices_[devices_on_bus_[c][slot]];
-                if (device.encode_control(f)) {
-                    f.flags = state_.channels[c].frame_format ? 24 : 0;
-                    if (const auto id = dcu_can_submit(c, &f)) {
-                        schedule_[c].control_submitted(slot, now_us, controls.period_us, !device.control_sent(), cost);
-                        device.control_submitted(now, id);
-                        controls.first_send_mask &= ~(1u << slot);
-                    } else {
-                        device.record_tx_drop();
-                        ++state_.channel_tx_drop[c];
-                        ++state_.tx_total;
-                    }
-                } else {
-                    device.stop(2);
-                    controls.active_mask &= ~(1u << slot);
-                }
-            }
-        }
-        const bool fd = state_.channels[c].frame_format != 0;
-        if (startup_.running() || startup_.may_probe())
-            transactions_.submit_queued(c, schedule_[c], controls, fd, now, now_us);
-        const bool preparing = startup_.may_probe();
-        const Owner owner = state_.owner;
-        if (!transactions_.busy(c) && (preparing || (startup_.running() &&
-            (owner == OWNER_PDO || owner == OWNER_SDO) && state_.mode != OperatingMode::Raw)) &&
-            state_.channels[c].role != 0) {
-            /* Internal queries are strictly best effort.  Reserve one complete
-             * control sweep and enough wall-clock slack before creating the
-             * service, otherwise the query waits without stealing a deadline.
-             * Non-active devices get the first query opportunity. Each driver
-             * decides whether and what to poll. */
-            unsigned query_cost = frame_us(c, 2) + frame_us(c, 8);
-            if (schedule_[c].query_window(controls, now_us, query_cost, 2u * frame_us(c, 8))) {
-                for (unsigned pass = 0; pass < 2 && !transactions_.busy(c); pass++) {
-                    for (unsigned n = 0; n < bus_device_count_[c]; n++) {
-                        unsigned slot = (state_.query_cursor[c] + n) % bus_device_count_[c];
-                        const unsigned index = devices_on_bus_[c][slot];
-                        auto &device = devices_[index];
-                        if (pass == 0 ? device.active() : !device.active())
-                            continue;
-                        if (transactions_.start_query(c, index, device, schedule_[c], controls,
-                                                      preparing || owner == OWNER_PDO, fd, now, now_us))
-                            state_.query_cursor[c] = (slot + 1) % bus_device_count_[c];
-                        if (transactions_.busy(c))
-                            break;
-                    }
-                }
-            }
-        }
+        process_bus(c, now, now_us);
     }
     if (startup_.enforced() && !startup_.running() && state_.owner != OWNER_NONE) {
         revoke_business();
@@ -457,6 +362,107 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
         result.raw_mirrored = process_raw(*candidate, now);
     return result;
 }
+
+void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
+{
+    collect_tx_events(c);
+    transactions_.expire_poll(c, now);
+    schedule_[c].refill(now);
+    dcu_can_frame_t f;
+    uint32_t stamp;
+    for (unsigned n = 0; n < 32 && dcu_can_receive(c, &f, &stamp); n++) {
+        if (transactions_.awaiting_tx(c))
+            collect_tx_events(c);
+        const bool routed = consume_feedback(c, f, stamp, now);
+        const bool raw_channel = state_.channels[c].role >= 2;
+        if (f.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD) {
+            if (!routed || raw_channel) ++state_.legacy_rx_drop[c];
+        } else if (raw_channel) raw_.receive(c, f);
+    }
+    if (dcu_can_bus_state(c) == 3) {
+        state_.board_fault |= 8;
+        transactions_.cancel(c, RESULT_IO);
+        for (unsigned j = 0; j < bus_device_count_[c]; ++j)
+            devices_[devices_on_bus_[c][j]].stop(5);
+        return;
+    }
+    transactions_.expire_legacy(c, now);
+    /* Do not queue a delayed start after its query snapshot has expired. */
+    for (unsigned j = 0; j < bus_device_count_[c]; ++j)
+        devices_[devices_on_bus_[c][j]].check_startup(now);
+    auto controls = controls_on_bus(c);
+    if (schedule_[c].stalled(now, dcu_can_tx_progress(c),
+                             dcu_can_pending(c), state_.config.feedback_timeout_ms)) {
+        /* 只把“队列持续无任何发送完成”视为真正的 TX 卡死。
+         * 正常多轴流水发送时 TXBRP 可以跨调度周期保持非零。 */
+        dcu_can_cancel(c);
+        ++state_.channel_tx_drop[c];
+        ++state_.tx_total;
+        state_.board_fault |= 32;
+        for (unsigned j = 0; j < bus_device_count_[c]; ++j)
+            if (auto &device = devices_[devices_on_bus_[c][j]]; device.active()) {
+                device.record_tx_drop();
+                device.stop(6);
+            }
+        return;
+    }
+    if (startup_.running() && state_.operational && state_.session_armed && state_.mode != OperatingMode::Raw) {
+        unsigned cost = 2u * frame_us(c, 8);
+        bool ready = !dcu_can_pending(c) && dcu_can_tx_free(c) > 0;
+        int selected = schedule_[c].next_control(controls, now_us, cost, ready);
+        if (selected >= 0) {
+            unsigned slot = static_cast<unsigned>(selected);
+            auto &device = devices_[devices_on_bus_[c][slot]];
+            if (device.encode_control(f)) {
+                f.flags = state_.channels[c].frame_format ? 24 : 0;
+                if (const auto id = dcu_can_submit(c, &f)) {
+                    schedule_[c].control_submitted(slot, now_us, controls.period_us, !device.control_sent(), cost);
+                    device.control_submitted(now, id);
+                    controls.first_send_mask &= ~(1u << slot);
+                } else {
+                    device.record_tx_drop();
+                    ++state_.channel_tx_drop[c];
+                    ++state_.tx_total;
+                }
+            } else {
+                device.stop(2);
+                controls.active_mask &= ~(1u << slot);
+            }
+        }
+    }
+    const bool fd = state_.channels[c].frame_format != 0;
+    if (startup_.running() || startup_.may_probe())
+        transactions_.submit_queued(c, schedule_[c], controls, fd, now, now_us);
+    const bool preparing = startup_.may_probe();
+    const Owner owner = state_.owner;
+    if (!transactions_.busy(c) && (preparing || (startup_.running() &&
+        (owner == OWNER_PDO || owner == OWNER_SDO) && state_.mode != OperatingMode::Raw)) &&
+        state_.channels[c].role != 0) {
+        /* Internal queries are strictly best effort.  Reserve one complete
+         * control sweep and enough wall-clock slack before creating the
+         * service, otherwise the query waits without stealing a deadline.
+         * Non-active devices get the first query opportunity. Each driver
+         * decides whether and what to poll. */
+        unsigned query_cost = frame_us(c, 2) + frame_us(c, 8);
+        if (schedule_[c].query_window(controls, now_us, query_cost, 2u * frame_us(c, 8))) {
+            for (unsigned pass = 0; pass < 2 && !transactions_.busy(c); pass++) {
+                for (unsigned n = 0; n < bus_device_count_[c]; n++) {
+                    unsigned slot = (state_.query_cursor[c] + n) % bus_device_count_[c];
+                    const unsigned index = devices_on_bus_[c][slot];
+                    auto &device = devices_[index];
+                    if (pass == 0 ? device.active() : !device.active())
+                        continue;
+                    if (transactions_.start_query(c, index, device, schedule_[c], controls,
+                                                  preparing || owner == OWNER_PDO, fd, now, now_us))
+                        state_.query_cursor[c] = (slot + 1) % bus_device_count_[c];
+                    if (transactions_.busy(c))
+                        break;
+                }
+            }
+        }
+    }
+}
+
 bool GatewayApplication::process_raw(const CycleCommand &candidate, uint32_t now)
 {
     const auto mode = state_.mode;

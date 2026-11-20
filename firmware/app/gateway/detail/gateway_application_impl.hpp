@@ -48,6 +48,7 @@ private:
     bool command_permitted(uint32_t now_ms) const;
     void stop_all(uint16_t fault);
     void check_timeouts(uint32_t now_ms);
+    void process_bus(unsigned bus, uint32_t now_ms, uint32_t now_us);
     void step_startup(uint32_t now_ms);
     void revoke_business();
     bool accept_candidate(const CycleCommand &candidate, uint32_t now_ms, ProcessResult &result);
