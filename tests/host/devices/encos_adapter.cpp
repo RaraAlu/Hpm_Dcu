@@ -38,7 +38,7 @@ struct Fixture {
     dcu::motor::MotorConfiguration config{
         {1, -10000000, 10000000, 20000000, 10000, 100},
         {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0},
-        0x8000, 0,
+        0x8000, 0, 0, 0, 0, DCU_MOTOR_PROTOCOL_ENCOS,
     };
 
     motor::MotorSessionDriver *bind(unsigned slot = 0) const

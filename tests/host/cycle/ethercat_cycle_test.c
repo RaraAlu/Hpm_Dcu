@@ -33,6 +33,8 @@ static uint32_t cancel_calls;
 static uint8_t last_output[784];
 static uint8_t processed_output, published_output;
 static bool command_pending, defer_process;
+static bool neutral_feedback_pending;
+static uint32_t neutral_period_ns, neutral_cutoff_us, neutral_deadline_calls;
 static uint8_t requested_state;
 static uint16_t requested_error;
 static bool sync_during_mapping;
@@ -65,6 +67,34 @@ void motor_control_output(const void *data)
     command_pending = true;
 }
 void motor_control_prepare_input(void) { ++prepare_calls; time_us += prepare_cost_us; }
+bool motor_control_neutral_feedback_pending(void) { return neutral_feedback_pending; }
+void motor_control_set_neutral_window(uint32_t period_ns, uint32_t cutoff_us)
+{
+    neutral_period_ns = period_ns;
+    neutral_cutoff_us = cutoff_us;
+}
+void motor_control_neutral_feedback_deadline(void)
+{
+    ++neutral_deadline_calls;
+    neutral_feedback_pending = false;
+}
+#if defined(CONFIG_PDO_PHASE_TRACE)
+void *dcu_ssc_txpdo_buffer(uint16_t *capacity)
+{
+    static uint8_t buffer[8];
+    *capacity = sizeof(buffer);
+    return buffer;
+}
+void dcu_pdo_phase_record_rx(const void *data, uint32_t stage_start_us, uint32_t stage_commit_us,
+                             uint32_t direct_to_slot, uint32_t direct_read_end_us)
+{
+    (void)data;
+    (void)stage_start_us;
+    (void)stage_commit_us;
+    (void)direct_to_slot;
+    (void)direct_read_end_us;
+}
+#endif
 bool motor_control_process(void)
 {
     if (command_pending && defer_process) return false;
@@ -176,6 +206,40 @@ static void check_stopped(uint32_t expected_fault)
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (!strcmp(argv[1], "neutral_wait") || !strcmp(argv[1], "neutral_wait_late")) {
+        test_esc_period = 2000000U;
+        start();
+        time_us = 85;
+        command_boundary(120);
+        dcu_cycle_step();
+        CHECK(neutral_period_ns == 2000000U && neutral_cutoff_us == 1270U);
+        neutral_feedback_pending = true;
+        time_us = 1269;
+        dcu_cycle_step();
+        volatile const dcu_pdo_phase_sample_t *sample = &pdo_phase_trace.sample[0];
+        CHECK(!sample->neutral_wait_checks && !mapping_calls && neutral_feedback_pending);
+        if (!strcmp(argv[1], "neutral_wait_late")) {
+            time_us = 1871;
+            dcu_cycle_step();
+            check_stopped(PDO_PIPELINE_TX_LATE);
+            CHECK(!mapping_calls && !sample->publish_begin_us);
+            CHECK(pdo_phase_trace.fault_epoch == sample->epoch && pdo_phase_trace.fault_us == 1871);
+            CHECK(pdo_phase_trace.fault_flags == PDO_PIPELINE_TX_LATE);
+        } else {
+            time_us = 1270;
+            prepare_cost_us = 50;
+            mapping_cost_us = 300;
+            dcu_cycle_step();
+            CHECK(mapping_calls == 1 && !fault_calls && !pdo_phase_trace.fault_flags);
+            CHECK(neutral_deadline_calls == 1 && !neutral_feedback_pending);
+            CHECK(sample->neutral_wait_checks == 1 && sample->neutral_last_wait_us == 1270);
+            CHECK(sample->publish_begin_us == 1270 && sample->pack_end_us == 1320);
+            CHECK(sample->esc_begin_us == 1320 && sample->esc_end_us == 1620 && sample->published_us == 1620);
+        }
+        return 0;
+    }
+#endif
     if (!strcmp(argv[1], "sm2_config")) {
         select_sm2();
         sSyncManInPar.u16SyncType = SYNCTYPE_DCSYNC0;
@@ -423,6 +487,11 @@ int main(int argc, char **argv)
         mapping_cost_us = 51;
         dcu_cycle_step();
         check_stopped(PDO_PIPELINE_TX_LATE);
+#if defined(CONFIG_PDO_PHASE_TRACE)
+        volatile const dcu_pdo_phase_sample_t *sample = &pdo_phase_trace.sample[0];
+        CHECK(sample->publish_begin_us == 1750 && sample->pack_end_us == 1800);
+        CHECK(sample->esc_begin_us == 1800 && sample->esc_end_us == 1851 && !sample->published_us);
+#endif
         return 0;
     }
     if (!strcmp(argv[1], "pack_already_late")) {
@@ -431,6 +500,11 @@ int main(int argc, char **argv)
         dcu_cycle_step();
         CHECK(mapping_calls == 0);
         check_stopped(PDO_PIPELINE_TX_LATE);
+#if defined(CONFIG_PDO_PHASE_TRACE)
+        volatile const dcu_pdo_phase_sample_t *sample = &pdo_phase_trace.sample[0];
+        CHECK(sample->publish_begin_us == 1750 && sample->pack_end_us == 1851);
+        CHECK(!sample->esc_begin_us && !sample->esc_end_us && !sample->published_us);
+#endif
         return 0;
     }
     if (!strcmp(argv[1], "crossed_epoch")) {

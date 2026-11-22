@@ -138,7 +138,7 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
             memcpy(data, &fields[sub - 1], bytes);
             return 0;
         }
-        if (device && device->model_profile_id == 0x8000 && offset % 16 == 2 && sub <= 4) {
+        if (device && device->protocol == DCU_MOTOR_PROTOCOL_ENCOS && offset % 16 == 2 && sub <= 4) {
             const auto &profile = device->encos.profile;
             const double fields[] = {profile.kp[0], profile.kp[1], profile.kd[0], profile.kd[1]};
             if (bytes != 2U) return ABORTIDX_PARAM_LENGTH_ERROR;

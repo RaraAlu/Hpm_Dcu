@@ -16,6 +16,7 @@ class EthercatCycleTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="dcu-ethercat-cycle-")
         cls.addClassCleanup(directory.cleanup)
         cls.executable = Path(directory.name) / "ethercat_cycle"
+        cls.trace_executable = Path(directory.name) / "ethercat_cycle_trace"
         flags = ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         for include in (
             "tests/host/cycle/stubs", "firmware/app/cycle", "firmware/app/motor",
@@ -24,11 +25,13 @@ class EthercatCycleTest(unittest.TestCase):
             "firmware/generated/encos", "firmware/bsp/dcu_hpm5e31",
         ):
             flags.extend(("-I", str(ROOT / include)))
-        cls.run_command([
-            cc, *flags, str(ROOT / "tests/host/cycle/ethercat_cycle_test.c"),
-            str(ROOT / "firmware/app/cycle/pdo_pipeline.c"), "-o", str(cls.executable),
+        sources = [
+            str(ROOT / "tests/host/cycle/ethercat_cycle_test.c"),
+            str(ROOT / "firmware/app/cycle/pdo_pipeline.c"),
             str(ROOT / "firmware/comm/canfd/can_tx_gate.c"),
-        ])
+        ]
+        cls.run_command([cc, *flags, *sources, "-o", str(cls.executable)])
+        cls.run_command([cc, *flags, "-DCONFIG_PDO_PHASE_TRACE=1", *sources, "-o", str(cls.trace_executable)])
 
     @staticmethod
     def run_command(command):
@@ -63,6 +66,11 @@ class EthercatCycleTest(unittest.TestCase):
 
     def test_already_late_packing_never_begins_an_esc_write(self):
         self.run_command([str(self.executable), "pack_already_late"])
+
+    def test_phase_trace_retains_failed_publish_stages_and_neutral_wait(self):
+        for scenario in ("neutral_wait", "neutral_wait_late", "prepare_late", "pack_already_late", "sm2_exchange"):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.trace_executable), scenario])
 
     def test_sync_during_esc_write_cannot_acknowledge_new_epoch(self):
         self.run_command([str(self.executable), "crossed_epoch"])

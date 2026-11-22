@@ -30,6 +30,12 @@ public:
     bool start_query(uint32_t now_ms, bool cyclic_owner);
     bool prepare_status_poll(uint32_t now_ms, StatusPoll &poll);
     bool consume_status_reply(const CanFrame &, uint32_t timestamp_ms);
+    bool neutral_mit_only() const { return driver_ && driver_->neutral_mit_only(); }
+    bool accept_neutral_mit(const Command &, bool permitted, bool continuing);
+    bool neutral_mit_requested() const { return state_.neutral_pending; }
+    bool take_neutral_mit(CanFrame &, uint8_t counter);
+    bool consume_neutral_mit(const CanFrame &, uint32_t timestamp_ms);
+    void abort_neutral_mit(uint16_t fault);
     bool accepts_payload(uint8_t bytes) const { return driver_ && bytes <= driver_->max_rx_bytes(); }
     bool supports_legacy_queries() const { return driver_ && driver_->capabilities().legacy_parameter_queries; }
     bool consume_feedback(const CanFrame &, uint32_t timestamp_ms, uint32_t now_ms);

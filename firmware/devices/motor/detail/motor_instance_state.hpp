@@ -22,6 +22,7 @@ struct MotorState {
     uint16_t previous_control{};
     MotorPhase phase{MotorPhase::Stopped};
     bool new_feedback{};
+    bool neutral_armed{}, neutral_pending{}, neutral_reply{};
 };
 
 struct MotorHistory {

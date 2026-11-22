@@ -65,17 +65,12 @@ static uint32_t phase_command_after_release(const volatile dcu_pdo_phase_sample_
     return end_us - ((int32_t)(begin_us - release) < 0 ? release : begin_us);
 }
 
-static void phase_record_publish(uint32_t epoch, uint32_t begin_us, uint32_t pack_end_us,
-                                 uint32_t esc_begin_us, uint32_t end_us)
+static void phase_record_publish(volatile dcu_pdo_phase_sample_t *sample, uint32_t end_us)
 {
-    volatile dcu_pdo_phase_sample_t *sample = phase_current(epoch);
     if (!sample) return;
     uint16_t capacity;
     const uint8_t *wire = dcu_ssc_txpdo_buffer(&capacity);
     if (wire && capacity >= 8U) sample->accepted = phase_le32(wire + 4);
-    sample->publish_begin_us = begin_us;
-    sample->pack_end_us = pack_end_us;
-    sample->esc_begin_us = esc_begin_us;
     sample->published_us = end_us;
     uint32_t dc_low;
     HW_EscReadDWord(dc_low, ESC_SYSTEMTIME_OFFSET);
@@ -241,6 +236,10 @@ uint16_t dcu_cycle_start_outputs(void)
     cycle_diagnostics.first_rx_miss_stage_busy = 0;
     cycle_diagnostics.first_rx_miss_stage_start_us = 0;
     cycle_diagnostics.fault_last_stage_us = 0;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    pdo_phase_trace.count = 0;
+    pdo_phase_trace.fault_flags = 0;
+#endif
     /* Keep SSC's Sync0 watchdog and SM checks, but use only the scheduled
      * SSC write in OP. Sync1 is already excluded by the DC configuration. */
     runtime.ssc_sync0_latch = LatchInputSync0Value;
@@ -249,6 +248,7 @@ uint16_t dcu_cycle_start_outputs(void)
     runtime.command_pending = false;
     runtime.processed_epoch = 0U;
     runtime.outputs_running = true;
+    motor_control_set_neutral_window(0, 0);
     dcu_tx_allow();
     pipeline.stage_clock_us = dcu_time_now_us;
 #if defined(CONFIG_SYNC0_HW_CAPTURE_TEST)
@@ -398,6 +398,11 @@ static bool check_faults(uint32_t now_us)
     cycle_diagnostics.fault_al_status = nAlStatus;
     cycle_diagnostics.fault_handled_us = now_us;
     cycle_diagnostics.fault_last_stage_us = read_handoff(&handoff.stage_done_us);
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    pdo_phase_trace.fault_epoch = read_handoff(&pipeline.epoch);
+    pdo_phase_trace.fault_us = now_us;
+    pdo_phase_trace.fault_flags = faults;
+#endif
     if ((faults & PDO_PIPELINE_RX_MISSING) && !read_handoff(&handoff.sm2_cycles)) {
         cycle_diagnostics.first_rx_miss_epoch = read_handoff(&handoff.miss_epoch);
         cycle_diagnostics.first_rx_miss_sync_us = read_handoff(&handoff.miss_sync_us);
@@ -426,21 +431,42 @@ static void publish_due(void)
     const bool sm2 = read_handoff(&handoff.sm2_cycles);
     if (!sm2 && read_handoff(&pipeline.received) && runtime.processed_epoch != epoch)
         return;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    volatile dcu_pdo_phase_sample_t *sample = !sm2 ? phase_current(epoch) : NULL;
+#endif
+    if (motor_control_neutral_feedback_pending()) {
+#if defined(CONFIG_PDO_PHASE_TRACE)
+        if (sample) {
+            ++sample->neutral_wait_checks;
+            sample->neutral_last_wait_us = now_us;
+        }
+#endif
+        motor_control_neutral_feedback_deadline();
+    }
     uint32_t offset_us = now_us - sync_us;
     uint32_t release_us = pipeline.period_us - pipeline.advance_us - DCU_TX_BUILD_BUDGET_US;
     if (offset_us >= release_us && offset_us - release_us > cycle_diagnostics.publish_start_delay_max_us)
         cycle_diagnostics.publish_start_delay_max_us = offset_us - release_us;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (sample) sample->publish_begin_us = now_us;
+#endif
     motor_control_prepare_input();
     uint32_t packed_us = dcu_time_now_us();
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (sample) sample->pack_end_us = packed_us;
+#endif
     if (packed_us - now_us > cycle_diagnostics.prepare_max_us)
         cycle_diagnostics.prepare_max_us = packed_us - now_us;
     if (check_faults(packed_us) || epoch != read_handoff(&pipeline.epoch))
         return;
 #if defined(CONFIG_PDO_PHASE_TRACE)
-    uint32_t esc_begin_us = dcu_time_now_us();
+    if (sample) sample->esc_begin_us = dcu_time_now_us();
 #endif
     PDO_InputMapping();
     uint32_t end_us = dcu_time_now_us();
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (sample) sample->esc_end_us = end_us;
+#endif
     if (end_us - packed_us > cycle_diagnostics.esc_write_max_us)
         cycle_diagnostics.esc_write_max_us = end_us - packed_us;
     if (end_us - now_us > cycle_diagnostics.publish_max_us)
@@ -448,7 +474,7 @@ static void publish_due(void)
     if (pdo_pipeline_mark_published(&pipeline, epoch, end_us)) {
         cycle_diagnostics.published_epoch = epoch;
 #if defined(CONFIG_PDO_PHASE_TRACE)
-        if (!sm2) phase_record_publish(epoch, now_us, packed_us, esc_begin_us, end_us);
+        phase_record_publish(sample, end_us);
 #endif
     }
     (void)check_faults(dcu_time_now_us());
@@ -479,16 +505,22 @@ void dcu_cycle_step(void)
     if (pdo_pipeline_acquire(&pipeline, &view)) {
         if (runtime.outputs_running && view.epoch == __atomic_load_n(&pipeline.epoch, __ATOMIC_ACQUIRE)) {
             if (!sm2) record_timing(&view);
+            const uint32_t cutoff_us = view.sync_us + pipeline.period_us - pipeline.advance_us -
+                                       DCU_TX_BUILD_BUDGET_US;
+            motor_control_set_neutral_window(sm2 ? 0U : pipeline.period_ns, cutoff_us);
 #if defined(CONFIG_PDO_PHASE_TRACE)
             volatile dcu_pdo_phase_sample_t *sample = sm2 ? NULL : phase_record_latch(&view, start);
-            uint32_t output_begin_us = dcu_time_now_us();
+            uint32_t output_begin_us = sample ? dcu_time_now_us() : 0U;
 #endif
             motor_control_output(view.data);
 #if defined(CONFIG_PDO_PHASE_TRACE)
-            uint32_t output_end_us = dcu_time_now_us();
-            sample->output_begin_us = output_begin_us;
-            sample->output_end_us = output_end_us;
-            sample->command_after_release_us = phase_command_after_release(sample, output_begin_us, output_end_us);
+            if (sample) {
+                uint32_t output_end_us = dcu_time_now_us();
+                sample->output_begin_us = output_begin_us;
+                sample->output_end_us = output_end_us;
+                sample->command_after_release_us = phase_command_after_release(sample, output_begin_us,
+                                                                                output_end_us);
+            }
 #endif
             runtime.pending_epoch = view.epoch;
             runtime.command_pending = true;

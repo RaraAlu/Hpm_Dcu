@@ -38,6 +38,9 @@ public:
     ParameterReadResult read_parameter(unsigned device, const ParameterRead &, uint32_t now_ms, bool preop);
     bool read_device(unsigned device, motor::MotorFeedback &feedback, motor::MotorDiagnostics &diagnostics) const;
     void prepare_publication(Publication &snapshot);
+    void set_neutral_window(uint32_t period_ns, uint32_t cutoff_us);
+    void neutral_feedback_deadline() { stop_neutral_run(true); }
+    bool neutral_feedback_pending() const;
     bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame);
 
 private:
@@ -47,6 +50,9 @@ private:
     bool channel_active(unsigned bus) const;
     bool command_permitted(uint32_t now_ms) const;
     void stop_all(uint16_t fault);
+    void stop_neutral_run(bool fault);
+    bool neutral_window_open(uint32_t now_us) const;
+    void service_neutral_run(unsigned bus, uint32_t now_ms, bool drained);
     void check_timeouts(uint32_t now_ms);
     void process_bus(unsigned bus, uint32_t now_ms, uint32_t now_us);
     void step_startup(uint32_t now_ms);
@@ -55,7 +61,7 @@ private:
     bool process_raw(const CycleCommand &candidate, uint32_t now_ms);
     void collect_tx_events(unsigned bus);
     bool consume_feedback(unsigned bus, const dcu_can_frame_t &frame,
-                          uint32_t timestamp_ms, uint32_t now_ms);
+                          const dcu_can_rx_stamp_t &stamp, uint32_t now_ms, uint32_t now_us);
 
     motor::MotorInstance devices_[DCU_MOTOR_DEVICE_CAPACITY]{};
     unsigned device_count_{};
@@ -65,6 +71,10 @@ private:
     BusScheduler schedule_[DCU_DEVICE_CAN_BUS_COUNT]{};
     CanTransactions transactions_{};
     ProductionStartup startup_{};
+    struct NeutralRun {
+        uint32_t limit{}, submitted{}, period_ns{}, cutoff_us{};
+        bool active{}, awaiting{}, closed{};
+    } neutral_run_{};
     struct Session {
         ChannelConfiguration channels[DCU_DEVICE_CAN_BUS_COUNT]{};
         BoardConfiguration config{};

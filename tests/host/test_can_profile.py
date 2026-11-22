@@ -12,15 +12,28 @@ class CanProfileTest(unittest.TestCase):
     def setUp(self):
         self.profile = load_yaml(ROOT / "firmware/app/profile/cfg/生产CAN配置.yaml")
 
-    def test_single_bus_is_encoded_without_a_default_entry(self):
-        self.assertEqual(self.profile["channels"][0]["bus"], 2)
+    def test_production_profile_uses_only_can3_and_single_shot(self):
+        self.assertEqual([channel["bus"] for channel in self.profile["channels"]], [3])
+        self.assertEqual(len(self.profile["devices"]), 1)
         result = header(self.profile)
-        self.assertIn("{ 2U, 1000000U, 5000000U, true, false }", result)
-        self.assertEqual(result.count("U, true, false }"), 1)
-        self.assertNotIn("U, false, false }", result)
+        self.assertIn("{ 3U, 1000000U, 5000000U, true, true }", result)
+        self.assertIn('"hra55h100_can3", 3U, 2U, 0U', result)
+        self.assertIn('DCU_MOTOR_PROTOCOL_BJCX, "HRA55H-100", true, 30000U', result)
+
+    def test_neutral_mit_budget_is_mandatory_bounded_and_not_single_frame(self):
+        device = self.profile["devices"][0]
+        for limit in (0, 1, True, 900001):
+            with self.subTest(limit=limit), self.assertRaisesRegex(ValueError, "neutral_mit_frame_limit"):
+                header(self.profile | {"devices": [device | {"neutral_mit_frame_limit": limit}]})
+        for limit in (2, 900000):
+            self.assertIn(f'true, {limit}U', header(self.profile | {"devices": [device | {"neutral_mit_frame_limit": limit}]}))
+        del device["neutral_mit_frame_limit"]
+        with self.assertRaises(ValueError):
+            header(self.profile)
 
     def test_classic_has_no_data_bitrate(self):
         self.profile["channels"] = [{"bus": 1, "mode": "classic", "nominal_bitrate_kbps": 1000}]
+        self.profile["devices"] = []
         self.assertIn("{ 1U, 1000000U, 0U, false, false }", header(self.profile))
         self.profile["channels"][0]["data_bitrate_kbps"] = 5000
         with self.assertRaises(ValueError):
@@ -29,7 +42,7 @@ class CanProfileTest(unittest.TestCase):
     def test_missing_duplicate_unknown_and_unqualified_settings_fail(self):
         original = self.profile["channels"][0]
         for mutation in ({"bus": 4}, {"mode": "loopback"}, {"nominal_bitrate_kbps": 500},
-                         {"data_bitrate_kbps": False}, {"enabled": True}):
+                         {"data_bitrate_kbps": False}, {"enabled": True}, {"single_shot": 1}):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 header(self.profile | {"channels": [original | mutation]})
         for channels in ([], [original, copy.copy(original)], [
@@ -50,16 +63,23 @@ class CanProfileTest(unittest.TestCase):
         self.assertLess(result.index('"other_bus"'), result.index('"next"'))
         self.assertIn("-9000000, 9000000, 18000000U, 5000U, 60U", result)
 
-    def test_mixed_profile_distinguishes_models_and_validates_shared_bus(self):
+    def test_mixed_profile_preserves_bjcx_types_and_validates_shared_bus(self):
         profile = load_yaml(ROOT / "tests/host/motor/cfg/混挂电机验证配置.yaml")
         result = header(profile)
-        self.assertIn('"fixture_hra40", 2U, 36U, 0x8101U', result)
-        self.assertIn('"fixture_hra55", 0U, 3U, 0x8102U', result)
-        for change in ({"can_id": 3}, {"model": "unknown"}, {"status_poll_period_ms": 10}):
+        self.assertIn('"fixture_hra40", 2U, 36U, 0U', result)
+        self.assertIn('"fixture_hra55", 0U, 3U, 0U', result)
+        for motor_type in ("HRA40H-101", "HRA55H-100"):
+            self.assertIn(f'DCU_MOTOR_PROTOCOL_BJCX, "{motor_type}"', result)
+        for change in ({"can_id": 3}, {"type": "unknown"}, {"status_poll_period_ms": 10},
+                       {"model": "HRA40H-101"}, {"model_profile_id": 0x8000}):
             invalid = copy.deepcopy(profile)
             invalid["devices"][1].update(change)
             with self.subTest(change=change), self.assertRaises(ValueError):
                 header(invalid)
+        invalid = copy.deepcopy(profile)
+        del invalid["devices"][1]["type"]
+        with self.assertRaises(ValueError):
+            header(invalid)
         profile["channels"][1] = {"bus": 0, "mode": "classic", "nominal_bitrate_kbps": 1000}
         with self.assertRaisesRegex(ValueError, "requires CAN FD"):
             header(profile)

@@ -45,6 +45,7 @@ class DeviceAbstractionTest(unittest.TestCase):
             str(ROOT / "firmware/devices/motor/motor_driver_binding.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
             str(ROOT / "firmware/protocols/bjcx/bjcx_status.cpp"),
+            str(ROOT / "firmware/protocols/bjcx/bjcx_control.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_service.cpp"), "-lm", "-o", str(cls.adapter),
         ])
 

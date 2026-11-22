@@ -3,6 +3,13 @@
 
 namespace dcu::app::gateway_application::detail {
 
+bool GatewayApplication::neutral_feedback_pending() const
+{
+    for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c)
+        if (transactions_.neutral_pending(c)) return true;
+    return false;
+}
+
 void GatewayApplication::prepare_publication(Publication &snapshot)
 {
     const uint32_t now = dcu_time_now_ms();

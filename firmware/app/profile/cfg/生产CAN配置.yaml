@@ -1,15 +1,23 @@
 schema_version: 2
 startup:
   profile_id: 1
-  revision: 1
+  revision: 5
   readiness_ttl_ms: 1000
   activation_wait_s: 5
 safety:
   max_command_lease_ms: 10
   feedback_timeout_ms: 20
 channels:
-  - bus: 2
+  - bus: 3
     mode: fd
     nominal_bitrate_kbps: 1000
     data_bitrate_kbps: 5000
-devices: []
+    single_shot: true
+devices:
+  - id: hra55h100_can3
+    protocol: bjcx
+    type: HRA55H-100
+    bus: 3
+    can_id: 0x02
+    neutral_mit_only: true
+    neutral_mit_frame_limit: 30000

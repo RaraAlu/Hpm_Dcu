@@ -25,6 +25,7 @@ static dcu::motor::MotorConfiguration configuration()
     result.route = {1, -10000000, 10000000, 20000000, 10000, 100};
     result.encos = {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0};
     result.model_profile_id = 0x8000;
+    result.protocol = DCU_MOTOR_PROTOCOL_ENCOS;
     result.power_query_period_ms = 100;
     return result;
 }

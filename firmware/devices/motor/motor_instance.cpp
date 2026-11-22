@@ -45,6 +45,7 @@ void MotorInstance::stop(uint16_t fault)
     if (active() && control_tx_id_)
         dcu_can_cancel_tx(bus_, control_tx_id_);
     x->phase = MotorPhase::Stopped;
+    x->neutral_armed = x->neutral_pending = false;
     if (fault && !s->bridge_fault)
         s->bridge_fault = fault;
     if (fault)
@@ -56,6 +57,55 @@ void MotorInstance::reset_session()
 {
     state_.command = {};
     state_.previous_control = 0;
+    state_.neutral_armed = state_.neutral_pending = false;
+    state_.neutral_reply = false;
+    if (neutral_mit_only()) state_.new_feedback = false;
+}
+
+bool MotorInstance::accept_neutral_mit(const Command &command, bool permit, bool continuing)
+{
+    auto &x = state_;
+    if (!neutral_mit_only() || !permit || command.mode != ControlMode::Impedance ||
+        command.reserved_flags || command.position_urad || command.velocity_urad_s ||
+        command.torque_mNm || command.current_cA || command.current_limit_dA ||
+        command.kp_centi || command.kd_milli) {
+        x.neutral_armed = x.neutral_pending = false;
+        return false;
+    }
+    if (command.control_bits == Arm && !continuing) {
+        x.neutral_armed = true;
+        return true;
+    }
+    if (command.control_bits != (Arm | StartMotion)) {
+        x.neutral_armed = x.neutral_pending = false;
+        return false;
+    }
+    x.neutral_pending = x.neutral_armed || continuing;
+    x.neutral_armed = false;
+    return true;
+}
+
+bool MotorInstance::take_neutral_mit(CanFrame &frame, uint8_t counter)
+{
+    if (!state_.neutral_pending) return false;
+    state_.neutral_pending = false; // A busy bus or failed submit must not schedule a later send.
+    return driver_->encode_neutral_mit(frame, counter);
+}
+
+bool MotorInstance::consume_neutral_mit(const CanFrame &frame, uint32_t stamp)
+{
+    constexpr uint32_t required = Position | Velocity | Current;
+    if (!neutral_mit_only() || !consume_status_reply(frame, stamp) ||
+        state_.feedback.sample.motor_fault || (state_.feedback.sample.valid_fields & required) != required)
+        return false;
+    state_.neutral_reply = true;
+    ++state_.cyclic_feedback_count;
+    return true;
+}
+void MotorInstance::abort_neutral_mit(uint16_t fault)
+{
+    stop(fault);
+    state_.neutral_reply = state_.new_feedback = false;
 }
 bool MotorInstance::query_ready(uint32_t now) const
 {
@@ -232,7 +282,8 @@ MotorPublication MotorInstance::read_feedback(uint32_t now, uint16_t feedback_ti
 {
     const auto &x = state_;
     feedback = x.feedback;
-    const auto query = driver_ ? driver_->query_sample(now) : QuerySample{};
+    const auto query = driver_ && (!neutral_mit_only() || x.neutral_reply) ?
+        driver_->query_sample(now) : QuerySample{};
     const bool running = x.phase == MotorPhase::Running;
     const bool online = running ? now - x.online_ms <= feedback_timeout_ms : query.online;
     feedback.power_mW = query.power_mW;

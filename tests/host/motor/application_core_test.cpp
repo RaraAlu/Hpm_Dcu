@@ -30,6 +30,7 @@ static const dcu_can_channel_config_t applied_channels[] = {
 static const dcu_motor_device_profile_t classic_motor{
     "test_motor", 0, 1, 0x8000, 0, -10000000, 10000000, 20000000, 10000, 100,
     {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0}, 0, 0,
+    DCU_MOTOR_PROTOCOL_ENCOS, nullptr, false, 0,
 };
 
 const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus)
@@ -204,7 +205,8 @@ static dcu_motor_device_profile_t bjcx_on_bus2()
     dcu_motor_device_profile_t status_motor{};
     status_motor.bus = 2;
     status_motor.can_id = classic_motor.can_id;
-    status_motor.model_profile_id = 0x8101;
+    status_motor.protocol = DCU_MOTOR_PROTOCOL_BJCX;
+    status_motor.type = "HRA40H-101";
     status_motor.status_poll_period_ms = 100;
     status_motor.status_reply_timeout_ms = 10;
     return status_motor;
@@ -215,7 +217,7 @@ static void production_profile()
     const auto status_motor = bjcx_on_bus2();
     dcu_motor_device_profile_t devices[]{status_motor, classic_motor};
     const dcu_production_profile_t valid{applied_channels, 2, devices, 2, 8, 15, {}};
-    for (unsigned i = 0; i < 11; ++i) {
+    for (unsigned i = 0; i < 15; ++i) {
         auto invalid = valid;
         dcu_can_channel_config_t channels[]{applied_channels[0], applied_channels[1]};
         invalid.channels = channels;
@@ -234,6 +236,10 @@ static void production_profile()
         case 8: invalid.devices = nullptr; break;
         case 9: bad_device.bus = 1; break;
         case 10: bad_device.status_reply_timeout_ms = 0; break;
+        case 11: bad_device.protocol = DCU_MOTOR_PROTOCOL_UNSPECIFIED; break;
+        case 12: bad_device.type = nullptr; break;
+        case 13: bad_device.model_profile_id = 0x8000; break;
+        case 14: channels[0].single_shot = true; break; // Applied controller still retries.
         }
         CHECK(!app::initialize_profile(invalid));
         CHECK(!app::channel_configuration(2).enabled && sent.empty());

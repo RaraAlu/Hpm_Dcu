@@ -18,6 +18,9 @@ void motor_control_output(const void *data);
 
 uint16_t motor_control_mapping(uint16_t *input_size, uint16_t *output_size);
 void motor_control_prepare_input(void);
+bool motor_control_neutral_feedback_pending(void);
+void motor_control_set_neutral_window(uint32_t period_ns, uint32_t cutoff_us);
+void motor_control_neutral_feedback_deadline(void);
 /* SSC-owned RAM storage, borrowed once before the worker starts. */
 void *dcu_ssc_txpdo_buffer(uint16_t *capacity);
 

@@ -4,7 +4,10 @@
 #include <stddef.h>
 #include "can_transport.h"
 #include "encos_motor.h"
+#include "motor_protocol.h"
 #include "readiness_profile.h"
+
+#define DCU_NEUTRAL_MIT_MAX_FRAMES 900000U
 
 typedef struct {
     const char *id;
@@ -14,6 +17,10 @@ typedef struct {
     uint32_t velocity_limit_urad_s, torque_limit_mNm, current_limit_dA;
     encos_settings_t encos;
     uint16_t status_poll_period_ms, status_reply_timeout_ms;
+    dcu_motor_protocol_t protocol;
+    const char *type; // bjcx type name; ENCOS retains its existing profile ID.
+    bool neutral_mit_only;
+    uint32_t neutral_mit_frame_limit;
 } dcu_motor_device_profile_t;
 
 typedef struct {

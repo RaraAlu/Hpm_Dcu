@@ -25,8 +25,10 @@ def device_line(device, channels, names, can_ids, slots):
     common = {"id", "protocol", "bus", "can_id"}
     protocol = device.get("protocol") if isinstance(device, dict) else None
     require(protocol in ("encos", "bjcx"), "device: unsupported protocol")
+    neutral_mit = protocol == "bjcx" and "neutral_mit_only" in device
     fields = ({"model_profile_id", "limits", "encoding", "power_query_period_ms"} if protocol == "encos"
-              else {"model", "status_poll_period_ms", "status_reply_timeout_ms"})
+              else {"type", "neutral_mit_only", "neutral_mit_frame_limit"} if neutral_mit
+              else {"type", "status_poll_period_ms", "status_reply_timeout_ms"})
     keys(device, common | fields, "device")
     name = device["id"]
     identifier(name, "device.id")
@@ -42,14 +44,21 @@ def device_line(device, channels, names, can_ids, slots):
     slots[bus] = slot + 1
     if protocol == "bjcx":
         require(channels[bus], f"{name}: bjcx requires CAN FD+BRS at 1000/5000 kbps")
-        models = {"HRA40H-101": 0x8101, "HRA55H-101": 0x8102}
-        model = device["model"]
-        require(type(model) is str and model in models, f"{name}: unsupported bjcx model")
-        timeout = bounded(device["status_reply_timeout_ms"], 2, 20, "status_reply_timeout_ms")
-        period = bounded(device["status_poll_period_ms"], 2 * timeout, 1000, "status_poll_period_ms")
+        motor_type = device["type"]
+        require(type(motor_type) is str and motor_type in {"HRA40H-101", "HRA55H-100"},
+                f"{name}: unsupported bjcx type")
+        frame_limit = 0
+        if neutral_mit:
+            require(device["neutral_mit_only"] is True, "neutral_mit_only: expected true")
+            frame_limit = bounded(device["neutral_mit_frame_limit"], 2, 900000, "neutral_mit_frame_limit")
+            period = timeout = 0
+        else:
+            timeout = bounded(device["status_reply_timeout_ms"], 2, 20, "status_reply_timeout_ms")
+            period = bounded(device["status_poll_period_ms"], 2 * timeout, 1000, "status_poll_period_ms")
         unused_encos = "{ {{0}, {0}, {0}, {0}, {0}, {0}, 0}, 0, 0 }"
-        return [f'    {{ "{name}", {bus}U, {can_id}U, 0x{models[model]:04x}U, 0U,',
-                f"      0, 0, 0U, 0U, 0U, {unused_encos}, {period}U, {timeout}U }},"]
+        return [f'    {{ "{name}", {bus}U, {can_id}U, 0U, 0U,',
+                f'      0, 0, 0U, 0U, 0U, {unused_encos}, {period}U, {timeout}U,',
+                f'      DCU_MOTOR_PROTOCOL_BJCX, "{motor_type}", {str(neutral_mit).lower()}, {frame_limit}U }},']
 
     require(type(device["model_profile_id"]) is int and device["model_profile_id"] == 0x8000,
             f"{name}: unsupported ENCOS model")
@@ -79,7 +88,8 @@ def device_line(device, channels, names, can_ids, slots):
     return [
         f'    {{ "{name}", {bus}U, {can_id}U, 0x8000U, {power}U,',
         f"      {p_min * 1000}, {p_max * 1000}, {v_lim * 1000}U, {t_lim}U, {i_lim}U,",
-        f"      {{ {{ {ranges}, {kt}.0 / 100.0 }}, {timeout}U, {int(channels[bus])}U }}, 0U, 0U }},",
+        f"      {{ {{ {ranges}, {kt}.0 / 100.0 }}, {timeout}U, {int(channels[bus])}U }}, 0U, 0U,",
+        "      DCU_MOTOR_PROTOCOL_ENCOS, NULL, false, 0U },",
     ]
 
 
@@ -110,6 +120,8 @@ def header(profile):
         fields = {"bus", "mode", "nominal_bitrate_kbps"}
         if fd:
             fields.add("data_bitrate_kbps")
+        if type(channel) is dict and "single_shot" in channel:
+            fields.add("single_shot")
         keys(channel, fields, "channel")
         bus = channel["bus"]
         uint(bus, 2, "channel.bus")
@@ -118,16 +130,22 @@ def header(profile):
         require(channel["mode"] in ("classic", "fd"), "channel.mode: expected classic or fd")
         nominal = channel["nominal_bitrate_kbps"]
         data = channel["data_bitrate_kbps"] if fd else 0
+        single_shot = channel.get("single_shot", False)
+        require(type(single_shot) is bool, "single_shot: expected a boolean")
         uint(nominal, 16, "nominal_bitrate_kbps", 1)
         if fd:
             uint(data, 16, "data_bitrate_kbps", 1)
         # Current production bus budgets are calibrated for these rates.
         require(nominal == 1000 and (not fd or data == 5000), "bitrate unsupported by the current bus budget")
-        lines.append(f"    {{ {bus}U, {nominal * 1000}U, {data * 1000}U, {'true' if fd else 'false'}, false }},")
+        lines.append(f"    {{ {bus}U, {nominal * 1000}U, {data * 1000}U, "
+                     f"{str(fd).lower()}, {str(single_shot).lower()} }},")
     lines.append("};")
     devices = profile["devices"]
     require(type(devices) is list and len(devices) <= 28, "devices: expected a list of up to 28 entries")
     if devices:
+        if any(isinstance(device, dict) and "neutral_mit_only" in device for device in devices):
+            require(len(devices) == 1 and len(channels) == 1 and channels[0].get("single_shot") is True,
+                    "neutral MIT requires one device on one single-shot CAN bus")
         lines.append("static const dcu_motor_device_profile_t dcu_profile_devices[] = {")
         names, can_ids, slots = set(), set(), {}
         for device in devices:

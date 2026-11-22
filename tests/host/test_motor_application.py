@@ -18,11 +18,6 @@ class MotorApplicationTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="dcu-motor-application-")
         cls.addClassCleanup(directory.cleanup)
         work = Path(directory.name)
-        cls.run_command([
-            sys.executable, str(ROOT / "tools/protocol/generate_can_profile.py"),
-            "--profile", str(ROOT / "tests/host/motor/cfg/单路ENCOS验证配置.yaml"),
-            "--output", str(work / "dcu_can_profile_generated.h"),
-        ])
         flags = ["-I", str(work), "-DDCU_HOST_ENGINE_TEST", "-O0", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             flags.extend(("-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"))
@@ -40,25 +35,26 @@ class MotorApplicationTest(unittest.TestCase):
             cc, "-std=c11", *flags, "-c", str(ROOT / "firmware/comm/ethercat/encos_storage.c"),
             "-o", str(storage),
         ])
-        fixture = work / "fixture.o"
-        cls.run_command([
-            cc, "-std=c11", *flags, "-Ddcu_production_profile=host_fixture_profile",
-            "-c", str(ROOT / "firmware/app/profile/production_profile.c"), "-o", str(fixture),
-        ])
+        profiles = []
+        for name, profile in (
+            ("fixture", ROOT / "tests/host/motor/cfg/单路ENCOS验证配置.yaml"),
+            ("mixed", ROOT / "tests/host/motor/cfg/混挂电机验证配置.yaml"),
+            ("hra55h100", ROOT / "firmware/app/profile/cfg/生产CAN配置.yaml"),
+        ):
+            cls.run_command([
+                sys.executable, str(ROOT / "tools/protocol/generate_can_profile.py"),
+                "--profile", str(profile),
+                "--output", str(work / name / "dcu_can_profile_generated.h"),
+            ])
+            obj = work / f"{name}.o"
+            cls.run_command([
+                cc, "-std=c11", "-I", str(work / name), *flags, f"-Ddcu_production_profile=host_{name}_profile",
+                "-c", str(ROOT / "firmware/app/profile/production_profile.c"), "-o", str(obj),
+            ])
+            profiles.append(str(obj))
         readiness = work / "readiness.o"
         cls.run_command([cc, "-std=c11", *flags, "-c",
                          str(ROOT / "firmware/app/gateway/startup/gateway_readiness.c"), "-o", str(readiness)])
-        mixed = work / "mixed.o"
-        cls.run_command([
-            sys.executable, str(ROOT / "tools/protocol/generate_can_profile.py"),
-            "--profile", str(ROOT / "tests/host/motor/cfg/混挂电机验证配置.yaml"),
-            "--output", str(work / "mixed/dcu_can_profile_generated.h"),
-        ])
-        cls.run_command([
-            cc, "-std=c11", "-I", str(work / "mixed"), *flags,
-            "-Ddcu_production_profile=host_mixed_profile",
-            "-c", str(ROOT / "firmware/app/profile/production_profile.c"), "-o", str(mixed),
-        ])
         cls.executable = work / "motor_application"
         cls.run_command([
             cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", *flags,
@@ -81,12 +77,13 @@ class MotorApplicationTest(unittest.TestCase):
             str(ROOT / "firmware/comm/ethercat/motor_services.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
             str(ROOT / "firmware/protocols/bjcx/bjcx_status.cpp"),
+            str(ROOT / "firmware/protocols/bjcx/bjcx_control.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_service.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_session.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/bjcx/bjcx_driver.cpp"),
-            str(storage), str(fixture), str(mixed), str(readiness), "-lm", "-o", str(cls.executable),
+            str(storage), *profiles, str(readiness), "-lm", "-o", str(cls.executable),
         ])
 
     @staticmethod
@@ -228,6 +225,21 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_mixed_bjcx_and_encos_preserve_routing_transport_and_diagnostic_only_policy(self):
         self.run_command([str(self.executable), "mixed_motor_profile"])
+
+    def test_hra55h100_accepts_contiguous_neutral_mit_on_can3_with_eof_evidence(self):
+        self.run_command([str(self.executable), "hra55h100_profile"])
+
+    def test_neutral_mit_fails_closed_on_late_cancelled_or_unproven_replies(self):
+        for scenario in (
+            "deadline", "cancel", "tx_stamp", "wrong_id", "rx_stamp", "stale_rx", "equal_rx",
+            "alarm", "invalid_sample", "bus_warning", "handoff", "duplicate_pdo", "gap",
+            "submit_rejected", "short_window",
+        ):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.executable), f"hra55h100_profile_{scenario}"])
+
+    def test_neutral_mit_endurance_budget_counts_all_commands_and_wraps_wire_counter(self):
+        self.run_command([str(self.executable), "hra55h100_profile_endurance"])
 
     def test_production_reconnect_reuses_pdo_and_requires_neutral_after_link_loss(self):
         self.run_command([str(self.executable), "production_startup"])

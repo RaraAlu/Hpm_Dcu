@@ -106,6 +106,9 @@ ParameterReadResult read_parameter(unsigned device, const ParameterRead &, uint3
 // A read does not acknowledge events; only publication does.
 bool read_device(unsigned device, motor::MotorFeedback &feedback, motor::MotorDiagnostics &diagnostics);
 void prepare_publication(Publication &snapshot);
+bool neutral_feedback_pending();
+void set_neutral_window(uint32_t period_ns, uint32_t cutoff_us);
+void neutral_feedback_deadline();
 bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame);
 
 }

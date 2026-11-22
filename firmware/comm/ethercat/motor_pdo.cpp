@@ -258,6 +258,21 @@ uint16_t motor_control_mapping(uint16_t *in, uint16_t *out)
     *in = *out = 0;
     return ALSTATUSCODE_INVALIDOUTPUTMAPPING;
 }
+bool motor_control_neutral_feedback_pending(void)
+{
+    return dcu::app::gateway_application::neutral_feedback_pending();
+}
+
+void motor_control_set_neutral_window(uint32_t period_ns, uint32_t cutoff_us)
+{
+    dcu::app::gateway_application::set_neutral_window(period_ns, cutoff_us);
+}
+
+void motor_control_neutral_feedback_deadline(void)
+{
+    dcu::app::gateway_application::neutral_feedback_deadline();
+}
+
 void motor_control_prepare_input(void)
 {
     auto &snapshot = publication.snapshot;

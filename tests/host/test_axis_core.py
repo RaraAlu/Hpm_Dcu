@@ -33,6 +33,7 @@ class AxisCoreTest(unittest.TestCase):
             "firmware/devices/motor/drivers/bjcx/bjcx_driver.cpp",
             "firmware/protocols/encos/encos_motor.cpp", "firmware/protocols/encos/encos_service.cpp",
             "firmware/protocols/bjcx/bjcx_status.cpp",
+            "firmware/protocols/bjcx/bjcx_control.cpp",
         )
         cls.run_command([cxx, *flags, *(str(ROOT / source) for source in sources), "-o", str(cls.executable)])
 

@@ -1,0 +1,10 @@
+#ifndef DCU_MOTOR_PROTOCOL_H
+#define DCU_MOTOR_PROTOCOL_H
+
+typedef enum {
+    DCU_MOTOR_PROTOCOL_UNSPECIFIED = 0,
+    DCU_MOTOR_PROTOCOL_ENCOS,
+    DCU_MOTOR_PROTOCOL_BJCX,
+} dcu_motor_protocol_t;
+
+#endif

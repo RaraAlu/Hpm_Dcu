@@ -3,6 +3,7 @@
 
 #include "motor_session_driver.hpp"
 #include "encos_motor.h"
+#include "motor_protocol.h"
 
 namespace dcu::motor {
 
@@ -12,6 +13,8 @@ struct MotorConfiguration {
     uint16_t model_profile_id{}, power_query_period_ms{};
     unsigned bus{};
     uint16_t status_poll_period_ms{}, status_reply_timeout_ms{};
+    dcu_motor_protocol_t protocol{};
+    bool neutral_mit_only{};
 };
 
 bool validate_motor_configuration(const MotorConfiguration &, uint8_t frame_format) noexcept;

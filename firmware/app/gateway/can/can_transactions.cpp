@@ -1,8 +1,32 @@
 #include "detail/can_transactions.hpp"
 #include "encos_parameter_transactions.hpp"
+#include "can/cfg/gateway_schedule_policy.hpp"
+#if defined(CONFIG_PDO_PHASE_TRACE)
+#include "realtime_port.h"
+#endif
 
 namespace dcu::app::gateway_application::detail {
 namespace parameters = motor::encos_parameters;
+using config::gateway_schedule::neutral_mit_reply_us;
+namespace {
+#if defined(CONFIG_PDO_PHASE_TRACE)
+// The production Profile admits only one neutral MIT device and bus.
+volatile NeutralMitPhaseTrace neutral_mit_phase_trace;
+
+void end_neutral_trace(NeutralMitTraceOutcome outcome, uint32_t now_us)
+{
+    neutral_mit_phase_trace.ended_us = now_us;
+    neutral_mit_phase_trace.outcome = outcome;
+}
+#endif
+
+bool strictly_after(dcu_can_eof_t rx, dcu_can_eof_t tx)
+{
+    // Compare only within one MCAN and an already bounded transaction window.
+    const uint32_t delta = rx.tick - tx.tick;
+    return rx.valid && tx.valid && delta != 0 && delta < 0x80000000U;
+}
+}
 
 bool CanTransactions::busy(unsigned bus) const { return polls_[bus].tx_id || legacy_busy(bus); }
 
@@ -41,22 +65,36 @@ bool CanTransactions::consume_broadcast_reply(unsigned bus, const dcu_can_frame_
 }
 
 bool CanTransactions::consume_reply(unsigned bus, unsigned device, motor::MotorInstance &instance,
-                                    const dcu_can_frame_t &frame, uint8_t bytes, uint32_t stamp, uint32_t now)
+                                    const dcu_can_frame_t &frame, uint8_t bytes,
+                                    const dcu_can_rx_stamp_t &stamp, uint32_t now, uint32_t now_us)
 {
     auto &poll = polls_[bus];
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (poll.tx_id && poll.neutral && poll.device == device) {
+        neutral_mit_phase_trace.rx_checked_us = now_us;
+        neutral_mit_phase_trace.rx_eof_tick = stamp.eof.tick;
+        neutral_mit_phase_trace.rx_eof_valid = stamp.eof.valid;
+    }
+#endif
     if (poll.tx_id && poll.device == device && poll.transmitted &&
-        stamp - poll.submitted_ms < poll.timeout_ms && now - poll.submitted_ms < poll.timeout_ms &&
-        instance.consume_status_reply(frame, stamp)) {
+        (poll.neutral ? now_us - poll.submitted_us < neutral_mit_reply_us :
+            stamp.observed_ms - poll.submitted_ms < poll.timeout_ms && now - poll.submitted_ms < poll.timeout_ms) &&
+        (!poll.requires_eof || strictly_after(stamp.eof, poll.eof)) &&
+        (poll.neutral ? instance.consume_neutral_mit(frame, stamp.observed_ms) :
+                        instance.consume_status_reply(frame, stamp.observed_ms))) {
+#if defined(CONFIG_PDO_PHASE_TRACE)
+        if (poll.neutral) end_neutral_trace(NeutralMitTraceOutcome::Accepted, now_us);
+#endif
         poll = {};
         return true;
     } else if (bytes >= 2 && instance.supports_legacy_queries()) {
         const auto before = parameters::inspect(bus);
         const auto cyclic_before = instance.cyclic_feedback_count();
-        if (instance.consume_feedback(frame, stamp, now))
+        if (instance.consume_feedback(frame, stamp.observed_ms, now))
             return instance.cyclic_feedback_count() != cyclic_before ||
                 (before.busy && before.sent && !before.awaiting_tx && before.internal &&
                  before.device == device && before.can_id == frame.id &&
-                 stamp - before.started_ms <= now - before.started_ms && !parameters::inspect(bus).busy);
+                 stamp.observed_ms - before.started_ms <= now - before.started_ms && !parameters::inspect(bus).busy);
     }
     return false;
 }
@@ -66,22 +104,84 @@ bool CanTransactions::finish_tx(unsigned bus, const dcu_can_tx_event_t &event)
     parameters::finish_tx(bus, event);
     auto &poll = polls_[bus];
     if (!poll.tx_id || poll.tx_id != event.id) return false;
-    if (event.status == DCU_CAN_TX_COMPLETED) poll.transmitted = true;
-    else poll = {};
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (poll.neutral) {
+        neutral_mit_phase_trace.tx_observed_us = dcu_time_now_us();
+        neutral_mit_phase_trace.tx_eof_tick = event.eof.tick;
+        neutral_mit_phase_trace.tx_eof_valid = event.eof.valid;
+    }
+#endif
+    if (event.status == DCU_CAN_TX_COMPLETED && (!poll.requires_eof || event.eof.valid)) {
+        poll.transmitted = true;
+        poll.eof = event.eof;
+    } else {
+#if defined(CONFIG_PDO_PHASE_TRACE)
+        if (poll.neutral)
+            end_neutral_trace(NeutralMitTraceOutcome::TxNotProven, neutral_mit_phase_trace.tx_observed_us);
+#endif
+        poll = {};
+    }
     return true;
 }
 
 void CanTransactions::abort_poll(unsigned bus)
 {
     auto &poll = polls_[bus];
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    if (poll.tx_id && poll.neutral && neutral_mit_phase_trace.outcome == NeutralMitTraceOutcome::Pending)
+        end_neutral_trace(NeutralMitTraceOutcome::Cancelled, dcu_time_now_us());
+#endif
     if (poll.tx_id && !poll.transmitted) dcu_can_cancel_tx(bus, poll.tx_id);
     poll = {};
 }
 
-void CanTransactions::expire_poll(unsigned bus, uint32_t now)
+void CanTransactions::expire_poll(unsigned bus, uint32_t now, uint32_t now_us)
 {
     const auto &poll = polls_[bus];
-    if (poll.tx_id && now - poll.submitted_ms >= poll.timeout_ms) abort_poll(bus);
+    if (poll.tx_id && (poll.neutral ? now_us - poll.submitted_us >= neutral_mit_reply_us :
+                                     now - poll.submitted_ms >= poll.timeout_ms)) {
+#if defined(CONFIG_PDO_PHASE_TRACE)
+        if (poll.neutral) end_neutral_trace(NeutralMitTraceOutcome::Expired, now_us);
+#endif
+        abort_poll(bus);
+    }
+}
+
+bool CanTransactions::neutral_pending(unsigned bus) const { return polls_[bus].tx_id && polls_[bus].neutral; }
+
+void CanTransactions::cancel_neutral(unsigned bus)
+{
+    if (neutral_pending(bus)) abort_poll(bus);
+}
+
+bool CanTransactions::submit_neutral(unsigned bus, unsigned device, motor::MotorInstance &instance,
+                                     BusScheduler &schedule, uint32_t now, uint32_t now_us, uint8_t counter,
+                                     bool drained)
+{
+    dcu_can_frame_t frame{};
+    if (!instance.take_neutral_mit(frame, counter)) return false;
+    const auto *channel = dcu_can_channel_config(bus);
+    const unsigned cost = 2U * BusScheduler::frame_cost(true, 16);
+    if (!drained || !channel || !channel->single_shot || busy(bus) || dcu_can_pending(bus) ||
+        !dcu_can_tx_free(bus) || !schedule.guard_elapsed(now_us) || !schedule.can_afford(cost))
+        return false;
+    const auto id = dcu_can_submit(bus, &frame);
+    if (!id) return false;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    neutral_mit_phase_trace.bus = bus;
+    neutral_mit_phase_trace.submitted_us = now_us;
+    neutral_mit_phase_trace.tx_observed_us = 0;
+    neutral_mit_phase_trace.rx_checked_us = 0;
+    neutral_mit_phase_trace.ended_us = 0;
+    neutral_mit_phase_trace.tx_eof_tick = 0;
+    neutral_mit_phase_trace.tx_eof_valid = 0;
+    neutral_mit_phase_trace.rx_eof_tick = 0;
+    neutral_mit_phase_trace.rx_eof_valid = 0;
+    neutral_mit_phase_trace.outcome = NeutralMitTraceOutcome::Pending;
+#endif
+    schedule.submitted(now_us, cost);
+    polls_[bus] = {id, now, device, 0, false, true, {}, true, now_us};
+    return true;
 }
 
 void CanTransactions::expire_legacy(unsigned bus, uint32_t now) { parameters::check_timeout(bus, now); }
@@ -102,7 +202,8 @@ bool CanTransactions::submit_poll(unsigned bus, unsigned device, motor::MotorIns
                                   BusScheduler &schedule, ControlSet controls, bool fd,
                                   uint32_t now, uint32_t now_us)
 {
-    if (dcu_can_pending(bus) || !dcu_can_tx_free(bus) || !schedule.guard_elapsed(now_us)) return false;
+    const auto *channel = dcu_can_channel_config(bus);
+    if (!channel || dcu_can_pending(bus) || !dcu_can_tx_free(bus) || !schedule.guard_elapsed(now_us)) return false;
     motor::StatusPoll request{};
     if (!instance.prepare_status_poll(now, request) || request.frame.id != instance.can_id() ||
         !dcu_can_frame_valid(&request.frame) || !request.timeout_ms || request.reply_bytes > DCU_CAN_MAX_PAYLOAD)
@@ -113,7 +214,7 @@ bool CanTransactions::submit_poll(unsigned bus, unsigned device, motor::MotorIns
     const auto id = dcu_can_submit(bus, &request.frame);
     if (!id) return false;
     schedule.submitted(now_us, cost);
-    polls_[bus] = {id, now, device, request.timeout_ms, false};
+    polls_[bus] = {id, now, device, request.timeout_ms, false, channel->single_shot, {}, false, 0};
     return true;
 }
 

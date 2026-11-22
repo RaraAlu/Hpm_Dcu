@@ -39,14 +39,14 @@ devices:
       can_timeout_ms: 100
   - id: fixture_hra40
     protocol: bjcx
-    model: HRA40H-101
+    type: HRA40H-101
     bus: 2
     can_id: 36
     status_poll_period_ms: 100
     status_reply_timeout_ms: 10
   - id: fixture_hra55
     protocol: bjcx
-    model: HRA55H-101
+    type: HRA55H-100
     bus: 0
     can_id: 3
     status_poll_period_ms: 100

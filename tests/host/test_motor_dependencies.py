@@ -29,7 +29,7 @@ class MotorDependenciesTest(unittest.TestCase):
                         allowed = relative.startswith(("ports/", "devices/motor/", "protocols/encos/"))
                         if directory == "devices/motor":
                             allowed |= relative in ("cfg/device_config.h", "comm/canfd/can_transport.h")
-                            allowed |= relative == "protocols/bjcx/bjcx_status.hpp"
+                            allowed |= relative in ("protocols/bjcx/bjcx_status.hpp", "protocols/bjcx/bjcx_control.hpp")
                         if directory == "protocols/bjcx":
                             allowed = relative.startswith("protocols/bjcx/") or relative == "devices/motor/motor_driver.hpp"
                         if directory == "app/gateway":
