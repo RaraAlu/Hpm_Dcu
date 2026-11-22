@@ -36,6 +36,7 @@ class MotorProtocolTest(unittest.TestCase):
             cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", *flags,
             str(ROOT / "firmware/protocols/encos/encos_motor.cpp"),
             str(ROOT / "firmware/protocols/bjcx/bjcx_status.cpp"),
+            str(ROOT / "firmware/protocols/bjcx/bjcx_control.cpp"),
             str(ROOT / "firmware/protocols/encos/encos_service.cpp"),
             str(ROOT / "tests/host/motor/motor_protocol.cpp"), *objects, "-lm",
             "-o", str(cls.executable),
@@ -67,6 +68,9 @@ class MotorProtocolTest(unittest.TestCase):
 
     def test_bjcx_status_wire_and_partial_feedback(self):
         self.run_command([str(self.executable), "bjcx_status"])
+
+    def test_bjcx_control_wire(self):
+        self.run_command([str(self.executable), "bjcx_control"])
 
     def test_failed_motion_codec_outputs_are_not_committed(self):
         self.run_command([str(self.executable), "transactional"])

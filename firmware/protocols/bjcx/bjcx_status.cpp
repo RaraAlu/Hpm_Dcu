@@ -32,16 +32,18 @@ motor::CanFrame status_request(uint16_t can_id) noexcept
     return frame;
 }
 
-bool decode_status_reply(uint16_t can_id, const motor::CanFrame &frame, motor::Feedback &out) noexcept
+bool decode_status_reply(uint16_t can_id, const motor::CanFrame &frame, motor::Feedback &out,
+                         uint8_t *reported_mode) noexcept
 {
     if (frame.id != can_id || frame.flags != fd_brs ||
         frame.dlc != 10 || frame.data[0] != 0x80)
         return false;
     motor::Feedback sample{};
     const auto *data = frame.data;
+    const uint8_t mode = data[1] >> 4;
     // Invalid position/velocity must not hide an independent motor alarm.
     sample.motor_fault = (uint32_t{data[1] & 0x0fU} << 8) | data[2];
-    if (data[1] >> 4 <= 5) {
+    if (mode <= 5) {
         if (decode_scaled(data + 3, pi * 1e6 / 180, sample.position_urad)) sample.valid_fields |= motor::Position;
         if (decode_scaled(data + 7, pi * 1e6 / 30, sample.velocity_urad_s)) sample.valid_fields |= motor::Velocity;
     }
@@ -51,6 +53,7 @@ bool decode_status_reply(uint16_t can_id, const motor::CanFrame &frame, motor::F
     sample.mos_temperature_deciC = (int(data[14]) - 50) * 10;
     sample.valid_fields |= motor::Current | motor::MotorTemperature | motor::MosTemperature;
     out = sample;
+    if (reported_mode) *reported_mode = mode;
     return true;
 }
 

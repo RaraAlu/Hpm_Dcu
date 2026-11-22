@@ -1,4 +1,5 @@
 #include "encos_motor.hpp"
+#include "bjcx_control.hpp"
 #include "bjcx_status.hpp"
 #include "encos_interface.h"
 
@@ -256,7 +257,8 @@ static bool bjcx_status()
     motor::CanFrame reply{id, 10, request.flags,
         {0x80, 0x53, 0x45, 0x42, 0xb4, 0, 0, 0xc1, 0xf0, 0, 0, 0xff, 0x9c, 45, 51, 0}};
     motor::Feedback out{};
-    CHECK(dcu::bjcx::decode_status_reply(id, reply, out));
+    uint8_t reported_mode = 0;
+    CHECK(dcu::bjcx::decode_status_reply(id, reply, out, &reported_mode) && reported_mode == 5);
     CHECK(out.position_urad == 1570796 && out.velocity_urad_s == -3141593);
     CHECK(out.current_cA == -100 && out.motor_temperature_deciC == -50 && out.mos_temperature_deciC == 10);
     CHECK(out.motor_fault == 0x345 && out.valid_fields == (motor::Position | motor::Velocity |
@@ -266,7 +268,7 @@ static bool bjcx_status()
     CHECK(dcu::bjcx::decode_status_reply(id, reply, out));
     CHECK(!(out.valid_fields & motor::Position) && (out.valid_fields & motor::Velocity) && out.motor_fault == 0x345);
     reply.data[1] = 0x63;
-    CHECK(dcu::bjcx::decode_status_reply(id, reply, out));
+    CHECK(dcu::bjcx::decode_status_reply(id, reply, out, &reported_mode) && reported_mode == 6);
     CHECK(out.valid_fields == (motor::Current | motor::MotorTemperature | motor::MosTemperature));
     for (unsigned error = 0; error < 4; ++error) {
         auto bad = reply;
@@ -275,8 +277,59 @@ static bool bjcx_status()
         if (error == 2) bad.dlc = 9;
         if (error == 3) bad.data[0] = 0x17;
         out.motor_fault = 0xabc;
-        CHECK(!dcu::bjcx::decode_status_reply(id, bad, out) && out.motor_fault == 0xabc);
+        reported_mode = 0xff;
+        CHECK(!dcu::bjcx::decode_status_reply(id, bad, out, &reported_mode));
+        CHECK(out.motor_fault == 0xabc && reported_mode == 0xff);
     }
+    return true;
+}
+
+static bool bjcx_control()
+{
+    namespace bjcx = dcu::bjcx;
+    constexpr uint16_t id = 0x02;
+    constexpr uint8_t fd_brs = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+    motor::CanFrame frame{};
+    constexpr bool enable_states[] = {false, true};
+    for (bool enabled : enable_states) {
+        CHECK(bjcx::encode_enable(id, enabled, frame));
+        CHECK(frame.id == id && frame.flags == fd_brs && frame.dlc == 2);
+        CHECK(frame.data[0] == 0x10 && frame.data[1] == enabled);
+        CHECK(!bjcx::matches_enable_reply(id, enabled, frame));
+        frame.data[0] = 0x90;
+        CHECK(bjcx::matches_enable_reply(id, enabled, frame));
+        CHECK(!bjcx::matches_enable_reply(id, !enabled, frame));
+        CHECK(!bjcx::matches_enable_reply(id + 1, enabled, frame));
+        frame.flags = DCU_CAN_FLAG_FD;
+        CHECK(!bjcx::matches_enable_reply(id, enabled, frame));
+        frame.flags = fd_brs;
+        frame.dlc = 3;
+        CHECK(!bjcx::matches_enable_reply(id, enabled, frame));
+    }
+
+    CHECK(bjcx::encode_mit(id, {}, frame));
+    const uint8_t zero[16] = {0x11};
+    CHECK(std::memcmp(frame.data, zero, sizeof(zero)) == 0);
+    const bjcx::MitWireCommand command{100, 25, 1.5F, -2.0F, -300, 255};
+    const uint8_t golden[16] = {
+        0x11, 0x00, 0x64, 0x00, 0x19, 0x3f, 0xc0, 0x00,
+        0x00, 0xc0, 0x00, 0x00, 0x00, 0xfe, 0xd4, 0xff
+    };
+    CHECK(bjcx::encode_mit(id, command, frame));
+    CHECK(frame.id == id && frame.flags == fd_brs && frame.dlc == 10);
+    CHECK(std::memcmp(frame.data, golden, sizeof(golden)) == 0);
+    CHECK(frame.data[16] == 0);
+
+    auto invalid = command;
+    invalid.position_deg = NAN;
+    CHECK(!bjcx::encode_mit(id, invalid, frame));
+    invalid = command;
+    invalid.velocity_rpm = INFINITY;
+    CHECK(!bjcx::encode_mit(id, invalid, frame));
+    CHECK(!bjcx::encode_mit(0, command, frame));
+    CHECK(!bjcx::encode_enable(0x400, false, frame));
+    CHECK(frame.id == id && frame.flags == fd_brs && frame.dlc == 10);
+    CHECK(std::memcmp(frame.data, golden, sizeof(golden)) == 0);
     return true;
 }
 
@@ -286,7 +339,8 @@ int main(int argc, char **argv)
         {"abi", c_abi}, {"layout", layout}, {"profile", profile},
         {"commands", commands}, {"reject", rejected_commands},
         {"feedback", feedback}, {"parameters", parameters}, {"float", floats},
-        {"transactional", transactional_outputs}, {"bjcx_status", bjcx_status}
+        {"transactional", transactional_outputs}, {"bjcx_status", bjcx_status},
+        {"bjcx_control", bjcx_control}
     };
     if (argc != 2)
         return 2;

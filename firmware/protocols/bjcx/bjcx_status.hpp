@@ -7,9 +7,11 @@ namespace dcu::bjcx {
 
 inline constexpr uint8_t status_reply_bytes = 16;
 
-// Use the configured CAN ID. Rejected frames leave feedback unchanged.
 motor::CanFrame status_request(uint16_t can_id) noexcept;
-bool decode_status_reply(uint16_t can_id, const motor::CanFrame &, motor::Feedback &) noexcept;
+// Reported mode is the raw status nibble, not a power-stage confirmation.
+// Rejected frames leave both outputs unchanged.
+bool decode_status_reply(uint16_t can_id, const motor::CanFrame &, motor::Feedback &,
+                         uint8_t *reported_mode = nullptr) noexcept;
 
 }
 #endif
