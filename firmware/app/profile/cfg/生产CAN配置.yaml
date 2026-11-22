@@ -1,7 +1,7 @@
 schema_version: 2
 startup:
   profile_id: 1
-  revision: 5
+  revision: 7
   readiness_ttl_ms: 1000
   activation_wait_s: 5
 safety:
@@ -12,7 +12,12 @@ channels:
     mode: fd
     nominal_bitrate_kbps: 1000
     data_bitrate_kbps: 5000
-    single_shot: true
+    timestamp_eof: true
+  - bus: 2
+    mode: fd
+    nominal_bitrate_kbps: 1000
+    data_bitrate_kbps: 5000
+    timestamp_eof: true
 devices:
   - id: hra55h100_can3
     protocol: bjcx
@@ -21,3 +26,8 @@ devices:
     can_id: 0x02
     neutral_mit_only: true
     neutral_mit_frame_limit: 30000
+passthrough_devices:
+  - id: encos_mcan2
+    protocol: encos
+    bus: 2
+    can_id: 0x01

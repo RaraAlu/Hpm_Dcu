@@ -10,19 +10,21 @@ namespace dcu::app::gateway_application::detail {
 inline constexpr uint32_t legacy_broadcast_id = 0x7ff;
 
 #if defined(CONFIG_PDO_PHASE_TRACE)
-enum class NeutralMitTraceOutcome : uint32_t { Pending, Accepted, TxNotProven, Expired, Cancelled };
+enum class NeutralMitTraceOutcome : uint32_t { Idle, Pending, Accepted, TxNotProven, Expired, Cancelled };
 
 struct NeutralMitPhaseTrace {
-    uint32_t bus, submitted_us, tx_observed_us, rx_checked_us, ended_us;
+    uint32_t submit_us, tx_eof_us, rx_eof_us, consumed_us, ended_us;
+    uint32_t tx_observed_us, rx_checked_us;
     uint32_t tx_eof_tick, tx_eof_valid, rx_eof_tick, rx_eof_valid;
     NeutralMitTraceOutcome outcome;
 };
 #endif
 
-// One query lane per physical bus. Drivers still build and interpret their frames.
+// Polls use bus-local slots; legacy parameter requests retain their Profile device IDs. Drivers still build and interpret their frames.
 class CanTransactions {
 public:
-    bool busy(unsigned bus) const;
+    void bind_slot(unsigned device, unsigned slot) { slots_[device] = slot; }
+    bool busy(unsigned bus, unsigned device) const;
     bool any_busy() const;
     bool legacy_busy(unsigned bus) const;
     bool awaiting_tx(unsigned bus) const;
@@ -32,9 +34,9 @@ public:
     bool consume_reply(unsigned bus, unsigned device, motor::MotorInstance &,
                        const dcu_can_frame_t &, uint8_t bytes, const dcu_can_rx_stamp_t &, uint32_t now_ms, uint32_t now_us);
     bool finish_tx(unsigned bus, const dcu_can_tx_event_t &);
-    void expire_poll(unsigned bus, uint32_t now_ms, uint32_t now_us);
-    bool neutral_pending(unsigned bus) const;
-    void cancel_neutral(unsigned bus);
+    void expire_poll(unsigned bus, unsigned device, uint32_t now_ms, uint32_t now_us);
+    bool neutral_pending(unsigned bus, unsigned device) const;
+    void cancel_neutral(unsigned bus, unsigned device);
     bool submit_neutral(unsigned bus, unsigned device, motor::MotorInstance &, BusScheduler &,
                         uint32_t now_ms, uint32_t now_us, uint8_t counter, bool drained);
     void expire_legacy(unsigned bus, uint32_t now_ms);
@@ -47,19 +49,19 @@ public:
                                        uint8_t format, uint32_t now_ms, bool permitted, bool channel_active);
 
 private:
-    void abort_poll(unsigned bus);
+    void abort_slot(unsigned bus, unsigned slot);
+    uint8_t slots_[DCU_MOTOR_DEVICE_CAPACITY]{};
     bool submit_poll(unsigned bus, unsigned device, motor::MotorInstance &, BusScheduler &, ControlSet,
                      bool fd, uint32_t now_ms, uint32_t now_us);
     struct PendingPoll {
         dcu_can_tx_id_t tx_id{};
         uint32_t submitted_ms{};
-        unsigned device{};
         uint16_t timeout_ms{};
         bool transmitted{}, requires_eof{};
         dcu_can_eof_t eof{};
         bool neutral{};
         uint32_t submitted_us{};
-    } polls_[DCU_DEVICE_CAN_BUS_COUNT]{};
+    } polls_[DCU_DEVICE_CAN_BUS_COUNT][DCU_MOTOR_DEVICES_PER_BUS]{};
 };
 
 }

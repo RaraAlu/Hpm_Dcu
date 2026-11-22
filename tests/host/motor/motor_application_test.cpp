@@ -33,6 +33,7 @@ extern "C" {
 } } while (0)
 
 UINT8 nAlStatus = STATE_PREOP;
+extern "C" uint16_t dcu_ssc_station_address(void) { return 0x1234; }
 TMC_ASSIGN gRxAssign{}, gTxAssign{};
 alignas(4) static uint8_t ssc_txpdo[1072];
 
@@ -79,13 +80,23 @@ bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, dcu_can_rx_stamp_t *s
     incoming[bus].pop_front();
     return true;
 }
-bool dcu_can_pending(unsigned) { return false; }
 unsigned dcu_can_tx_free(unsigned) { return 8; }
 uint32_t dcu_can_tx_progress(unsigned) { return 0; }
+uint32_t dcu_can_raw_tx_cancelled(unsigned) { return 0; }
 void dcu_can_cancel(unsigned) { ++cancellations; }
 static dcu_can_tx_id_t test_tx_serial;
 static dcu_can_eof_t test_tx_eof;
 static std::deque<dcu_can_tx_event_t> tx_events[ENCOS_CHANNEL_COUNT];
+static std::vector<dcu_can_tx_id_t> raw_ids[ENCOS_CHANNEL_COUNT];
+bool dcu_can_pending(unsigned bus, unsigned owner)
+{
+    return owner == DCU_CAN_DEVICE_RAW && !raw_ids[bus].empty();
+}
+bool dcu_can_drain_raw(unsigned bus)
+{
+    for (auto id : raw_ids[bus]) dcu_can_cancel_tx(bus, id);
+    return raw_ids[bus].empty();
+}
 bool dcu_can_cancel_tx(unsigned bus, dcu_can_tx_id_t id)
 {
     CHECK(bus < ENCOS_CHANNEL_COUNT && id);
@@ -95,11 +106,12 @@ bool dcu_can_cancel_tx(unsigned bus, dcu_can_tx_id_t id)
         if (event.id == id) event.status = DCU_CAN_TX_CANCELLED;
     return true;
 }
-dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *frame)
+dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned owner, const dcu_can_frame_t *frame)
 {
     if (!allow_send) return 0;
     sent.emplace_back(bus, *frame);
     tx_events[bus].push_back({++test_tx_serial, DCU_CAN_TX_COMPLETED, test_tx_eof});
+    if (owner == DCU_CAN_DEVICE_RAW) raw_ids[bus].push_back(test_tx_serial);
     return test_tx_serial;
 }
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
@@ -107,6 +119,8 @@ bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
     if (!allow_tx_events || tx_events[bus].empty()) return false;
     *event = tx_events[bus].front();
     tx_events[bus].pop_front();
+    auto &ids = raw_ids[bus];
+    ids.erase(std::remove(ids.begin(), ids.end(), event->id), ids.end());
     return true;
 }
 
@@ -127,7 +141,7 @@ static const dcu_motor_device_profile_t test_device{
     {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0}, 0, 0,
     DCU_MOTOR_PROTOCOL_ENCOS, nullptr, false, 0,
 };
-static dcu_production_profile_t test_profile{test_channels, ENCOS_CHANNEL_COUNT, &test_device, 1, 10, 20, {}};
+static dcu_production_profile_t test_profile{test_channels, ENCOS_CHANNEL_COUNT, &test_device, 1, 10, 20, {}, {}, {}};
 static dcu_motor_device_profile_t two_bus_devices[2];
 
 extern "C" const dcu_production_profile_t *host_fixture_profile(void);
@@ -159,14 +173,27 @@ void deliver(unsigned bus, const dcu_can_frame_t &frame, dcu_can_eof_t eof = {})
 
 static void select_wire_profile(unsigned profile)
 {
-    uint16_t indices[39];
-    gRxAssign.u16SubIndex0 = motor_pdo::mapping_indices(profile, false, indices);
-    std::memcpy(gRxAssign.aEntries, indices, gRxAssign.u16SubIndex0 * 2U);
-    gTxAssign.u16SubIndex0 = motor_pdo::mapping_indices(profile, true, indices);
-    std::memcpy(gTxAssign.aEntries, indices, gTxAssign.u16SubIndex0 * 2U);
+    for (const bool tx : {false, true}) {
+        const uint16_t index = tx ? 0x1c13 : 0x1c12;
+        uint16_t indices[dcu::ethercat::pdo_layout::assignment_capacity], zero = 0;
+        uint16_t count = motor_pdo::mapping_indices(profile, tx, indices);
+        CHECK(MC_AssignWrite(index, 0, 1, &zero, 0) == 0);
+        for (unsigned i = 0; i < count; ++i)
+            CHECK(MC_AssignWrite(index, i + 1, 2, &indices[i], 0) == 0);
+        CHECK(MC_AssignWrite(index, 0, 1, &count, 0) == 0);
+    }
     uint16_t in = 0, out = 0;
     CHECK(motor_control_mapping(&in, &out) == 0);
+    if (profile == 3) CHECK(in == 88 && out == 88);
     test_input_size = in;
+}
+
+static void request_test_layout(unsigned profile)
+{
+    const auto active = readiness();
+    CHECK(request_layout(static_cast<OperatingMode>(profile), active.profile_id, active.revision, active.digest));
+    CHECK(reset_layout());
+    select_wire_profile(profile);
 }
 
 static void copy_txpdo(void *data)
@@ -186,8 +213,10 @@ static void check_txpdo_bytes()
         CHECK(!std::memcmp(wire + offset, mirror, sizeof(*mirror)));
         offset += sizeof(*mirror);
     };
-    check(object<mc_board_tx_t>(0x6000));
-    if (profile == 2) {
+    if (profile != 3) check(object<mc_board_tx_t>(0x6000));
+    if (profile == 3) {
+        check(object<mc_raw_t>(0x6401));
+    } else if (profile == 2) {
         for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
             check(object<canfd_bus_pdo_t>(0x6500 + 16 * c));
     } else {
@@ -196,7 +225,7 @@ static void check_txpdo_bytes()
         for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
             check(axis_feedback(a));
         check(object<mc_imu_t>(0x6300));
-        if (profile == 1) check(object<mc_raw_t>(0x6400));
+        if (profile == 1) check(object<mc_sideband_t>(0x6400));
     }
     CHECK(offset == size);
     if (std::getenv("DCU_DUMP_TXPDO"))
@@ -318,7 +347,7 @@ void start_axis()
 
 struct RawPdoFixture {
     unsigned profile;
-    mc_raw_t sideband{};
+    mc_sideband_t sideband{};
     canfd_bus_pdo_t full[ENCOS_CHANNEL_COUNT]{};
     mc_board_rx_t board{};
 
@@ -371,6 +400,132 @@ struct RawPdoFixture {
 };
 
 static constexpr uint32_t startup_epoch = 7;
+
+static uint8_t switch_request(unsigned target, bool bad_digest = false)
+{
+    const auto profile = readiness();
+    uint16_t storage[21]{};
+    auto *p = reinterpret_cast<uint8_t *>(storage);
+    p[0] = target;
+    std::memcpy(p + 1, &profile.profile_id, 4);
+    std::memcpy(p + 5, &profile.revision, 4);
+    std::memcpy(p + 9, profile.digest, sizeof(profile.digest));
+    if (bad_digest) p[40] ^= 1;
+    return MC_OD_Write(0x2101, 1, 41, storage, 0);
+}
+
+static uint8_t switch_action(uint16_t action)
+{
+    return MC_OD_Write(0x2101, 2, 1, &action, 0);
+}
+
+static uint8_t write_limits(uint32_t packed)
+{
+    uint16_t data[2];
+    std::memcpy(data, &packed, sizeof(data));
+    return MC_OD_Write(0x2101, 5, sizeof(data), data, 0);
+}
+
+static void check_raw_state(RawState state)
+{
+    CHECK(raw_state() == state && read_sdo<uint8_t>(0x2101, 3) == static_cast<uint8_t>(state));
+}
+
+static void test_raw_switch(bool timeout, bool overflow)
+{
+    CHECK(boot_startup({1, 7, {1, 2, 3}, 1000, 5}, 17));
+    RawPdoFixture input(1);
+    check_raw_state(RawState::Armed);
+    nAlStatus = STATE_OP;
+    motor_control_operational(true);
+    input.submit(false, 0);
+    check_raw_state(RawState::Active);
+    uint16_t action = 0;
+    CHECK(MC_OD_Write(0x2101, 3, 1, &action, 0) == ABORTIDX_READ_ONLY_ENTRY);
+    CHECK(!select_mode(OperatingMode::Motor) && !map_layout(OperatingMode::Motor));
+    CHECK(MC_AssignWrite(0x1c12, 0, 1, &action, 0) != 0);
+    CHECK(switch_request(0, true) != 0);
+    check_raw_state(RawState::Active);
+    allow_tx_events = false;
+    ++input.sideband.BatchSeq;
+    input.submit();
+    CHECK(sent.size() == 1 && raw_ids[0].size() == 1);
+    const auto before = cancellations;
+    CHECK(switch_request(0) == 0 && cancellations == before + 1);
+    check_raw_state(RawState::Draining);
+    CHECK(tx_events[0].front().status == DCU_CAN_TX_CANCELLED);
+    CHECK(switch_action(1) != 0);
+    ++input.sideband.BatchSeq;
+    input.submit();
+    input.submit();
+    CHECK(read_sdo<uint32_t>(0x2101, 4) == 1 && sent.size() == 1);
+    if (timeout || overflow) {
+        if (timeout) {
+            // 保持板命令租期有效；只有透传撤销超过期限。
+            for (unsigned i = 0; i < 20; ++i) { ++test_ms; input.submit(); }
+        } else {
+            for (unsigned i = 0; i < raw_cfg::drop_limit - 1; ++i) {
+                ++input.sideband.BatchSeq;
+                input.submit();
+            }
+            check_raw_state(RawState::Draining);
+            ++input.sideband.BatchSeq;
+            input.submit();
+        }
+        check_raw_state(RawState::Faulted);
+        CHECK(sent.size() == 1 && readiness().state == DCU_GATEWAY_RUNNING);
+        return;
+    }
+    allow_tx_events = true;
+    input.submit();
+    check_raw_state(RawState::Requested);
+    CHECK(mode() == OperatingMode::MotorWithRaw && sent.size() == 1);
+    nAlStatus = STATE_SAFEOP;
+    motor_control_operational(false);
+    CHECK(switch_action(1) != 0);
+    nAlStatus = STATE_PREOP;
+    CHECK(!map_layout(OperatingMode::Motor));
+    CHECK(switch_action(1) == 0);
+    uint16_t in = 9, out = 9;
+    CHECK(motor_control_mapping(&in, &out) != 0 && !in && !out); // 旧分配仍不匹配。
+    select_wire_profile(0);
+    check_raw_state(RawState::Disabled);
+    CHECK(test_input_size == 1024 && read_sdo<uint32_t>(0x2100, 5) == 7);
+    CHECK(switch_request(2) == 0 && switch_action(1) == 0);
+    select_wire_profile(2);
+    RawPdoFixture full(2);
+    check_raw_state(RawState::Armed);
+    CHECK(test_input_size == 544);
+    nAlStatus = STATE_OP;
+    motor_control_operational(true);
+    full.submit(false, 0);
+    full.submit();
+    check_raw_state(RawState::Active);
+    dcu_can_frame_t rx{};
+    rx.id = 42;
+    incoming[0].emplace_back(rx, dcu_can_rx_stamp_t{});
+    full.submit();
+    CHECK(object<canfd_bus_pdo_t>(0x6500)->valid_mask == 1);
+    CHECK(switch_action(2) == 0);
+    check_raw_state(RawState::Faulted);
+    CHECK(switch_request(0) != 0 && switch_action(1) != 0);
+    CHECK(!motor_pdo::load<canfd_bus_pdo_t>(ssc_txpdo, sizeof(mc_board_tx_t)).valid_mask);
+    motor_control_prepare_input();
+    check_txpdo_bytes();
+    CHECK(!object<canfd_bus_pdo_t>(0x6500)->valid_mask);
+    motor_control_operational(false);
+    nAlStatus = STATE_PREOP;
+    select_wire_profile(2);
+    motor_control_operational(true);
+    check_raw_state(RawState::Faulted);
+    motor_control_operational(false);
+    CHECK(switch_action(1) == 0);
+    check_raw_state(RawState::Faulted);
+    CHECK(!switch_request(2));
+    select_wire_profile(2);
+    motor_control_operational(true);
+    check_raw_state(RawState::Active);
+}
 
 static void startup_business(uint32_t seq, uint16_t control, bool enabled = true, uint32_t reserved = 0,
                              uint16_t lease = 10)
@@ -431,7 +586,7 @@ static void serve_startup_reads(size_t &read, bool answer_all)
     }
 }
 
-static void test_production_startup(bool journal_ok)
+static void test_production_startup(bool journal_ok, bool switch_while_running)
 {
     fixture_profile = host_mixed_profile();
     CHECK(motor_control_init());
@@ -505,8 +660,32 @@ static void test_production_startup(bool journal_ok)
     motor_control_prepare_input();
     CHECK((axis_feedback(14)->StatusWord & 8U) && (axis_feedback(14)->ValidFlags & 7U) == 7U);
 
+    if (switch_while_running) {
+        const auto cancels = cancellations;
+        CHECK(switch_request(2) != 0); // OP 内不能把已配置的电机切离调度。
+        CHECK(switch_request(0) == 0);
+        check_raw_state(RawState::Requested);
+        CHECK(cancellations == cancels && owner() == OWNER_PDO);
+        for (unsigned seq : {5U, 6U}) {
+            if (seq == 6) CHECK(switch_action(2) == 0);
+            const auto first = sent.size();
+            test_ms += 2;
+            startup_business(seq, MC_AXIS_ARM | MC_AXIS_START_MOTION);
+            CHECK(board->AcceptedCycleSeq == seq && (axis_feedback(14)->StatusWord & 8U));
+            for (unsigned n = 0; n < 2000 / DCU_WORKER_PERIOD_US + 2; ++n) run_cycle();
+            CHECK(std::any_of(sent.begin() + first, sent.end(), [](const auto &tx) {
+                return tx.first == 2 && tx.second.id == 3 && tx.second.dlc == 8;
+            }));
+        }
+        check_raw_state(RawState::Faulted);
+        CHECK(!object<mc_sideband_t>(0x6400)->ValidMask && cancellations == cancels);
+        return;
+    }
+
     const auto before_drop = cancellations;
+    check_raw_state(RawState::Active);
     motor_control_operational(false);
+    check_raw_state(RawState::Faulted);
     CHECK(cancellations > before_drop);
     const size_t after_drop = read = sent.size();
     startup_business(4, MC_AXIS_ARM | MC_AXIS_START_MOTION);
@@ -519,6 +698,7 @@ static void test_production_startup(bool journal_ok)
         CHECK(!board->AcceptedCycleSeq);
     }
     CHECK(startup_state() == DCU_GATEWAY_RUNNING && read > after_drop);
+    check_raw_state(RawState::Faulted);
     CHECK(read_sdo<uint32_t>(0x2002, 2) > ready && read_sdo<uint32_t>(0x2002, 4) == 0);
     startup_business(4, MC_AXIS_ARM | MC_AXIS_START_MOTION);
     CHECK(!board->AcceptedCycleSeq);
@@ -601,6 +781,222 @@ static void test_dynamic_policy(const char *encoded)
     active(2, 8, 15, 750);
 }
 
+static void test_production_raw(bool authorize)
+{
+    fixture_profile = host_hra55h100_profile();
+    CHECK(motor_control_init() && motor_control_boot_startup(17));
+    select_wire_profile(1);
+    CHECK(adapter::configured_device(21)->can_id == 2);
+    CHECK(read_sdo<uint32_t>(0x2101, 5) == 0);
+    motor_control_operational(true);
+    nAlStatus = STATE_OP;
+    CHECK(write_limits(1U << 24) && switch_request(3));
+    motor_control_operational(false);
+    nAlStatus = STATE_SAFEOP;
+    CHECK(write_limits(1U << 24) && switch_request(3));
+    nAlStatus = STATE_PREOP;
+    CHECK(!switch_action(1)); // 非协商退 OP 后先解锁，再请求。
+    CHECK(write_limits(9U << 24) && write_limits((1U << 24) | 1));
+    const uint32_t quota = authorize ? 1U << 24 : 0;
+    if (authorize) CHECK(!write_limits(quota));
+    CHECK(read_sdo<uint32_t>(0x2101, 5) == quota);
+    CHECK(!switch_request(3) && !switch_action(1));
+    select_wire_profile(3);
+    CHECK(gRxAssign.u16SubIndex0 == 1 && gTxAssign.u16SubIndex0 == 1);
+    CHECK(gRxAssign.aEntries[0] == 0x1641 && gTxAssign.aEntries[0] == 0x1A42);
+    CHECK(test_input_size == 88);
+    nAlStatus = STATE_OP;
+    motor_control_operational(true);
+    mc_raw_t wire{};
+    const auto submit = [&] { ++wire.BatchSeq; motor_control_output(&wire); run_cycle(); };
+    submit();
+    wire.ValidMask = wire.SlotCount = 1;
+    wire.Channel = 3;
+    wire.CanId = 0x321;
+    wire.FrameFlags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+    wire.Dlc = 15;
+    uint8_t payload[64];
+    for (unsigned i = 0; i < sizeof(payload); ++i) payload[i] = 0xc7 ^ i;
+    std::memcpy(reinterpret_cast<uint8_t *>(&wire) + 24, payload, 64);
+    submit();
+    submit(); // 同一 2 ms 窗口的第二帧。
+    CHECK(sent.size() == unsigned(authorize) && raw_drops() == (authorize ? 1U : 2U));
+    if (authorize) {
+        CHECK(sent[0].first == 3 && sent[0].second.id == 0x321 && sent[0].second.dlc == 15);
+        CHECK(!std::memcmp(sent[0].second.data, payload, 64));
+        deliver(3, sent[0].second);
+        motor_control_prepare_input();
+        CHECK(ssc_txpdo[4] == 1 && ssc_txpdo[20] == 3 && ssc_txpdo[22] == 15 && ssc_txpdo[23] == 0x34);
+        CHECK(!std::memcmp(ssc_txpdo + 24, payload, 64));
+        test_ms += 2;
+        wire.CanId = 2;
+        submit();
+        CHECK(sent.size() == 1 && raw_drops() == 2);
+        wire.CanId = 0x321;
+        allow_tx_events = false;
+        submit();
+        CHECK(sent.size() == 2);
+    } else {
+        deliver(3, {0x321, 15, wire.FrameFlags, {}});
+        motor_control_prepare_input();
+        CHECK(ssc_txpdo[4] == 0);
+    }
+    const auto count = sent.size();
+    CHECK(!switch_request(1));
+    motor_control_operational(false);
+    nAlStatus = STATE_PREOP;
+    if (authorize) {
+        CHECK(write_limits(0) && read_sdo<uint32_t>(0x2101, 5) == quota);
+        allow_tx_events = true;
+        run_cycle();
+    }
+    CHECK(!write_limits(0) && !switch_action(1));
+    select_wire_profile(1);
+    CHECK(test_input_size == 1072 && gRxAssign.u16SubIndex0 == 34 && gTxAssign.u16SubIndex0 == 35);
+    CHECK(object<mc_board_config_t>(0x2001)->AxisConfiguredMask == (1U << 21));
+    CHECK(object<mc_channel_config_t>(0x2013)->Role == 1);
+    ++test_ms;
+    run_cycle();
+    CHECK(startup_state() == DCU_GATEWAY_READY);
+    motor_control_operational(true);
+    nAlStatus = STATE_OP;
+    uint8_t motor_wire[784]{};
+    const auto motor_cycle = [&](unsigned seq, unsigned control) {
+        test_ms += 2;
+        motor_control_set_neutral_window(2000000, test_ms * 1000U + 900U);
+        mc_board_rx_t b{};
+        b.InterfaceVersion = MC_INTERFACE_VERSION;
+        b.CycleSeq = seq;
+        b.CommandLeaseMs = 10;
+        b.BoardControl = control ? 1 : 0;
+        b.ChannelEnableMask = control ? 1U << 3 : 0;
+        b.AxisEnableMask = control ? 1U << 21 : 0;
+        mc_axis_rx_t axis{};
+        axis.Mode = 4;
+        axis.ControlWord = control;
+        motor_pdo::store(motor_wire, 0, b);
+        motor_pdo::store(motor_wire, 32 + 3 * 8, mc_channel_rx_t{1, 1, 1, 2000});
+        motor_pdo::store(motor_wire, 64 + 21 * 24, axis);
+        motor_control_output(motor_wire);
+        run_cycle();
+        motor_control_prepare_input();
+    };
+    motor_cycle(99, MC_AXIS_ARM | MC_AXIS_START_MOTION);
+    CHECK(!object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq && sent.size() == count);
+    motor_cycle(1, 0);
+    motor_cycle(2, MC_AXIS_ARM | MC_AXIS_START_MOTION);
+    CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 2 && sent.size() == count);
+    motor_cycle(3, MC_AXIS_ARM);
+    motor_cycle(4, MC_AXIS_ARM | MC_AXIS_START_MOTION);
+    CHECK(sent.size() == count + 1 && sent.back().first == 3 && sent.back().second.id == 2);
+    CHECK(sent.back().second.dlc == 10 && sent.back().second.data[0] == 0x11);
+}
+
+static void test_registered_passthrough()
+{
+    fixture_profile = host_hra55h100_profile();
+    CHECK(motor_control_init() && motor_control_boot_startup(17));
+    select_wire_profile(1);
+    CHECK(!adapter::configured_device(14) && adapter::configured_device(21)->can_id == 2);
+    CHECK(read_sdo<uint32_t>(0x2012, 3) == 1000000 && read_sdo<uint8_t>(0x2012, 7) == 0);
+    CHECK(read_sdo<uint32_t>(0x2101, 5) == 0);
+    ++test_ms;
+    run_cycle();
+    CHECK(sent.empty());
+    CHECK(!write_limits(1U << 16) && !switch_request(3));
+    uint16_t owner = 1U << 2;
+    CHECK(MC_OD_Write(0x2101, 6, 1, &owner, 0) != 0); // Not a motion bus to hand over.
+    CHECK(!switch_action(1));
+    select_wire_profile(3);
+    nAlStatus = STATE_OP;
+    motor_control_operational(true);
+    mc_raw_t wire{};
+    const auto submit = [&] { test_ms += 2; ++wire.BatchSeq; motor_control_output(&wire); run_cycle(); };
+    submit();
+    wire.ValidMask = wire.SlotCount = 1;
+    wire.Channel = 2;
+    wire.CanId = 2;
+    wire.FrameFlags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+    wire.Dlc = 2;
+    wire.Data_0 = 0xe0;
+    wire.Data_1 = 1;
+    submit();
+    CHECK(sent.empty());
+    wire.CanId = 1;
+    wire.FrameFlags |= DCU_CAN_FLAG_EXTENDED;
+    submit();
+    CHECK(sent.empty());
+    wire.FrameFlags &= ~DCU_CAN_FLAG_EXTENDED;
+    submit();
+    CHECK(sent.size() == 1 && sent[0].first == 2 && sent[0].second.id == 1 &&
+          sent[0].second.data[0] == 0xe0 && sent[0].second.data[1] == 1);
+    deliver(2, {2, 6, wire.FrameFlags, {0xa0, 1, 0xc3, 0x0b, 0x6c, 0x26}});
+    motor_control_prepare_input();
+    CHECK(ssc_txpdo[4] == 0);
+    deliver(2, {1, 6, wire.FrameFlags, {0xa0, 1, 0xc3, 0x0b, 0x6c, 0x26}});
+    motor_control_prepare_input();
+    CHECK(ssc_txpdo[4] == 1 && ssc_txpdo[16] == 1 && ssc_txpdo[24] == 0xa0);
+    CHECK(sent.size() == 1 && !read_sdo<uint8_t>(0x2101, 6));
+}
+
+static void test_raw_motor_handoff()
+{
+    fixture_profile = host_hra55h100_profile();
+    CHECK(motor_control_init() && motor_control_boot_startup(17));
+    select_wire_profile(1);
+    uint16_t owner = 1U << 3;
+    const auto grant = [&] { return MC_OD_Write(0x2101, 6, 1, &owner, 0); };
+    CHECK(grant() && !write_limits(1U << 24) && !switch_request(3));
+    CHECK(!grant() && !read_sdo<uint8_t>(0x2101, 6) && !switch_action(1));
+    select_wire_profile(3);
+    CHECK(read_sdo<uint8_t>(0x2101, 6) == owner);
+    nAlStatus = STATE_OP;
+    motor_control_operational(true);
+    CHECK(grant());
+    mc_raw_t wire{};
+    wire.BatchSeq = 1;
+    motor_control_output(&wire);
+    run_cycle();
+    wire.BatchSeq++;
+    wire.ValidMask = wire.SlotCount = 1;
+    wire.Channel = 3;
+    wire.CanId = 0x02;
+    wire.FrameFlags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+    wire.Dlc = 10;
+    wire.Data_0 = 0x11;
+    motor_control_output(&wire);
+    run_cycle();
+    CHECK(sent.size() == 1 && sent[0].first == 3 && sent[0].second.id == 0x02);
+    CHECK(sent[0].second.dlc == 10 && sent[0].second.data[0] == 0x11 && !raw_drops());
+    deliver(3, {0x02, 10, wire.FrameFlags, {0x80}});
+    run_cycle();
+    motor_control_prepare_input();
+    CHECK(ssc_txpdo[4] == 1 && ssc_txpdo[16] == 0x02 && ssc_txpdo[24] == 0x80);
+    motor_control_operational(false);
+    CHECK(!read_sdo<uint8_t>(0x2101, 6));
+}
+
+static void test_raw_without_motor_probes(unsigned target)
+{
+    fixture_profile = host_mixed_profile();
+    CHECK(motor_control_init() && motor_control_boot_startup(17));
+    select_wire_profile(1);
+    test_ms = 1;
+    run_cycle();
+    CHECK(!sent.empty() && !owner_change_allowed());
+    CHECK(!switch_request(target) && !switch_action(1));
+    const auto cancels = service_cancellations[2] + service_cancellations[0];
+    select_wire_profile(target);
+    CHECK(service_cancellations[2] + service_cancellations[0] > cancels && owner_change_allowed());
+    const auto count = sent.size();
+    for (unsigned i = 0; i < 25; ++i) { ++test_ms; run_cycle(); }
+    CHECK(sent.size() == count && startup_state() == DCU_GATEWAY_READY);
+    CHECK(!switch_request(1) && !switch_action(1));
+    select_wire_profile(1);
+    for (unsigned i = 0; i < 25; ++i) { ++test_ms; run_cycle(); }
+    CHECK(sent.size() > count && startup_state() == DCU_GATEWAY_PREPARING);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 3 && !std::strcmp(argv[1], "dynamic_policy")) {
@@ -608,8 +1004,25 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 2);
-    if (!std::strcmp(argv[1], "production_startup") || !std::strcmp(argv[1], "production_no_journal")) {
-        test_production_startup(!std::strcmp(argv[1], "production_startup"));
+    if (!std::strcmp(argv[1], "registered_passthrough")) {
+        test_registered_passthrough();
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "mixed_raw_no_probe") || !std::strcmp(argv[1], "mixed_fd_no_probe")) {
+        test_raw_without_motor_probes(!std::strcmp(argv[1], "mixed_raw_no_probe") ? 2 : 3);
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "production_raw") || !std::strcmp(argv[1], "production_no_quota")) {
+        test_production_raw(!std::strcmp(argv[1], "production_raw"));
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "raw_motor_handoff")) {
+        test_raw_motor_handoff();
+        return 0;
+    }
+    if (!std::strcmp(argv[1], "production_startup") || !std::strcmp(argv[1], "production_no_journal") ||
+        !std::strcmp(argv[1], "switch_with_motor")) {
+        test_production_startup(std::strcmp(argv[1], "production_no_journal"), !std::strcmp(argv[1], "switch_with_motor"));
         return 0;
     }
     if (!std::strcmp(argv[1], "mixed_motor_profile")) {
@@ -677,7 +1090,8 @@ int main(int argc, char **argv)
         CHECK(sent[2].first == 2 && sent[2].second.id == 36 && sent[2].second.dlc == 1 &&
               sent[2].second.data[0] == 0x17);
         CHECK(!owner_change_allowed());
-        CHECK(!read_parameter(0, {2, 1, 0x101}, test_ms, true).accepted);
+        // The sibling BJCX status poll no longer reserves the ENCOS device.
+        CHECK(read_parameter(0, {2, 1, 0x101}, test_ms, true).accepted);
         status.id = 36;
         status.data[0] = 0xA1;
         deliver(2, status);
@@ -722,7 +1136,16 @@ int main(int argc, char **argv)
     }
     if (!std::strncmp(argv[1], "hra55h100_profile", sizeof("hra55h100_profile") - 1)) {
         const char *scenario = argv[1] + sizeof("hra55h100_profile") - 1;
-        fixture_profile = host_hra55h100_profile();
+        auto profile = *host_hra55h100_profile();
+        const bool pipeline = !std::strncmp(scenario, "_pipeline", 9);
+        dcu_motor_device_profile_t motors[]{profile.devices[0], profile.devices[0]};
+        if (pipeline) {
+            motors[1].can_id = 3;
+            motors[1].neutral_mit_frame_limit = 2;
+            profile.device_count = 2;
+            profile.devices = motors;
+        }
+        fixture_profile = &profile;
         constexpr unsigned bus = 3;
         constexpr unsigned slot = 21;
         constexpr uint16_t can_id = 0x02;
@@ -734,12 +1157,14 @@ int main(int argc, char **argv)
         CHECK(device->neutral_mit_frame_limit == 30000);
         CHECK(!std::strcmp(device->type, "HRA55H-100"));
         CHECK(adapter::device_for_slot(slot) == 0 && adapter::slot_for_device(0) == slot);
-        CHECK(object<mc_board_config_t>(0x2001)->AxisConfiguredMask == (1U << slot));
+        const uint8_t members = pipeline ? 3U : 1U;
+        CHECK(object<mc_board_config_t>(0x2001)->AxisConfiguredMask == (uint32_t{members} << slot));
         CHECK(sent.empty());
 
         select_wire_profile(1);
         CHECK(test_input_size == 1072);
         CHECK(motor_control_boot_startup(uint64_t{startup_epoch} << 32));
+        if (!std::strcmp(scenario, "_quota_equivalence")) CHECK(!write_limits(1U << 24));
         test_tx_eof = {UINT32_MAX - 2, true};
         test_ms = 1;
         run_cycle();
@@ -754,16 +1179,17 @@ int main(int argc, char **argv)
             board.CycleSeq = sequence;
             board.BoardControl = enabled ? 1 : 0;
             board.ChannelEnableMask = enabled ? 1U << bus : 0;
-            board.AxisEnableMask = enabled ? 1U << slot : 0;
+            board.AxisEnableMask = enabled ? members << slot : 0;
             board.CommandLeaseMs = 10;
             motor_pdo::store(wire, 0, board);
-            const mc_channel_rx_t channel{1, 1, 1, 2000};
+            const mc_channel_rx_t channel{1, members, 1, 2000};
             motor_pdo::store(wire, motor_pdo::layout::output_channels_offset + bus * sizeof(channel), channel);
             mc_axis_rx_t axis{};
             axis.Mode = 4;
             axis.ControlWord = controls;
             axis.TargetPosition = position;
             motor_pdo::store(wire, motor_pdo::layout::output_axes_offset + slot * sizeof(axis), axis);
+            if (pipeline) motor_pdo::store(wire, motor_pdo::layout::output_axes_offset + (slot + 1) * sizeof(axis), axis);
             motor_control_output(wire);
             run_cycle();
         };
@@ -781,6 +1207,9 @@ int main(int argc, char **argv)
         submit(9, start, true, 0, 1000000);
         CHECK(sent.empty());
         submit(10, MC_AXIS_ARM, true);
+        const bool retry_recovers = !std::strcmp(scenario, "_retry_recovers");
+        const bool retry_expires = !std::strcmp(scenario, "_retry_expires");
+        if (retry_recovers || retry_expires || pipeline) allow_tx_events = false;
         if (!std::strcmp(scenario, "_submit_rejected")) allow_send = false;
         submit(11, start, true, 0, 2000000, !std::strcmp(scenario, "_short_window") ? 349 : 900);
         if (!std::strcmp(scenario, "_submit_rejected") || !std::strcmp(scenario, "_short_window")) {
@@ -798,6 +1227,78 @@ int main(int argc, char **argv)
         CHECK(std::memcmp(request.data, mit, sizeof(mit)) == 0);
 
         dcu_can_frame_t reply{can_id, 10, fd_brs, {0x80, 0x10, 0, 0x3f, 0x80}};
+        if (!std::strcmp(scenario, "_baseline_equivalence") || !std::strcmp(scenario, "_quota_equivalence")) {
+            deliver(bus, reply, {1, true});
+            motor_control_prepare_input();
+            CHECK(axis_feedback(slot)->ValidFlags == 0x37);
+            std::fwrite(wire, 1, sizeof(wire), stdout);
+            std::fwrite(ssc_txpdo, 1, test_input_size, stdout);
+            std::fwrite(request.data, 1, sizeof(mit), stdout);
+            return 0;
+        }
+        if (pipeline) {
+            // Both commands are submitted before either TX terminal event or motor reply.
+            test_tx_eof = {20, true};
+            run_cycle();
+            CHECK(sent.size() == 1); // The shared 100 us guard still applies.
+            run_cycle();
+            CHECK(sent.size() == 2 && sent.back().second.id == 3 && tx_events[bus].size() == 2);
+            std::swap(tx_events[bus][0], tx_events[bus][1]);
+            allow_tx_events = true;
+            reply.id = 3;
+            deliver(bus, reply, {21, true});
+            motor_control_prepare_input();
+            CHECK(axis_feedback(slot + 1)->ValidFlags == 0x37 && !axis_feedback(slot)->ValidFlags);
+            CHECK(motor_control_neutral_feedback_pending());
+            if (!std::strcmp(scenario, "_pipeline_timeout")) {
+                test_us += 350;
+                run_cycle();
+                motor_control_prepare_input();
+                CHECK(!motor_control_neutral_feedback_pending() && (object<mc_board_tx_t>(0x6000)->BoardStatus & 32U));
+                submit(12, start, true);
+                CHECK(sent.size() == 2);
+                return 0;
+            }
+            reply.id = can_id;
+            deliver(bus, reply, {1, true}); // Valid for the first TX, not the second.
+            CHECK(!motor_control_neutral_feedback_pending());
+            motor_control_prepare_input();
+            CHECK(axis_feedback(slot)->ValidFlags == 0x37 && axis_feedback(slot + 1)->ValidFlags == 0x37);
+            submit(12, start, true);
+            run_cycle();
+            run_cycle();
+            CHECK(sent.size() == 4 && sent[2].second.data[15] == 1 && sent[3].second.data[15] == 1);
+            deliver(bus, reply, {21, true});
+            reply.id = 3;
+            deliver(bus, reply, {22, true});
+            submit(13, start, true);
+            run_cycle();
+            run_cycle();
+            CHECK(sent.size() == 5 && sent.back().second.id == can_id && sent.back().second.data[15] == 2);
+            return 0;
+        }
+        if (retry_recovers || retry_expires) {
+            const unsigned before = service_cancellations[bus];
+            run_cycle(); // A recoverable CAN error has not retired the hardware token.
+            CHECK(motor_control_neutral_feedback_pending() && sent.size() == 1);
+            if (retry_expires) {
+                test_us += 350;
+                run_cycle();
+                CHECK(service_cancellations[bus] == before + 1);
+                CHECK(!motor_control_neutral_feedback_pending());
+            }
+            allow_tx_events = true;
+            deliver(bus, reply, {1, true});
+            motor_control_prepare_input();
+            CHECK(axis_feedback(slot)->ValidFlags == (retry_recovers ? 0x37U : 0U));
+            CHECK(sent.size() == 1 && !motor_control_neutral_feedback_pending());
+            if (retry_expires) {
+                CHECK(object<mc_board_tx_t>(0x6000)->BoardStatus & 32U);
+                submit(12, start, true);
+                CHECK(sent.size() == 1);
+            }
+            return 0;
+        }
         if (*scenario && std::strcmp(scenario, "_endurance")) {
             dcu_can_eof_t eof{1, true};
             if (!std::strcmp(scenario, "_deadline"))
@@ -1049,8 +1550,78 @@ int main(int argc, char **argv)
         CHECK(sent.empty());
         return 0;
     }
-    const bool raw_fixture = !std::strcmp(argv[1], "raw_queue") || !std::strcmp(argv[1], "raw_full_admission") ||
+    if (!std::strcmp(argv[1], "single_fd")) {
+        const dcu_can_channel_config_t fd{2, 1000000, 5000000, true, false};
+        test_profile.channels = &fd;
+        test_profile.channel_count = 1;
+        test_profile.devices = nullptr;
+        test_profile.device_count = 0;
+        test_profile.raw_rate_limit[2] = 1;
+        test_profile.readiness = {1, 1, {}, 1000, 5};
+        CHECK(motor_control_init() && motor_control_boot_startup(17));
+        select_wire_profile(1);
+        CHECK(!switch_request(3) && !switch_action(1));
+        select_wire_profile(3);
+        CHECK(gRxAssign.aEntries[0] == 0x1641 && gTxAssign.aEntries[0] == 0x1A42);
+        std::memset(ssc_txpdo + 88, 0xA5, sizeof(ssc_txpdo) - 88);
+        motor_control_operational(true);
+        mc_raw_t wire{};
+        const auto submit = [&]() { motor_control_output(&wire); run_cycle(); };
+        wire.BatchSeq = 1;
+        wire.ValidMask = wire.SlotCount = 1;
+        wire.Channel = 2;
+        wire.CanId = 0x321;
+        wire.FrameFlags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+        wire.Dlc = 15;
+        uint8_t payload[64];
+        for (unsigned i = 0; i < 64; ++i) payload[i] = 0xD3 ^ i;
+        memcpy(reinterpret_cast<uint8_t *>(&wire) + 24, payload, 64);
+        submit();
+        CHECK(sent.empty());
+        wire.ValidMask = wire.SlotCount = 0;
+        submit();
+        CHECK(object<mc_raw_t>(0x7301)->BatchSeq == 1 && sent.empty());
+        wire.BatchSeq = 2;
+        wire.ValidMask = 2;
+        wire.SlotCount = 1;
+        submit();
+        wire.ValidMask = 1;
+        wire.SlotCount = 0;
+        submit();
+        CHECK(sent.empty());
+        wire.SlotCount = 1;
+        submit();
+        submit();
+        CHECK(sent.size() == 1 && sent[0].first == 2 && sent[0].second.dlc == 15);
+        CHECK(!memcmp(sent[0].second.data, payload, sizeof(payload)));
+        CHECK(!memcmp(object<mc_raw_t>(0x7301), &wire, 88));
+        auto frame = sent[0].second;
+        deliver(2, frame);
+        ++frame.id;
+        deliver(2, frame);
+        for (unsigned i = 0; i < 2; ++i) {
+            motor_control_prepare_input();
+            check_txpdo_bytes();
+            const auto &feedback = *object<mc_raw_t>(0x6401);
+            CHECK(feedback.CanId == 0x321 + i && feedback.Channel == 2 && feedback.Dlc == 15);
+            CHECK(feedback.FrameFlags == wire.FrameFlags && feedback.SlotCount == 1 && feedback.ValidMask == 1);
+            CHECK(ssc_txpdo[23] == 0x34 && !memcmp(ssc_txpdo + 24, payload, 64));
+        }
+        motor_control_prepare_input();
+        CHECK(ssc_txpdo[4] == 0 && ssc_txpdo[5] == 0);
+        CHECK(!object<mc_board_rx_t>(0x7000)->CycleSeq && !object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq);
+        test_ms += test_profile.max_command_lease_ms;
+        submit();
+        check_raw_state(RawState::Faulted);
+        motor_control_prepare_input();
+        CHECK(std::all_of(ssc_txpdo, ssc_txpdo + 88, [](uint8_t b) { return b == 0; }));
+        CHECK(std::all_of(ssc_txpdo + 88, ssc_txpdo + sizeof(ssc_txpdo), [](uint8_t b) { return b == 0xA5; }));
+        return 0;
+    }
+    const bool switching = !std::strncmp(argv[1], "switch_raw", 10);
+    const bool raw_fixture = switching || !std::strcmp(argv[1], "raw_queue") || !std::strcmp(argv[1], "raw_full_admission") ||
                              !std::strncmp(argv[1], "raw_large_", 10);
+    const bool full_fixture = !std::strcmp(argv[1], "raw_full_admission") || !std::strcmp(argv[1], "raw_large_full");
     if (raw_fixture) {
         // Exercise generic Raw CAN mechanics without giving the production Profile a Raw writer.
         dcu::app::gateway_application::detail::Configuration config{};
@@ -1058,6 +1629,7 @@ int main(int argc, char **argv)
         for (auto &channel : config.channels) channel = {2, 0, 8, true};
         parameters::initialize({});
         CHECK(dcu::app::gateway_application::detail::initialize_fixture(config));
+        CHECK(select_mode(full_fixture ? OperatingMode::Raw : OperatingMode::MotorWithRaw));
         CHECK(motor_pdo::bind_publication());
     } else {
         if (!std::strcmp(argv[1], "profiles") || !std::strcmp(argv[1], "latched_layouts") ||
@@ -1073,8 +1645,35 @@ int main(int argc, char **argv)
         }
         CHECK(motor_control_init());
     }
-    select_wire_profile(1);
+    select_wire_profile(full_fixture ? 2 : 1);
+    if (switching) {
+        test_raw_switch(!std::strcmp(argv[1], "switch_raw_timeout"), !std::strcmp(argv[1], "switch_raw_drops"));
+        return 0;
+    }
     uint8_t first[1072], second[1072];
+    if (!std::strcmp(argv[1], "single_motor_raw_fault")) {
+        start_axis();
+        const auto steady_command = [&]() {
+            const auto first = sent.size();
+            command_axis(MC_AXIS_ARM | MC_AXIS_START_MOTION);
+            for (unsigned n = 0; n < 2000 / DCU_WORKER_PERIOD_US + 2; ++n) run_cycle();
+            motor_control_prepare_input();
+            CHECK(axis_feedback(0)->StatusWord & 8U);
+            for (auto i = first; i < sent.size(); ++i)
+                if (sent[i].first == 0 && sent[i].second.id == 1 && sent[i].second.dlc == 8)
+                    return sent[i].second;
+            CHECK(false);
+            return dcu_can_frame_t{};
+        };
+        const auto before = steady_command();
+        const auto cancels = cancellations;
+        CHECK(switch_action(2) == 0);
+        const auto after = steady_command();
+        CHECK(!std::memcmp(before.data, after.data, before.dlc) && before.flags == after.flags);
+        CHECK(cancellations == cancels && !object<mc_sideband_t>(0x6400)->ValidMask);
+        check_raw_state(RawState::Faulted);
+        return 0;
+    }
     if (!std::strcmp(argv[1], "input_staging")) {
         motor_control_operational(true);
         uint8_t wire[784]{};
@@ -1332,7 +1931,7 @@ int main(int argc, char **argv)
         std::memcpy(second + 1024, &raw, sizeof(raw));
         CHECK(!std::memcmp(first, second, sizeof(first)));
         for (unsigned i = 0; i < 2; ++i) {
-            auto slot = motor_pdo::raw_slot(raw, i);
+            auto slot = motor_pdo::sideband_slot(raw, i);
             CHECK(!std::memcmp(&slot, reinterpret_cast<uint8_t *>(&raw) + 16 + 16 * i, sizeof(slot)));
         }
         return 0;
@@ -1501,6 +2100,7 @@ int main(int argc, char **argv)
         CHECK(false);
     }
     if (!std::strcmp(argv[1], "raw_queue")) {
+        motor_control_operational(true);
         object<mc_channel_config_t>(0x2010)->Role = 2;
         dcu_can_frame_t frame{};
         for (unsigned i = 0; i < raw_cfg::queue_capacity + 3; ++i) {
@@ -1556,20 +2156,23 @@ int main(int argc, char **argv)
         return 0;
     }
     if (!std::strcmp(argv[1], "profiles")) {
-        for (unsigned profile = 0; profile < 3; ++profile) {
-            select_wire_profile(profile);
+        CHECK(boot_startup({1, 1, {}, 1000, 5}, 1));
+        for (unsigned profile : {0U, 1U, 2U, 3U, 1U, 3U, 2U}) {
+            request_test_layout(profile);
             std::memset(ssc_txpdo + test_input_size, 0xA5, sizeof(ssc_txpdo) - test_input_size);
             motor_control_prepare_input();
             check_txpdo_bytes();
             mc_board_tx_t board;
             std::memcpy(&board, ssc_txpdo, sizeof(board));
-            CHECK(board.PublishSeq == object<mc_board_tx_t>(0x6000)->PublishSeq);
+            if (profile != 3) CHECK(board.PublishSeq == object<mc_board_tx_t>(0x6000)->PublishSeq);
             for (unsigned i = test_input_size; i < sizeof(ssc_txpdo); ++i)
                 CHECK(ssc_txpdo[i] == 0xA5);
         }
         return 0;
     }
     if (!std::strcmp(argv[1], "latched_layouts")) {
+        CHECK(boot_startup({1, 1, {}, 1000, 5}, 1));
+        motor_control_operational(true);
         const auto axis_offset = dcu::ethercat::pdo_layout::input_axes_offset;
         const auto raw_offset = dcu::ethercat::pdo_layout::motor_input_bytes;
         motor_control_prepare_input();
@@ -1579,13 +2182,18 @@ int main(int argc, char **argv)
         const auto first_page = ssc_txpdo[raw_offset + 4];
         motor_control_prepare_input();
         CHECK(ssc_txpdo[raw_offset + 4] == (first_page ^ 1U));
+        const auto active = readiness();
+        CHECK(request_layout(OperatingMode::Raw, active.profile_id, active.revision, active.digest));
+        motor_control_operational(false);
+        CHECK(reset_layout());
         select_wire_profile(2);
         motor_control_prepare_input();
         check_txpdo_bytes();
         CHECK(std::memcmp(first, ssc_txpdo + axis_offset, sizeof(mc_axis_tx_t)));
-        select_wire_profile(1);
+        request_test_layout(1);
         // The motor template is already restored when the SSC accepts the mapping.
         CHECK(!std::memcmp(first, ssc_txpdo + axis_offset, sizeof(mc_axis_tx_t)));
+        motor_control_operational(true);
         motor_control_prepare_input();
         check_txpdo_bytes();
         CHECK(!std::memcmp(ssc_txpdo + raw_offset, "T1R2", 4));
@@ -1676,6 +2284,7 @@ int main(int argc, char **argv)
         uint8_t pending[784]{};
         motor_control_output(pending);
         motor_control_cycle_fault();
+        check_raw_state(RawState::Faulted);
         CHECK(cancellations != 0);
         const size_t before = sent.size();
         run_cycle();
@@ -1985,18 +2594,18 @@ int main(int argc, char **argv)
         return 0;
     }
     if (!std::strcmp(argv[1], "raw_codec")) {
-        mc_raw_t raw{};
+        mc_sideband_t raw{};
         dcu::app::RawCanBatch batch{};
         raw.BatchSeq = UINT32_MAX;
         raw.SlotCount = 2;
         for (unsigned i = 0; i < 2; ++i) {
-            motor_pdo::RawSlot slot{};
+            motor_pdo::SidebandSlot slot{};
             slot.id = 0x100 + i;
             slot.channel = i + 2;
             slot.flags = 2 + i;
             slot.dlc = 9 + i;
             for (unsigned j = 0; j < 8; ++j) slot.data[j] = i * 19 + j;
-            motor_pdo::write_raw_slot(raw, i, slot);
+            motor_pdo::write_sideband_slot(raw, i, slot);
         }
         for (unsigned mask = 0; mask < 256; ++mask) {
             raw.ValidMask = mask;
@@ -2007,7 +2616,7 @@ int main(int argc, char **argv)
             unsigned count = 0;
             for (unsigned i = 0; i < 2; ++i) {
                 if (!(mask & (1u << i))) continue;
-                const auto wire = motor_pdo::raw_slot(raw, i);
+                const auto wire = motor_pdo::sideband_slot(raw, i);
                 const auto &slot = batch.slots[count++];
                 CHECK(slot.bus == wire.channel && slot.frame.id == wire.id);
                 CHECK(slot.frame.flags == wire.flags && slot.frame.dlc == wire.dlc);
@@ -2078,10 +2687,10 @@ int main(int argc, char **argv)
             input.full[0].slot[0].dlc = 15;
             for (unsigned c = 1; c < ENCOS_CHANNEL_COUNT; ++c) input.full[c].valid_mask = 0;
         } else {
-            auto slot = motor_pdo::raw_slot(input.sideband, 0);
+            auto slot = motor_pdo::sideband_slot(input.sideband, 0);
             slot.flags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
             slot.dlc = 15;
-            motor_pdo::write_raw_slot(input.sideband, 0, slot);
+            motor_pdo::write_sideband_slot(input.sideband, 0, slot);
             input.sideband.BatchSeq = 1;
         }
         dcu_can_frame_t rx{};
@@ -2104,9 +2713,9 @@ int main(int argc, char **argv)
             CHECK(feedback->slot[0].can_id == rx.id && feedback->slot[0].dlc == 8);
             CHECK(!std::memcmp(feedback->slot[0].data, rx.data, sizeof(feedback->slot[0].data)));
         } else {
-            const auto *feedback = object<mc_raw_t>(0x6400);
+            const auto *feedback = object<mc_sideband_t>(0x6400);
             CHECK(feedback->ValidMask == 1 && feedback->DropCount == 1);
-            const auto slot = motor_pdo::raw_slot(*feedback, 0);
+            const auto slot = motor_pdo::sideband_slot(*feedback, 0);
             CHECK(slot.id == rx.id && slot.dlc == 8);
             CHECK(!std::memcmp(slot.data, rx.data, sizeof(slot.data)));
         }
@@ -2188,15 +2797,15 @@ int main(int argc, char **argv)
             policy.buses[c].can_send = c == 0;
             policy.buses[c].rate_limit = 1;
         }
-        auto *raw = object<mc_raw_t>(0x7300);
+        auto *raw = object<mc_sideband_t>(0x7300);
         *raw = {};
         raw->ValidMask = 1;
         raw->SlotCount = 1;
-        motor_pdo::RawSlot slot{};
+        motor_pdo::SidebandSlot slot{};
         slot.id = 0x100;
         slot.dlc = 1;
         slot.data[0] = 42;
-        motor_pdo::write_raw_slot(*raw, 0, slot);
+        motor_pdo::write_sideband_slot(*raw, 0, slot);
         const auto process_sideband = [&](uint32_t now) {
             dcu::app::RawCanBatch batch{};
             motor_pdo::decode_raw_sideband(*raw, batch);
@@ -2208,7 +2817,7 @@ int main(int argc, char **argv)
                 slot.dlc = 8;
                 slot.flags = fd_request ? 24 : 0;
                 policy.buses[0].fd_response = fd_response;
-                motor_pdo::write_raw_slot(*raw, 0, slot);
+                motor_pdo::write_sideband_slot(*raw, 0, slot);
                 const unsigned cost = (fd_request ? 64U : 138U) + (fd_response ? 64U : 138U);
                 budgets[0].reset_budget(2 * variant);
                 budgets[0].charge(motor_cfg::can_budget_cap_us - cost + 1);
@@ -2227,7 +2836,7 @@ int main(int argc, char **argv)
             raw->ValidMask = 3;
             raw->SlotCount = 2;
             slot.id = 0x101;
-            motor_pdo::write_raw_slot(*raw, 1, slot);
+            motor_pdo::write_sideband_slot(*raw, 1, slot);
             raw->BatchSeq = 1;
             auto drops = process_sideband(0);
             CHECK(sent.size() == 1 && drops.total == 1 && drops.channel[0] == 1);
@@ -2243,15 +2852,15 @@ int main(int argc, char **argv)
             policy.buses[0].protected_ids[0] = 1;
             policy.buses[0].protected_ids[1] = 0x7ffU;
             slot.id = 1;
-            motor_pdo::write_raw_slot(*raw, 0, slot);
+            motor_pdo::write_sideband_slot(*raw, 0, slot);
             raw->BatchSeq = 1;
             CHECK(process_sideband(0).total == 1 && sent.empty());
             slot.id = 0x7FF;
-            motor_pdo::write_raw_slot(*raw, 0, slot);
+            motor_pdo::write_sideband_slot(*raw, 0, slot);
             raw->BatchSeq = 2;
             CHECK(process_sideband(0).total == 1 && sent.empty());
             slot.id = 0x100;
-            motor_pdo::write_raw_slot(*raw, 0, slot);
+            motor_pdo::write_sideband_slot(*raw, 0, slot);
             const unsigned cost = dcu::app::BusScheduler::frame_cost(false, 1) +
                                   dcu::app::BusScheduler::frame_cost(false, 8);
             budgets[0].charge(motor_cfg::can_budget_cap_us - cost);

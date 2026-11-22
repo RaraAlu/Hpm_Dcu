@@ -1,4 +1,5 @@
 #include "motor_adapter.hpp"
+#include "cycle_config.h"
 #include "detail/motor_adapter_state.hpp"
 #include "motor_ethercat.h"
 #include "motor_axis_codec.hpp"
@@ -7,6 +8,7 @@
 #include "motor_services.hpp"
 #include "can_transport.h"
 #include <cstring>
+#include <new>
 
 namespace application = dcu::app::gateway_application;
 namespace adapter = dcu::ethercat::motor_adapter;
@@ -84,6 +86,15 @@ bool adapter::initialize(const dcu_production_profile_t &profile)
     return true;
 }
 
+bool motor_control_event_pdo(void)
+{
+    static_assert(sizeof(mc_raw_t) == DCU_SINGLE_FD_PDO_BYTES);
+    return application::mode() == application::OperatingMode::SingleFd;
+}
+
+uint32_t motor_control_event_lease_us(void)
+{ return uint32_t{application::profile_policy().max_command_lease_ms} * 1000U; }
+
 void motor_control_output(const void *data)
 {
     input.mode = application::mode();
@@ -98,10 +109,18 @@ bool motor_control_process(void)
     // A PREOP remapping must not reinterpret a pending image from the previous mode.
     if (input.pending && input.mode != application::mode()) input.pending = false;
     const auto previous_owner = application::owner();
+    const auto previous_raw = application::raw_state();
     const auto result = application::process(input.pending ? &input.command : nullptr);
+    if (previous_raw == application::RawState::Active && application::raw_state() != previous_raw)
+        motor_control_clear_raw_input();
     if (previous_owner != application::owner()) publish_owner();
     if (result.consumed) input.pending = false;
     if (!result.accepted) return !input.pending;
+    if (input.mode == application::OperatingMode::SingleFd) {
+        if (result.raw_mirrored)
+            *object<mc_raw_t>(0x7301) = pdo::load<mc_raw_t>(input.wire, 0);
+        return true;
+    }
     *object<mc_board_rx_t>(0x7000) = pdo::board(input.wire);
     object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq = input.command.board.sequence;
     if (input.mode == application::OperatingMode::Raw) {
@@ -116,27 +135,51 @@ bool motor_control_process(void)
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
         if (mirror & (1u << a))
             *object<mc_axis_rx_t>(0x7200 + a) = pdo::axis(input.wire, a);
-    if (input.mode == application::OperatingMode::MotorWithRaw)
-        *object<mc_raw_t>(0x7300) = pdo::raw(input.wire);
+    if (input.mode == application::OperatingMode::MotorWithRaw && result.raw_mirrored)
+        *object<mc_sideband_t>(0x7300) = pdo::raw(input.wire);
     return true;
 }
 
 void motor_control_operational(bool operational)
 {
-    input.pending = false;
+    // 在原缓冲区重建，避免 Debug 固件在任务栈上生成整幅 PDO 临时副本。
+    if (!operational) new (&input) adapter::detail::InputState{};
+    else input.pending = false;
     const auto previous_owner = application::owner();
     application::operational(operational);
+    if (!operational) motor_control_clear_raw_input();
     if (!operational || previous_owner != application::owner()) publish_owner();
 }
 
 void motor_control_cycle_fault(void)
 {
-    input.pending = false;
+    new (&input) adapter::detail::InputState{};
     application::cycle_fault();
+    motor_control_clear_raw_input();
     publish_owner();
 }
 
+void motor_control_raw_link_lost(void)
+{
+    application::layout_fault();
+    motor_control_clear_raw_input();
+}
+
 namespace dcu::ethercat::motor_adapter {
+
+void clear_layout_commands()
+{
+    new (&input) detail::InputState{};
+    *object<mc_board_rx_t>(0x7000) = {};
+    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
+        *object<mc_channel_rx_t>(0x7100 + c) = {};
+        *object<canfd_bus_pdo_t>(0x7400 + 16 * c) = {};
+    }
+    for (unsigned i = 0; i < device_count; ++i)
+        *object<mc_axis_rx_t>(0x7200 + device_slots[i]) = {};
+    *object<mc_sideband_t>(0x7300) = {};
+    *object<mc_raw_t>(0x7301) = {};
+}
 
 const dcu_motor_device_profile_t *configured_device(unsigned slot)
 {

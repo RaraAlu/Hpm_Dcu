@@ -18,6 +18,7 @@ sdk_src(
     production_init.cpp
     gateway/gateway_application.cpp
     gateway/gateway_publication.cpp
+    gateway/can/raw_layout.cpp
     gateway/can/can_bus_scheduler.cpp
     gateway/can/can_transactions.cpp
     gateway/can/raw_can_gateway.cpp

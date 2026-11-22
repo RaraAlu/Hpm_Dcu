@@ -10,7 +10,7 @@ class ProductionStartup {
 public:
     bool boot(const dcu_gateway_profile_t &, uint64_t boot_id, uint32_t now_ms);
     bool enforced() const;
-    void step(uint32_t now_ms, unsigned expected_devices, bool buses_healthy);
+    void step(uint32_t now_ms, uint32_t expected_mask, bool buses_healthy);
     void observe(unsigned device, uint32_t stamp_ms, uint32_t now_ms);
     void invalidate(dcu_gateway_reason_t reason, uint32_t now_ms);
     bool resume() const { return dcu_gateway_resume_static(time_us_); }

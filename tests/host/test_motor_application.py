@@ -62,6 +62,7 @@ class MotorApplicationTest(unittest.TestCase):
             str(ROOT / "firmware/app/production_init.cpp"),
             str(ROOT / "firmware/app/gateway/gateway_application.cpp"),
             str(ROOT / "firmware/app/gateway/gateway_publication.cpp"),
+            str(ROOT / "firmware/app/gateway/can/raw_layout.cpp"),
             str(ROOT / "firmware/app/gateway/startup/production_startup.cpp"),
             str(ROOT / "firmware/app/gateway/policy/profile_update.cpp"),
             str(ROOT / "firmware/app/gateway/can/can_transactions.cpp"),
@@ -92,6 +93,12 @@ class MotorApplicationTest(unittest.TestCase):
         if result.returncode:
             raise AssertionError(f"Command failed: {' '.join(command)}\n{result.stdout}{result.stderr}")
 
+    def test_neutral_pipeline_accepts_reverse_replies_and_independent_limits(self):
+        self.run_command([str(self.executable), "hra55h100_profile_pipeline"])
+
+    def test_neutral_pipeline_missing_sibling_stops_run(self):
+        self.run_command([str(self.executable), "hra55h100_profile_pipeline_timeout"])
+
     def test_preparing_each_cycle_does_not_reuse_the_old_two_ms_cache(self):
         self.run_command([str(self.executable), "same_ms"])
 
@@ -116,8 +123,45 @@ class MotorApplicationTest(unittest.TestCase):
     def test_sdo_accepted_command_mirror_updates_only_for_valid_motion(self):
         self.run_command([str(self.executable), "accepted_sdo"])
 
-    def test_all_three_pdo_profiles_keep_their_input_boundaries(self):
+    def test_single_fd_pdo_admission_payload_publication_and_station_match(self):
+        self.run_command([str(self.executable), "single_fd"])
+
+    def test_production_can3_runtime_quota_roundtrip_and_return(self):
+        for case in ("production_no_quota", "production_raw"):
+            with self.subTest(case=case):
+                self.run_command([str(self.executable), case])
+
+    def test_single_fd_motor_command_requires_committed_exclusive_handoff(self):
+        self.run_command([str(self.executable), "raw_motor_handoff"])
+
+    def test_runtime_quota_does_not_change_motor_pdo_or_mit_bytes(self):
+        def capture(case):
+            return subprocess.check_output([str(self.executable), "hra55h100_profile_" + case], timeout=30)
+        baseline = capture("baseline_equivalence")
+        self.assertEqual(len(baseline), 784 + 1072 + 16)
+        self.assertEqual(capture("quota_equivalence"), baseline)
+
+    def test_pure_modes_cancel_inflight_motor_probes_and_restore_readiness_gate(self):
+        for case in ("mixed_fd_no_probe", "mixed_raw_no_probe"):
+            with self.subTest(case=case):
+                self.run_command([str(self.executable), case])
+
+    def test_all_four_pdo_profiles_keep_their_input_boundaries(self):
         self.run_command([str(self.executable), "profiles"])
+
+    def test_coe_raw_switch_requires_drain_reset_and_preop_mapping(self):
+        self.run_command([str(self.executable), "switch_raw"])
+
+    def test_raw_drain_deadline_and_drop_limit_latch_independently(self):
+        for case in ("switch_raw_timeout", "switch_raw_drops"):
+            with self.subTest(case=case):
+                self.run_command([str(self.executable), case])
+
+    def test_raw_request_and_fault_preserve_running_motor_commands(self):
+        self.run_command([str(self.executable), "switch_with_motor"])
+
+    def test_single_motor_control_payload_is_identical_across_raw_fault(self):
+        self.run_command([str(self.executable), "single_motor_raw_fault"])
 
     def test_static_motor_slots_are_restored_after_raw_mapping(self):
         self.run_command([str(self.executable), "latched_layouts"])
@@ -228,6 +272,14 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_hra55h100_accepts_contiguous_neutral_mit_on_can3_with_eof_evidence(self):
         self.run_command([str(self.executable), "hra55h100_profile"])
+
+    def test_registered_passthrough_is_not_a_motion_axis_and_routes_only_its_node(self):
+        self.run_command([str(self.executable), "registered_passthrough"])
+
+    def test_hardware_retry_respects_the_same_neutral_mit_deadline(self):
+        for scenario in ("recovers", "expires"):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.executable), f"hra55h100_profile_retry_{scenario}"])
 
     def test_neutral_mit_fails_closed_on_late_cancelled_or_unproven_replies(self):
         for scenario in (

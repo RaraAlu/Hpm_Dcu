@@ -16,6 +16,7 @@ extern test_machine_timer_t test_machine_timer;
 #define clk_src_osc24m 0U
 #define status_success 0
 #define CSR_MSTATUS_MIE_MASK 8U
+void restore_global_irq(uint32_t mask);
 #define ATTR_RAMFUNC
 #define SDK_DECLARE_EXT_ISR_M(irq, handler)
 void intc_m_disable_irq(uint32_t irq);

@@ -25,6 +25,7 @@ uint8_t u8LocalErrorState;
 uint16_t u16LocalErrorCode;
 bool bEcatWaitForAlControlRes;
 uint32_t test_esc_period = 2000000U, test_esc_activation = 0x300U;
+uint16_t test_al_event;
 test_gptmr_t test_timebase;
 #define time_us test_timebase.CHANNEL[0].CNT
 static uint32_t prepare_cost_us, mapping_cost_us;
@@ -34,6 +35,10 @@ static uint8_t last_output[784];
 static uint8_t processed_output, published_output;
 static bool command_pending, defer_process;
 static bool neutral_feedback_pending;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+static uint32_t observed_retries;
+uint32_t dcu_can_observed_retx_count(void) { return observed_retries; }
+#endif
 static uint32_t neutral_period_ns, neutral_cutoff_us, neutral_deadline_calls;
 static uint8_t requested_state;
 static uint16_t requested_error;
@@ -42,6 +47,9 @@ static jmp_buf worker_exit;
 static unsigned worker_iterations;
 static uint32_t fake_esc_output[784 / 4];
 static unsigned direct_reads;
+static bool test_event_pdo;
+bool motor_control_event_pdo(void) { return test_event_pdo; }
+uint32_t motor_control_event_lease_us(void) { return 10000; }
 
 static uint32_t read_sm2_into_slot(void *destination, uint16_t address, uint16_t size)
 {
@@ -63,7 +71,7 @@ void dcu_can_cancel_from_isr(unsigned channel) { CHECK(channel < 4); ++cancel_ca
 void motor_control_output(const void *data)
 {
     ++output_calls;
-    memcpy(last_output, data, sizeof(last_output));
+    memcpy(last_output, data, nPdOutputSize);
     command_pending = true;
 }
 void motor_control_prepare_input(void) { ++prepare_calls; time_us += prepare_cost_us; }
@@ -117,6 +125,7 @@ void MainLoop(void) {}
 void PDO_InputMapping(void)
 {
     ++mapping_calls;
+    test_al_event &= ~PROCESS_INPUT_EVENT;
     published_output = processed_output;
     time_us += mapping_cost_us;
     if (sync_during_mapping)
@@ -132,6 +141,7 @@ void ECAT_StateChange(uint8_t state, uint16_t error)
 void intc_m_disable_irq(uint32_t irq) { (void)irq; }
 void intc_m_enable_irq_with_priority(uint32_t irq, uint32_t priority) { (void)irq; (void)priority; }
 uint32_t disable_global_irq(uint32_t mask) { return mask; }
+void restore_global_irq(uint32_t mask) { (void)mask; }
 void clock_add_to_group(uint32_t clock, uint32_t group) { (void)clock; (void)group; }
 uint32_t clock_get_frequency(uint32_t clock) { return clock == clock_gptmr1 ? 1000000U : 24000000U; }
 int clock_set_source_divider(uint32_t clock, uint32_t source, uint32_t divider)
@@ -205,12 +215,44 @@ static void check_stopped(uint32_t expected_fault)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && (!strcmp(argv[1], "raw_events") || !strcmp(argv[1], "raw_stalled"))) {
+        test_event_pdo = true;
+        nPdOutputSize = DCU_SINGLE_FD_PDO_BYTES;
+        dcu_cycle_init();
+        CHECK(dcu_cycle_configure() == ALSTATUSCODE_SYNCHRONNOTSUPPORTED);
+        bDcSyncActive = false;
+        test_esc_activation = 0;
+        sSyncManOutPar.u16SyncType = SYNCTYPE_SM_SYNCHRON;
+        sSyncManInPar.u16SyncType = SYNCTYPE_SM2_SYNCHRON;
+        CHECK(!dcu_cycle_configure() && !dcu_cycle_start_outputs());
+        uint8_t a[DCU_SINGLE_FD_PDO_BYTES] = {1}, b[DCU_SINGLE_FD_PDO_BYTES] = {2};
+        dcu_cycle_stage(a);
+        dcu_cycle_stage(b);
+        dcu_cycle_step();
+        CHECK(output_calls == 1 && published_output == 1 && mapping_calls == 1);
+        time_us += 3500;
+        dcu_cycle_step();
+        CHECK(output_calls == 2 && processed_output == 2 && mapping_calls == 1 && !fault_calls);
+        time_us += 3500;
+        test_al_event |= PROCESS_INPUT_EVENT;
+        dcu_cycle_step();
+        CHECK(output_calls == 2 && published_output == 2 && mapping_calls == 2 && !fault_calls);
+        if (!strcmp(argv[1], "raw_stalled")) {
+            time_us += 10000;
+            dcu_cycle_watchdog_isr();
+            CHECK(dcu_tx_inhibited() && cancel_calls == 4 && !fault_calls);
+            dcu_cycle_step();
+            CHECK(fault_calls == 1 && requested_state == STATE_SAFEOP);
+        }
+        return 0;
+    }
     CHECK(argc == 2);
 #if defined(CONFIG_PDO_PHASE_TRACE)
     if (!strcmp(argv[1], "neutral_wait") || !strcmp(argv[1], "neutral_wait_late")) {
         test_esc_period = 2000000U;
         start();
         time_us = 85;
+        observed_retries = UINT32_MAX;
         command_boundary(120);
         dcu_cycle_step();
         CHECK(neutral_period_ns == 2000000U && neutral_cutoff_us == 1270U);
@@ -219,6 +261,11 @@ int main(int argc, char **argv)
         dcu_cycle_step();
         volatile const dcu_pdo_phase_sample_t *sample = &pdo_phase_trace.sample[0];
         CHECK(!sample->neutral_wait_checks && !mapping_calls && neutral_feedback_pending);
+        CHECK(sample->last_consumed_offset_from_sync0 == UINT32_MAX);
+        dcu_trace_neutral_consumed(600);
+        dcu_trace_neutral_consumed(1000);
+        CHECK(sample->last_consumed_offset_from_sync0 == 880);
+        observed_retries = 1;
         if (!strcmp(argv[1], "neutral_wait_late")) {
             time_us = 1871;
             dcu_cycle_step();
@@ -234,6 +281,7 @@ int main(int argc, char **argv)
             CHECK(mapping_calls == 1 && !fault_calls && !pdo_phase_trace.fault_flags);
             CHECK(neutral_deadline_calls == 1 && !neutral_feedback_pending);
             CHECK(sample->neutral_wait_checks == 1 && sample->neutral_last_wait_us == 1270);
+            CHECK(sample->retx_count == 2);
             CHECK(sample->publish_begin_us == 1270 && sample->pack_end_us == 1320);
             CHECK(sample->esc_begin_us == 1320 && sample->esc_end_us == 1620 && sample->published_us == 1620);
         }

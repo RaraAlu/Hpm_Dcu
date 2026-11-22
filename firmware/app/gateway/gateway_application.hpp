@@ -13,13 +13,17 @@
 
 namespace dcu::app::gateway_application {
 
-enum class OperatingMode : uint8_t { Motor, MotorWithRaw, Raw };
+enum class OperatingMode : uint8_t { Motor, MotorWithRaw, Raw, SingleFd };
+constexpr bool raw_only(OperatingMode mode)
+{ return mode == OperatingMode::Raw || mode == OperatingMode::SingleFd; }
+enum class RawState : uint8_t { Disabled, Requested, Armed, Active, Draining, Faulted };
 enum Owner : uint8_t { OWNER_NONE, OWNER_PDO, OWNER_SDO };
 
 struct ChannelConfiguration {
     uint8_t role{}, frame_format{};
     uint16_t raw_rate_limit{};
     bool enabled{};
+    uint8_t passthrough_ids{};
 };
 struct BoardCommand {
     uint32_t sequence{}, enabled_devices{};
@@ -97,6 +101,17 @@ void cycle_fault();
 bool preop_access_allowed();
 bool owner_change_allowed();
 bool select_mode(OperatingMode mode);
+RawState raw_state();
+bool request_layout(OperatingMode target, uint32_t profile, uint32_t revision,
+                    const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES]);
+uint32_t raw_drops();
+uint32_t pure_raw_limits();
+bool set_pure_raw_limits(uint32_t packed);
+bool stage_raw_motor_owner(uint8_t buses);
+uint8_t raw_motor_owner();
+bool map_layout(OperatingMode target);
+bool reset_layout();
+void layout_fault();
 OperatingMode mode();
 bool set_owner(Owner owner);
 Owner owner();

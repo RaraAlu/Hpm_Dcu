@@ -49,8 +49,8 @@ def profile_indices(profile, direction):
 
 
 def expand(schema):
-    if (schema['schema_version'] != 1 or len(schema['profiles']) != 3
-            or type(schema['default_profile']) is not int or not 0 <= schema['default_profile'] < 3):
+    if (schema['schema_version'] != 1 or not schema['profiles']
+            or type(schema['default_profile']) is not int or not 0 <= schema['default_profile'] < len(schema['profiles'])):
         raise ValueError('Unsupported schema or profile count')
     for name, fields in schema['types'].items():
         if not re.fullmatch(r'mc_[a-z0-9_]+_t', name) or not 1 <= len(fields) <= 255:

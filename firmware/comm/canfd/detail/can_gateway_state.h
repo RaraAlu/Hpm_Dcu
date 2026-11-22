@@ -21,6 +21,7 @@ typedef struct {
 
 typedef struct {
     dcu_can_tx_id_t id;
+    unsigned in_flight_device;
     bool revoked;
     dcu_can_eof_t eof;
 } tx_slot_t;

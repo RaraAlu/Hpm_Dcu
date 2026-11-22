@@ -18,6 +18,11 @@ void RawCanGateway::reset_session()
     std::memset(full_seen_, 0, sizeof(full_seen_));
 }
 
+void RawCanGateway::discard_frames()
+{
+    for (auto &queue : rx_) queue.read = queue.write;
+}
+
 
 void RawCanGateway::receive(unsigned c, const dcu_can_frame_t &frame)
 {
@@ -52,7 +57,9 @@ bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, bool protect_
     if (c >= raw_cfg::bus_capacity || !policy.buses[c].can_send)
         return false;
     const auto &bus = policy.buses[c];
-    if (protect_ids) {
+    if (!RawCanPolicy::matches_route(bus.passthrough_ids, frame))
+        return false;
+    if (protect_ids || bus.protect_full_bus) {
         if (bus.protected_count > raw_cfg::protected_id_capacity)
             return false;
         for (unsigned i = 0; i < bus.protected_count; ++i)
@@ -71,28 +78,39 @@ bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, bool protect_
     ++budget_[c];
     return true;
 }
-RawCanDrops RawCanGateway::process(const RawCanBatch &batch, const RawCanPolicy &policy, uint32_t now,
-                                   RawCanSubmit submit)
+bool RawCanGateway::accept_sequence(const RawCanBatch &batch)
 {
-    RawCanDrops drops{};
-    const bool sideband = batch.kind == RawCanBatch::Kind::Sideband;
+    const bool sideband = batch.kind == RawCanBatch::Kind::Sideband || batch.kind == RawCanBatch::Kind::SingleFd;
     if (sideband) {
         if (seen_ && !newer(batch.sequence, last_batch_))
-            return drops;
+            return false;
         last_batch_ = batch.sequence;
         seen_ = true;
     } else if (batch.kind == RawCanBatch::Kind::FullBus) {
         const unsigned c = batch.bus;
-        if (!policy.permitted || c >= raw_cfg::bus_capacity)
-            return drops;
+        if (c >= raw_cfg::bus_capacity) return false;
         if (full_seen_[c] && static_cast<uint16_t>(batch.sequence - last_full_cycle_[c]) == 0)
-            return drops;
+            return false;
         last_full_cycle_[c] = batch.sequence;
         full_seen_[c] = true;
     } else {
-        return drops;
+        return false;
     }
-    if (!policy.permitted || !batch.valid || batch.count > raw_cfg::batch_capacity)
+    return true;
+}
+
+unsigned RawCanGateway::reject(const RawCanBatch &batch)
+{
+    return accept_sequence(batch) && batch.valid && batch.count <= batch.capacity() ? batch.count : 0;
+}
+
+RawCanDrops RawCanGateway::process(const RawCanBatch &batch, const RawCanPolicy &policy, uint32_t now,
+                                   RawCanSubmit submit)
+{
+    RawCanDrops drops{};
+    const bool sideband = batch.kind != RawCanBatch::Kind::FullBus;
+    if ((!sideband && !policy.permitted) || !accept_sequence(batch) ||
+        !policy.permitted || !batch.valid || batch.count > batch.capacity())
         return drops;
     for (unsigned i = 0; i < batch.count; ++i) {
         const auto &slot = batch.slots[i];

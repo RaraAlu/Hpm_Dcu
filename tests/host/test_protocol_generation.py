@@ -52,8 +52,11 @@ class ProtocolGenerationTest(unittest.TestCase):
         cls.objects, cls.pdos = generator.expand(cls.schema)
         cls.legacy_schema = copy.deepcopy(cls.schema)
         del cls.legacy_schema['types']['mc_profile_update_t']
+        del cls.legacy_schema['types']['mc_raw_switch_t']
+        del cls.legacy_schema['types']['mc_raw_t']
+        cls.legacy_schema['profiles'].pop()
         cls.legacy_schema['families'] = [row for row in cls.legacy_schema['families']
-                                         if row['type'] != 'mc_profile_update_t']
+                                         if row['type'] in cls.legacy_schema['types']]
         cls.legacy_objects, cls.legacy_pdos = generator.expand(cls.legacy_schema)
         cls.legacy_xml = ET.fromstring(generator.esi((INPUTS / '设备模板.xml').read_bytes(),
                                                      cls.legacy_objects, cls.legacy_pdos))
@@ -94,7 +97,7 @@ class ProtocolGenerationTest(unittest.TestCase):
             'ethercat/gatewayObjects.h': generator.gateway(self.legacy_schema, self.legacy_objects, self.legacy_pdos),
         }
         for name, checksum in expected.items():
-            text = existing[name]
+            text = existing[name].replace('mc_sideband_t', 'mc_raw_t').replace('sideband.', 'raw.').replace('sideband size', 'raw size')
             text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
             text = re.sub(r'^#define MC_.*$', '', text, flags=re.M)
             text = re.sub(r'0x[0-9a-fA-F]+', lambda m: m[0].lower(), text)
@@ -114,13 +117,16 @@ class ProtocolGenerationTest(unittest.TestCase):
             './/TxPdo': 'ede08e6218a6d7982e3d339edcd92e4d91a43a4ab31cde8aba8bc7c34dfe68b5',
         }
         for path, checksum in expected.items():
-            root = self.legacy_xml if path == './/Dictionary' else self.xml
+            root = self.legacy_xml
             payload = [xml_contract(node) for node in root.findall(path)]
             self.assertEqual(digest(json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()), checksum)
 
     def test_profile_update_adds_only_an_unmapped_mailbox_object(self):
-        self.assertEqual({k: v for k, v in self.objects.items() if k != 0x2100}, self.legacy_objects)
-        self.assertEqual(self.pdos, self.legacy_pdos)
+        self.assertEqual({k: v for k, v in self.objects.items() if k not in (0x2100, 0x2101, 0x6401, 0x7301)}, self.legacy_objects)
+        switch = self.objects[0x2101]['fields']
+        self.assertEqual([generator.field_size(f) for f in switch], [41, 1, 1, 4, 4, 1, 4, 4])
+        self.assertEqual([f['access'] for f in switch], ['wo', 'wo', 'ro', 'ro', 'rw', 'rw', 'ro', 'ro'])
+        self.assertEqual({k: v for k, v in self.pdos.items() if k not in (0x1641, 0x1A42)}, self.legacy_pdos)
         self.assertEqual(self.generated[SII], generator.sii(ET.tostring(self.legacy_xml), self.schema['sii']))
         fields = self.objects[0x2100]['fields']
         self.assertEqual([generator.field_size(field) for field in fields], [36, 4, 2, 4, 4, 4, 4])
@@ -132,10 +138,11 @@ class ProtocolGenerationTest(unittest.TestCase):
                 with self.subTest(type=name, field=field['name']):
                     self.assertEqual((field['access'], field['default']), ('ro', 0))
 
-    def test_all_three_assignments_retain_their_sizes_and_order(self):
-        self.assertEqual(len(self.objects), 395)
-        self.assertEqual(len(self.pdos), 77)
-        for profile, expected in zip(self.schema['profiles'], ((736, 1024), (784, 1072), (544, 544))):
+    def test_all_four_assignments_retain_their_sizes_and_order(self):
+        self.assertEqual(len(self.objects), 398)
+        self.assertEqual(len(self.pdos), 79)
+        self.assertEqual(len(self.schema['profiles']), 4)
+        for profile, expected in zip(self.schema['profiles'], ((736, 1024), (784, 1072), (544, 544), (88, 88))):
             sizes = []
             for direction in ('rx', 'tx'):
                 indices = generator.profile_indices(profile, direction)
@@ -271,7 +278,7 @@ class ProtocolGenerationTest(unittest.TestCase):
             subprocess.run(['cc', '-std=c11', '-Wall', '-Werror', *includes, '-c',
                             str(ROOT / 'firmware/comm/ethercat/encos_storage.c'), '-o', str(storage)], check=True, capture_output=True)
             cpp = work / 'main.cpp'
-            cpp.write_text('#include "encos_interface.h"\nint main() { return mc_object_count != 395 || !mc_objects[0].data; }\n')
+            cpp.write_text('#include "encos_interface.h"\nint main() { return mc_object_count != 398 || !mc_objects[0].data; }\n')
             subprocess.run(['c++', '-std=c++17', '-pedantic-errors', *includes, str(cpp), str(storage),
                             '-o', str(work / 'contract')], check=True, capture_output=True)
             subprocess.run([str(work / 'contract')], check=True)

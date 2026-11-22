@@ -44,6 +44,13 @@ void *dcu_ssc_txpdo_buffer(uint16_t *capacity)
 }
 
 
+uint16_t dcu_ssc_station_address(void)
+{
+    UINT16 address;
+    HW_EscReadWord(address, ESC_SLAVE_ADDRESS_OFFSET);
+    return SWAPWORD(address);
+}
+
 UINT32 APPL_GetDipSw(void);
 void APPL_SetLed(UINT32 value);
 /*--------------------------------------------------------------------------------------
@@ -112,6 +119,7 @@ UINT16 APPL_StartMailboxHandler(void)
 
 UINT16 APPL_StopMailboxHandler(void)
 {
+    motor_control_raw_link_lost();
     motor_control_discard_profile();
     return ALSTATUSCODE_NOERROR;
 }

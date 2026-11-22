@@ -42,6 +42,12 @@ class EthercatCycleTest(unittest.TestCase):
     def test_dc_mode_period_and_safeop_to_op_validation(self):
         self.run_command([str(self.executable), "configuration"])
 
+    def test_single_fd_preserves_queued_frames_without_a_sync0_or_per_cycle_deadline(self):
+        self.run_command([str(self.executable), "raw_events"])
+
+    def test_single_fd_inhibits_can_if_the_worker_stalls(self):
+        self.run_command([str(self.executable), "raw_stalled"])
+
     def test_accepts_only_the_supported_sm2_sync_pair_and_no_dc_pulses(self):
         self.run_command([str(self.executable), "sm2_config"])
 

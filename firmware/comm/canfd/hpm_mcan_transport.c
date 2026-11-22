@@ -68,6 +68,7 @@ static rx_queue_t s_rx[DCU_CAN_BUS_COUNT];
 static volatile uint32_t s_rx_lost[DCU_CAN_BUS_COUNT];
 static uint32_t s_tx_progress[DCU_CAN_BUS_COUNT];
 static tx_slot_t s_tx[DCU_CAN_BUS_COUNT][CANFD_TX_FIFO_DEPTH];
+static uint32_t s_raw_tx_cancelled[DCU_CAN_BUS_COUNT];
 static dcu_can_tx_id_t s_tx_serial[DCU_CAN_BUS_COUNT];
 /* First observed protocol error per active bus/boot, read by JTAG with the target halted. */
 static volatile canfd_first_fault_t s_first_fault[DCU_CAN_BUS_COUNT];
@@ -134,12 +135,35 @@ static void latch_protocol_fault(unsigned bus, canfd_fault_source_t source, uint
     __atomic_store_n(&dst->valid, 1U, __ATOMIC_RELEASE);
 }
 
+#if defined(CONFIG_PDO_PHASE_TRACE)
+static uint32_t s_retx_observed, s_tsu_hz[DCU_CAN_BUS_COUNT];
+
+uint32_t dcu_can_observed_retx_count(void)
+{
+    return __atomic_load_n(&s_retx_observed, __ATOMIC_RELAXED);
+}
+#endif
+
+static uint32_t sample_psr(unsigned bus)
+{
+    const uint32_t psr = s_mcan[bus]->PSR;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    /* PSR error codes clear on read. Count observed ACK/bit errors with an
+     * owned TX on a timestamp channel, not an invented hardware attempt count. */
+    const unsigned lec = MCAN_PSR_LEC_GET(psr), dlec = MCAN_PSR_DLEC_GET(psr);
+    if (s_channels[bus].timestamp_eof && ((lec >= 3 && lec <= 5) || (dlec >= 3 && dlec <= 5)) &&
+        dcu_can_pending(bus, DCU_CAN_DEVICE_ANY))
+        __atomic_fetch_add(&s_retx_observed, 1U, __ATOMIC_RELAXED);
+#endif
+    return psr;
+}
+
 static void capture_pending_protocol_fault(unsigned bus, canfd_fault_source_t source)
 {
     if (s_first_fault[bus].valid) return;
     MCAN_Type *base = s_mcan[bus];
     const uint32_t ir = mcan_get_interrupt_flags(base);
-    if (ir & s_protocol_errors) latch_protocol_fault(bus, source, ir, base->PSR);
+    if (ir & s_protocol_errors) latch_protocol_fault(bus, source, ir, sample_psr(bus));
 }
 
 static bool is_protocol_error_code(uint32_t code)
@@ -150,12 +174,12 @@ static bool is_protocol_error_code(uint32_t code)
 static uint32_t read_bus_psr(unsigned bus)
 {
     MCAN_Type *base = s_mcan[bus];
-    if (s_first_fault[bus].valid) return base->PSR;
+    if (s_first_fault[bus].valid) return sample_psr(bus);
 
     /* PSR consumes the error code. Keep any sample taken before the IRQ can run. */
     taskENTER_CRITICAL();
     const uint32_t before = mcan_get_interrupt_flags(base);
-    uint32_t psr = base->PSR;
+    uint32_t psr = sample_psr(bus);
     if (!s_first_fault[bus].valid) {
         const bool lec = is_protocol_error_code(MCAN_PSR_LEC_GET(psr));
         const bool dlec = is_protocol_error_code(MCAN_PSR_DLEC_GET(psr));
@@ -166,7 +190,7 @@ static uint32_t read_bus_psr(unsigned bus)
             if (after & s_protocol_errors) {
                 if (!((lec && (after & MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE)) ||
                       (dlec && (after & MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE))))
-                    psr = base->PSR;
+                    psr = sample_psr(bus);
                 latch_protocol_fault(bus, CANFD_FAULT_FROM_STATE_READ, after, psr);
             } else if (lec || dlec) {
                 /* Keep the code even if the event flag was not observed with this PSR read. */
@@ -188,11 +212,18 @@ uint16_t dcu_can_bus_state(uint32_t bus)
     return DCU_CAN_BUS_ERROR_ACTIVE;
 }
 
-static dcu_can_eof_t read_eof(MCAN_Type *base, bool captured, unsigned slot)
+static dcu_can_eof_t read_eof(unsigned bus, bool captured, unsigned slot)
 {
+    MCAN_Type *base = s_mcan[bus];
     if (!captured || !mcan_is_tsu_timestamp_available(base, slot))
         return (dcu_can_eof_t){0};
-    return (dcu_can_eof_t){mcan_read_32bit_tsu_timestamp(base, slot), true};
+    dcu_can_eof_t eof = {.tick = mcan_read_32bit_tsu_timestamp(base, slot), .valid = true};
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    const uint32_t current = base->ATB;
+    const uint32_t now_us = dcu_time_now_us();
+    eof.us = now_us - (uint32_t)((uint64_t)(current - eof.tick) * 1000000U / s_tsu_hz[bus]);
+#endif
+    return eof;
 }
 
 static void receive_isr(uint32_t bus)
@@ -203,16 +234,19 @@ static void receive_isr(uint32_t bus)
     if ((flags & s_protocol_errors) && !s_first_fault[bus].valid) {
         const UBaseType_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
         if (!s_first_fault[bus].valid)
-            latch_protocol_fault(bus, CANFD_FAULT_FROM_IRQ, flags, base->PSR);
+            latch_protocol_fault(bus, CANFD_FAULT_FROM_IRQ, flags, sample_psr(bus));
         portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
     }
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    else if (flags & s_protocol_errors) (void)sample_psr(bus);
+#endif
     mcan_clear_interrupt_flags(base,flags);
     while(mcan_get_rxfifo_fill_level(base,0U)) {
         mcan_rx_message_t f;
         if(mcan_read_rxfifo(base,0,&f)!=status_success)break;
         dcu_can_eof_t eof = {0};
-        if (channel->single_shot)
-            eof = read_eof(base, f.rx_timestamp_captured, f.rx_timestamp_pointer);
+        if (channel->timestamp_eof)
+            eof = read_eof(bus, f.rx_timestamp_captured, f.rx_timestamp_pointer);
         led_pulse(bus,CANFD_LED_RX);
         rx_queue_t *q=&s_rx[bus]; uint8_t next=(q->write+1)&31;
         const uint8_t bytes = dcu_can_dlc_to_bytes(f.dlc, f.canfd_frame);
@@ -306,16 +340,16 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         config.baudrate_fd = channel->data_bitrate_bps;
         config.enable_canfd = channel->fd;
         config.enable_tdc = channel->fd;
-        config.disable_auto_retransmission = channel->single_shot;
+        config.disable_auto_retransmission = false;
 #if defined(CONFIG_CAN3_TDCO_AB_TEST)
         /* Match the wheeled chassis TDCO trial without changing the TDCF baseline. */
-        if (bus == 3U && channel->fd && channel->single_shot && clock_hz == 80000000U &&
+        if (bus == 3U && channel->fd && channel->timestamp_eof && clock_hz == 80000000U &&
             config.baudrate == 1000000U && config.baudrate_fd == 5000000U) {
             config.tdc_config.ssp_offset = 13U;
             config.tdc_config.filter_window_length = 12U;
         }
 #endif
-        if (channel->single_shot) {
+        if (channel->timestamp_eof) {
             config.use_timestamping_unit = true;
             config.timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_EXT_TS_VAL_USED;
             config.tsu_config.enable_tsu = true;
@@ -326,15 +360,15 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         mcan_get_default_ram_config(s_mcan[bus], &config.ram_config, channel->fd);
 
         /*
-         * RX/TX FIFO 内部槽支持 64 字节，独立于 Raw PDO 的 8 字节线上布局。
-         * 单发模式通过标准帧过滤项请求 RX EOF，其余帧保留原有接收策略。
+         * RX/TX FIFO 内部槽支持 64 字节；透传可用长度由所选 PDO 档位决定。
+         * 通过标准帧过滤项请求 RX EOF，其余帧保留原有接收策略。
          */
-        config.ram_config.enable_std_filter = channel->single_shot;
-        config.ram_config.std_filter_elem_count = channel->single_shot ? 1U : 0U;
+        config.ram_config.enable_std_filter = channel->timestamp_eof;
+        config.ram_config.std_filter_elem_count = channel->timestamp_eof ? 1U : 0U;
         config.ram_config.enable_ext_filter = false;
-        config.all_filters_config.std_id_filter_list.mcan_filter_elem_count = channel->single_shot ? 1U : 0U;
+        config.all_filters_config.std_id_filter_list.mcan_filter_elem_count = channel->timestamp_eof ? 1U : 0U;
         config.all_filters_config.std_id_filter_list.filter_elem_list =
-            channel->single_shot ? &timestamp_standard : NULL;
+            channel->timestamp_eof ? &timestamp_standard : NULL;
         config.all_filters_config.ext_id_filter_list.mcan_filter_elem_count = 0U;
         config.ram_config.rxfifos[0].enable = 1U;
         config.ram_config.rxfifos[0].elem_count = CANFD_RX_FIFO_DEPTH;
@@ -345,8 +379,8 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         config.ram_config.txbuf_dedicated_txbuf_elem_count = 0U;
         config.ram_config.txbuf_fifo_or_queue_elem_count = CANFD_TX_FIFO_DEPTH;
         config.ram_config.txfifo_or_txqueue_mode = 0U; /* 0=FIFO，保持槽位发送顺序。 */
-        config.ram_config.enable_tx_evt_fifo = channel->single_shot;
-        config.ram_config.tx_evt_fifo_elem_count = channel->single_shot ? CANFD_TX_FIFO_DEPTH : 0U;
+        config.ram_config.enable_tx_evt_fifo = channel->timestamp_eof;
+        config.ram_config.tx_evt_fifo_elem_count = channel->timestamp_eof ? CANFD_TX_FIFO_DEPTH : 0U;
         config.ram_config.tx_evt_fifo_watermark = 0U;
         /*
          * TX 完成中断有两级开关：除全局 TC 外，还必须在 TXBTIE 中使能
@@ -360,13 +394,16 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         if (status != status_success) {
             return status;
         }
-        if (channel->single_shot &&
-            (!mcan_is_tsu_used(s_mcan[bus]) ||
-             !(s_mcan[bus]->CCCR & MCAN_CCCR_DAR_MASK) ||
-             (s_mcan[bus]->TSCFG & (MCAN_TSCFG_TSUE_MASK | MCAN_TSCFG_SCP_MASK |
-                                   MCAN_TSCFG_TBCS_MASK | MCAN_TSCFG_EN64_MASK)) != MCAN_TSCFG_TSUE_MASK))
+        if ((s_mcan[bus]->CCCR & MCAN_CCCR_DAR_MASK) ||
+            (channel->timestamp_eof &&
+             (!mcan_is_tsu_used(s_mcan[bus]) ||
+              (s_mcan[bus]->TSCFG & (MCAN_TSCFG_TSUE_MASK | MCAN_TSCFG_SCP_MASK |
+                                    MCAN_TSCFG_TBCS_MASK | MCAN_TSCFG_EN64_MASK)) != MCAN_TSCFG_TSUE_MASK)))
             return status_fail;
         mcan_interrupt_line_select(s_mcan[bus], config.interrupt_mask, 0U);
+#if defined(CONFIG_PDO_PHASE_TRACE)
+        s_tsu_hz[bus] = clock_hz / (1U + MCAN_TSCFG_TBPRE_GET(s_mcan[bus]->TSCFG));
+#endif
         s_channels[bus] = *channel;
     }
     s_active_mask = requested;
@@ -388,11 +425,13 @@ bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, dcu_can_rx_stamp_t *stamp
     if(available){*f=q->item[q->read].frame;*stamp=q->item[q->read].stamp;q->read=(q->read+1)&31;}
     intc_m_enable_irq(s_irq[bus]);return available;
 }
-bool dcu_can_pending(unsigned bus)
+bool dcu_can_pending(unsigned bus, unsigned device)
 {
     if (!dcu_can_channel_config(bus)) return false;
     for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i)
-        if (s_tx[bus][i].id) return true;
+        if (s_tx[bus][i].id && (device == DCU_CAN_DEVICE_ANY || s_tx[bus][i].in_flight_device == device ||
+                                (device != DCU_CAN_DEVICE_RAW && s_tx[bus][i].in_flight_device == DCU_CAN_DEVICE_ANY) ||
+                                s_tx[bus][i].in_flight_device == DCU_CAN_DEVICE_RAW)) return true;
     return false;
 }
 unsigned dcu_can_tx_free(unsigned bus)
@@ -408,8 +447,8 @@ static void collect_tx_eofs(unsigned bus, MCAN_Type *base)
 {
     mcan_tx_event_fifo_elem_t event;
     for (unsigned n = 0; n < CANFD_TX_FIFO_DEPTH && mcan_read_tx_evt_fifo(base, &event) == status_success; ++n) {
-        const dcu_can_eof_t eof = read_eof(base, event.tx_timestamp_captured, event.tx_timestamp_pointer);
-        // DAR may report a successful transmission as ET=2. TXBTO is still required.
+        const dcu_can_eof_t eof = read_eof(bus, event.tx_timestamp_captured, event.tx_timestamp_pointer);
+        // ET=2 can report transmission despite cancellation; slot retirement also checks revocation.
         if (!eof.valid || (event.event_type != 1 && event.event_type != 2)) continue;
         for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
             tx_slot_t *slot = &s_tx[bus][i];
@@ -433,7 +472,7 @@ bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
     const uint32_t completed = base->TXBTO;
     const uint32_t cancelled = base->TXBCF;
     const uint32_t terminal = (completed | cancelled) & ~pending;
-    if (channel->single_shot) collect_tx_eofs(bus, base);
+    if (channel->timestamp_eof) collect_tx_eofs(bus, base);
     for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
         tx_slot_t *slot = &s_tx[bus][i];
         if (!slot->id || !(terminal & (1U << i))) continue;
@@ -441,13 +480,17 @@ bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
         *event = (dcu_can_tx_event_t){.id = slot->id, .status = sent ? DCU_CAN_TX_COMPLETED : DCU_CAN_TX_CANCELLED};
         if (sent) event->eof = slot->eof;
         if (sent) ++s_tx_progress[bus];
-        slot->id = 0;
+        else if (slot->in_flight_device == DCU_CAN_DEVICE_RAW) ++s_raw_tx_cancelled[bus];
+        *slot = (tx_slot_t){0};
         found = true;
         break;
     }
     taskEXIT_CRITICAL();
     return found;
 }
+
+uint32_t dcu_can_raw_tx_cancelled(unsigned bus)
+{ return bus < DCU_CAN_BUS_COUNT ? s_raw_tx_cancelled[bus] : 0; }
 
 /* id == 0 revokes every pending request on this bus. Caller masks CAN and
  * watchdog IRQs with the FreeRTOS threshold, leaving Sync0/PDI unmasked. */
@@ -492,7 +535,21 @@ bool dcu_can_cancel_tx(unsigned bus, dcu_can_tx_id_t id)
     return requested;
 }
 
-dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *f)
+bool dcu_can_drain_raw(unsigned bus)
+{
+    if (!dcu_can_channel_config(bus)) return true;
+    bool empty = true;
+    for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
+        const tx_slot_t *slot = &s_tx[bus][i];
+        if (slot->id && slot->in_flight_device == DCU_CAN_DEVICE_RAW) {
+            empty = false;
+            if (!slot->revoked) dcu_can_cancel_tx(bus, slot->id);
+        }
+    }
+    return empty;
+}
+
+dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_frame_t *f)
 {
     const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
     if (!channel || !f || (!channel->fd && (f->flags & DCU_CAN_FLAG_FD))) return 0;
@@ -504,7 +561,7 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *f)
     tx.dlc = f->dlc;
     tx.canfd_frame = (f->flags & DCU_CAN_FLAG_FD) != 0;
     tx.bitrate_switch = (f->flags & DCU_CAN_FLAG_BRS) != 0;
-    if (channel->single_shot) {
+    if (channel->timestamp_eof) {
         tx.timestamp_capture_enable = true;
         tx.event_fifo_control = true;
         // At most one FIFO's worth of unconsumed tags can coexist per bus.
@@ -522,7 +579,7 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *f)
          * clears that slot's TXBTO and TXBCF before starting this request. */
         if (!dcu_tx_inhibited() && !s_tx[bus][index].id) {
             id = ++s_tx_serial[bus];
-            s_tx[bus][index] = (tx_slot_t){.id = id};
+            s_tx[bus][index] = (tx_slot_t){.id = id, .in_flight_device = device};
             mcan_send_add_request(s_mcan[bus], index);
         }
         taskEXIT_CRITICAL();

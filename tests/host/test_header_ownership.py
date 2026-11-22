@@ -12,6 +12,7 @@ PRIVATE_HEADERS = {
     "devices/motor/detail/motor_instance_state.hpp": "devices/motor/motor_instance.hpp",
     "app/gateway/detail/gateway_application_impl.hpp": (
         "app/gateway/gateway_application.cpp", "app/gateway/gateway_publication.cpp",
+        "app/gateway/can/raw_layout.cpp",
     ),
     "app/gateway/can/detail/can_transactions.hpp": (
         "app/gateway/can/can_transactions.cpp", "app/gateway/detail/gateway_application_impl.hpp",

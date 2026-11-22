@@ -10,6 +10,16 @@
     "MC_STATUS_ARMED_QUERY_ONLY": "0x2000u"
   },
   "types": {
+    "mc_raw_switch_t": [
+      {"name": "LayoutRequest", "type": "uint8_t", "count": 41, "label": "LayoutRequest", "access": "wo", "default": 0},
+      {"name": "Action", "type": "uint8_t", "label": "Action", "access": "wo", "default": 0},
+      {"name": "State", "type": "uint8_t", "label": "State", "access": "ro", "default": 0},
+      {"name": "Drops", "type": "uint32_t", "label": "Drops", "access": "ro", "default": 0},
+      {"name": "PureRawLimits", "type": "uint32_t", "label": "PureRawLimits", "access": "rw", "default": 0},
+      {"name": "MotorBusOwner", "type": "uint8_t", "label": "MotorBusOwner", "access": "rw", "default": 0},
+      {"name": "BusTxCompleted", "type": "uint32_t", "label": "BusTxCompleted", "access": "ro", "default": 0},
+      {"name": "RawTxCancelled", "type": "uint32_t", "label": "RawTxCancelled", "access": "ro", "default": 0}
+    ],
     "mc_profile_update_t": [
       {"name": "Candidate", "type": "uint8_t", "count": 36, "label": "Candidate", "access": "wo", "default": 0},
       {"name": "CommitRevision", "type": "uint32_t", "label": "CommitRevision", "access": "wo", "default": 0},
@@ -530,7 +540,7 @@
         "default": 0
       }
     ],
-    "mc_raw_t": [
+    "mc_sideband_t": [
       {
         "name": "BatchSeq",
         "type": "uint32_t",
@@ -752,6 +762,533 @@
         "name": "Data1_7",
         "type": "uint8_t",
         "label": "Data1_7",
+        "access": "ro",
+        "default": 0
+      }
+    ],
+    "mc_raw_t": [
+      {
+        "name": "BatchSeq",
+        "type": "uint32_t",
+        "label": "Seq",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "ValidMask",
+        "type": "uint8_t",
+        "label": "Valid",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "SlotCount",
+        "type": "uint8_t",
+        "label": "Count",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Flags",
+        "type": "uint16_t",
+        "label": "Flags",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "DropCount",
+        "type": "uint32_t",
+        "label": "Drops",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Reserved",
+        "type": "uint32_t",
+        "label": "Reserved",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "CanId",
+        "type": "uint32_t",
+        "label": "CanId",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Channel",
+        "type": "uint8_t",
+        "label": "Channel",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "FrameFlags",
+        "type": "uint8_t",
+        "label": "FrameFlags",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Dlc",
+        "type": "uint8_t",
+        "label": "Dlc",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "SlaveMatch",
+        "type": "uint8_t",
+        "label": "SlaveMatch",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_0",
+        "type": "uint8_t",
+        "label": "Data_0",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_1",
+        "type": "uint8_t",
+        "label": "Data_1",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_2",
+        "type": "uint8_t",
+        "label": "Data_2",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_3",
+        "type": "uint8_t",
+        "label": "Data_3",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_4",
+        "type": "uint8_t",
+        "label": "Data_4",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_5",
+        "type": "uint8_t",
+        "label": "Data_5",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_6",
+        "type": "uint8_t",
+        "label": "Data_6",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_7",
+        "type": "uint8_t",
+        "label": "Data_7",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_8",
+        "type": "uint8_t",
+        "label": "Data_8",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_9",
+        "type": "uint8_t",
+        "label": "Data_9",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_10",
+        "type": "uint8_t",
+        "label": "Data_10",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_11",
+        "type": "uint8_t",
+        "label": "Data_11",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_12",
+        "type": "uint8_t",
+        "label": "Data_12",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_13",
+        "type": "uint8_t",
+        "label": "Data_13",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_14",
+        "type": "uint8_t",
+        "label": "Data_14",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_15",
+        "type": "uint8_t",
+        "label": "Data_15",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_16",
+        "type": "uint8_t",
+        "label": "Data_16",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_17",
+        "type": "uint8_t",
+        "label": "Data_17",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_18",
+        "type": "uint8_t",
+        "label": "Data_18",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_19",
+        "type": "uint8_t",
+        "label": "Data_19",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_20",
+        "type": "uint8_t",
+        "label": "Data_20",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_21",
+        "type": "uint8_t",
+        "label": "Data_21",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_22",
+        "type": "uint8_t",
+        "label": "Data_22",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_23",
+        "type": "uint8_t",
+        "label": "Data_23",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_24",
+        "type": "uint8_t",
+        "label": "Data_24",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_25",
+        "type": "uint8_t",
+        "label": "Data_25",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_26",
+        "type": "uint8_t",
+        "label": "Data_26",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_27",
+        "type": "uint8_t",
+        "label": "Data_27",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_28",
+        "type": "uint8_t",
+        "label": "Data_28",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_29",
+        "type": "uint8_t",
+        "label": "Data_29",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_30",
+        "type": "uint8_t",
+        "label": "Data_30",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_31",
+        "type": "uint8_t",
+        "label": "Data_31",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_32",
+        "type": "uint8_t",
+        "label": "Data_32",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_33",
+        "type": "uint8_t",
+        "label": "Data_33",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_34",
+        "type": "uint8_t",
+        "label": "Data_34",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_35",
+        "type": "uint8_t",
+        "label": "Data_35",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_36",
+        "type": "uint8_t",
+        "label": "Data_36",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_37",
+        "type": "uint8_t",
+        "label": "Data_37",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_38",
+        "type": "uint8_t",
+        "label": "Data_38",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_39",
+        "type": "uint8_t",
+        "label": "Data_39",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_40",
+        "type": "uint8_t",
+        "label": "Data_40",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_41",
+        "type": "uint8_t",
+        "label": "Data_41",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_42",
+        "type": "uint8_t",
+        "label": "Data_42",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_43",
+        "type": "uint8_t",
+        "label": "Data_43",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_44",
+        "type": "uint8_t",
+        "label": "Data_44",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_45",
+        "type": "uint8_t",
+        "label": "Data_45",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_46",
+        "type": "uint8_t",
+        "label": "Data_46",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_47",
+        "type": "uint8_t",
+        "label": "Data_47",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_48",
+        "type": "uint8_t",
+        "label": "Data_48",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_49",
+        "type": "uint8_t",
+        "label": "Data_49",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_50",
+        "type": "uint8_t",
+        "label": "Data_50",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_51",
+        "type": "uint8_t",
+        "label": "Data_51",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_52",
+        "type": "uint8_t",
+        "label": "Data_52",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_53",
+        "type": "uint8_t",
+        "label": "Data_53",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_54",
+        "type": "uint8_t",
+        "label": "Data_54",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_55",
+        "type": "uint8_t",
+        "label": "Data_55",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_56",
+        "type": "uint8_t",
+        "label": "Data_56",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_57",
+        "type": "uint8_t",
+        "label": "Data_57",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_58",
+        "type": "uint8_t",
+        "label": "Data_58",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_59",
+        "type": "uint8_t",
+        "label": "Data_59",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_60",
+        "type": "uint8_t",
+        "label": "Data_60",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_61",
+        "type": "uint8_t",
+        "label": "Data_61",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_62",
+        "type": "uint8_t",
+        "label": "Data_62",
+        "access": "ro",
+        "default": 0
+      },
+      {
+        "name": "Data_63",
+        "type": "uint8_t",
+        "label": "Data_63",
         "access": "ro",
         "default": 0
       }
@@ -2372,6 +2909,13 @@
       "stride": 0
     },
     {
+      "index": "0x2101",
+      "type": "mc_raw_switch_t",
+      "name": "Gateway.RawSwitch",
+      "count": 1,
+      "stride": 0
+    },
+    {
       "index": "0x2200",
       "type": "mc_sdo_command_t",
       "name": "CAN{bus}.Motor{motor}.SdoCommand",
@@ -2502,7 +3046,7 @@
     },
     {
       "index": "0x6400",
-      "type": "mc_raw_t",
+      "type": "mc_sideband_t",
       "name": "SharedRaw.Inputs",
       "count": 1,
       "stride": 0,
@@ -2567,7 +3111,7 @@
     },
     {
       "index": "0x7300",
-      "type": "mc_raw_t",
+      "type": "mc_sideband_t",
       "name": "SharedRaw.Outputs",
       "count": 1,
       "stride": 0,
@@ -2578,6 +3122,23 @@
         "default": true,
         "stride": 0
       }
+    },
+    {
+      "index": "0x7301",
+      "type": "mc_raw_t",
+      "name": "SingleFD.Outputs",
+      "count": 1,
+      "stride": 0,
+      "access": "rw",
+      "pdo": {"index": "0x1641", "direction": "rx", "default": false, "stride": 0}
+    },
+    {
+      "index": "0x6401",
+      "type": "mc_raw_t",
+      "name": "SingleFD.Inputs",
+      "count": 1,
+      "stride": 0,
+      "pdo": {"index": "0x1A42", "direction": "tx", "default": false, "stride": 0}
     },
     {
       "index": "0x7400",
@@ -2635,6 +3196,11 @@
         "0x1A00",
         "0x1A50:0x1A53"
       ]
+    },
+    {
+      "name": "single_fd",
+      "rx": ["0x1641"],
+      "tx": ["0x1A42"]
     }
   ],
   "default_profile": 1,

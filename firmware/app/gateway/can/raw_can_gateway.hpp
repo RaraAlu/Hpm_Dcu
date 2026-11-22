@@ -8,7 +8,7 @@
 namespace dcu::app {
 
 struct RawCanBatch {
-    enum class Kind : uint8_t { Sideband, FullBus };
+    enum class Kind : uint8_t { Sideband, FullBus, SingleFd };
     struct Slot {
         dcu_can_frame_t frame{};
         uint8_t bus{};
@@ -17,16 +17,26 @@ struct RawCanBatch {
     Kind kind{Kind::Sideband};
     uint8_t bus{}, count{};
     bool valid{};
+    unsigned capacity() const {
+        return kind == Kind::SingleFd ? config::raw_can::single_fd_capacity : config::raw_can::batch_capacity;
+    }
 };
 
 struct RawCanPolicy {
     struct Bus {
         uint32_t protected_ids[config::raw_can::protected_id_capacity]{};
         uint8_t protected_count{}, rate_limit{};
-        bool can_send{}, fd_response{};
+        bool can_send{}, fd_response{}, protect_full_bus{};
+        uint8_t passthrough_ids{};
     } buses[config::raw_can::bus_capacity]{};
     // Caller resolves session and channel admission from its active configuration.
     bool permitted{};
+
+    static bool matches_route(uint8_t ids, const dcu_can_frame_t &frame)
+    {
+        return !ids || (!(frame.flags & DCU_CAN_FLAG_EXTENDED) &&
+                        frame.id >= 1 && frame.id <= 8 && (ids & (1U << (frame.id - 1))));
+    }
 };
 
 struct RawCanDrops {
@@ -45,6 +55,8 @@ class RawCanGateway {
 public:
     // Discard sequence tracking; retain RX FIFO and rate history.
     void reset_session();
+    void discard_frames();
+    unsigned reject(const RawCanBatch &batch);
     void receive(unsigned bus, const dcu_can_frame_t &frame);
     bool take(unsigned bus, dcu_can_frame_t &frame);
     uint32_t rx_drops(unsigned bus) const { return bus < config::raw_can::bus_capacity ? rx_[bus].drops : 0; }
@@ -54,6 +66,7 @@ public:
                         RawCanSubmit submit);
 
 private:
+    bool accept_sequence(const RawCanBatch &batch);
     bool send(unsigned bus, const dcu_can_frame_t &frame, bool protect_ids, uint32_t now_ms,
               const RawCanPolicy &policy, RawCanSubmit submit);
     struct Queue {

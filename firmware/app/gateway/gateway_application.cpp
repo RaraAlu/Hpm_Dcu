@@ -79,7 +79,6 @@ void GatewayApplication::stop_all(uint16_t fault)
     for (unsigned a = 0; a < device_count_; a++)
         devices_[a].stop(fault);
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; c++) {
-        transactions_.cancel_neutral(c);
         dcu_can_cancel(c);
     }
     state_.session_armed = false;
@@ -88,10 +87,13 @@ void GatewayApplication::stop_all(uint16_t fault)
 void GatewayApplication::stop_neutral_run(bool fault)
 {
     if (!neutral_run_.active) return;
-    neutral_run_.active = neutral_run_.awaiting = false;
-    neutral_run_.closed = true; // A reconnect does not grant another run on this boot.
-    transactions_.cancel_neutral(devices_[0].bus());
-    devices_[0].abort_neutral_mit(fault ? 6 : 0);
+    for (unsigned a = 0; a < device_count_; ++a) {
+        if (!(neutral_run_.active & (1U << a))) continue;
+        transactions_.cancel_neutral(neutral_run_.bus, a);
+        devices_[a].abort_neutral_mit(fault ? 6 : 0);
+    }
+    neutral_run_.closed |= neutral_run_.active; // Reconnect does not grant another run.
+    neutral_run_.active = neutral_run_.awaiting = 0;
     if (fault) state_.board_fault |= 32U;
 }
 
@@ -109,24 +111,38 @@ bool GatewayApplication::neutral_window_open(uint32_t now_us) const
 
 void GatewayApplication::service_neutral_run(unsigned bus, uint32_t now, bool drained)
 {
-    if (!neutral_run_.active || devices_[0].bus() != bus) return;
-    if (!drained || dcu_can_bus_state(bus) != DCU_CAN_BUS_ERROR_ACTIVE || dcu_can_rx_drops(bus) ||
-        (neutral_run_.awaiting && !transactions_.neutral_pending(bus))) {
+    if (!neutral_run_.active || neutral_run_.bus != bus) return;
+    if (!drained || dcu_can_bus_state(bus) != DCU_CAN_BUS_ERROR_ACTIVE || dcu_can_rx_drops(bus)) {
         stop_neutral_run(true);
         return;
     }
-    if (!devices_[0].neutral_mit_requested()) return;
-    const uint32_t submit_us = dcu_time_now_us();
-    if (!command_permitted(now) || !neutral_window_open(submit_us) ||
-        neutral_run_.cutoff_us - submit_us < policy::neutral_mit_reply_us ||
-        neutral_run_.awaiting || neutral_run_.submitted >= neutral_run_.limit ||
-        !transactions_.submit_neutral(bus, 0, devices_[0], schedule_[bus], now, submit_us,
-                                      static_cast<uint8_t>(neutral_run_.submitted), true)) {
-        stop_neutral_run(true);
-        return;
+    for (unsigned slot = 0; slot < bus_device_count_[bus]; ++slot) {
+        const unsigned a = devices_on_bus_[bus][slot];
+        const uint32_t bit = 1U << a;
+        if (!(neutral_run_.active & bit)) continue;
+        if ((neutral_run_.awaiting & bit) && !transactions_.neutral_pending(bus, a)) {
+            stop_neutral_run(true);
+            return;
+        }
+        if (!devices_[a].neutral_mit_requested()) continue;
+        const uint32_t submit_us = dcu_time_now_us();
+        if (!command_permitted(now) || !neutral_window_open(submit_us) ||
+            neutral_run_.cutoff_us - submit_us < policy::neutral_mit_reply_us ||
+            (neutral_run_.awaiting & bit) || neutral_run_.submitted[a] >= neutral_run_.limit[a]) {
+            stop_neutral_run(true);
+            return;
+        }
+        // A sibling's submission consumes the shared guard, not this device's reply window.
+        if (neutral_run_.sent_this_cycle && !schedule_[bus].guard_elapsed(submit_us)) continue;
+        if (!transactions_.submit_neutral(bus, a, devices_[a], schedule_[bus], now, submit_us,
+                                          static_cast<uint8_t>(neutral_run_.submitted[a]), true)) {
+            stop_neutral_run(true);
+            return;
+        }
+        ++neutral_run_.submitted[a];
+        neutral_run_.awaiting |= bit;
+        neutral_run_.sent_this_cycle |= bit;
     }
-    ++neutral_run_.submitted;
-    neutral_run_.awaiting = true;
 }
 
 bool GatewayApplication::boot_startup(const dcu_gateway_profile_t &profile, uint64_t boot_id)
@@ -146,6 +162,7 @@ bool GatewayApplication::apply_profile_policy(uint32_t profile, uint32_t base, u
         !startup_.apply_policy(profile, base, revision, policy.readiness_ttl_ms, dcu_time_now_ms()))
         return false;
     revoke_business();
+    layout_fault();
     state_.config = {policy.max_command_lease_ms, policy.feedback_timeout_ms};
     return true;
 }
@@ -166,6 +183,7 @@ void GatewayApplication::step_startup(uint32_t now)
 {
     if (startup_.running() && state_.seen_cycle &&
         now - state_.last_command_ms >= state_.board_command.lease_ms) {
+        layout_fault();
         startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, now);
         state_.board_fault |= 4;
     }
@@ -174,11 +192,18 @@ void GatewayApplication::step_startup(uint32_t now)
         if (state_.channels[bus].enabled && dcu_can_bus_state(bus) >= DCU_CAN_BUS_OFF)
             healthy = false;
     const auto before = startup_.status().state;
+    if (state_.operational && layout_.running && before != DCU_GATEWAY_RUNNING) layout_fault();
     if (before == DCU_GATEWAY_HOLD && healthy) revoke_business();
     // A neutral-only profile gates local transport, not readiness to move.
-    startup_.step(now, device_count_ == 1 && devices_[0].neutral_mit_only() ? 0 : device_count_, healthy);
+    startup_.step(now, raw_only(state_.mode) ? 0 : readiness_devices_, healthy);
     if (state_.operational && startup_.resume()) state_.owner = OWNER_PDO;
-    const auto after = startup_.status().state;
+    const auto status = startup_.status();
+    const auto after = status.state;
+    if (state_.operational && (layout_.state == RawState::Active || layout_.switching) &&
+        (status.session_id != layout_.session || after == DCU_GATEWAY_FAULT ||
+         after == DCU_GATEWAY_HOLD || (before == DCU_GATEWAY_RUNNING && after != before)))
+        layout_fault();
+    layout_.running = state_.operational && after == DCU_GATEWAY_RUNNING;
     if ((state_.owner != OWNER_NONE && after != DCU_GATEWAY_RUNNING) ||
         (before != after && (after == DCU_GATEWAY_HOLD || after == DCU_GATEWAY_FAULT)))
         revoke_business();
@@ -186,6 +211,18 @@ void GatewayApplication::step_startup(uint32_t now)
 
 void GatewayApplication::operational(bool op)
 {
+    if (!op && state_.operational) {
+        layout_.motor_owner = 0;
+        // 计划内退 OP 不取消协商；其他退站视为旧透传会话终结。
+        if (!layout_.switching) layout_fault();
+        raw_.discard_frames();
+    }
+    if (op && !state_.operational) {
+        layout_.reset = false;
+        layout_.running = false;
+        layout_.started = true;
+        if (layout_.state == RawState::Armed) activate_layout();
+    }
     if (startup_.enforced()) {
         if (!op && state_.operational)
             startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, dcu_time_now_ms());
@@ -215,6 +252,7 @@ void GatewayApplication::operational(bool op)
 }
 void GatewayApplication::cycle_fault()
 {
+    layout_fault();
     if (startup_.enforced()) startup_.invalidate(DCU_GATEWAY_REASON_PROTOCOL_MISMATCH, dcu_time_now_ms());
     operational(false);
     /* Keep the existing invalid-PDO bit understood by the master's 0xfc mask.
@@ -225,15 +263,31 @@ void GatewayApplication::check_timeouts(uint32_t now)
 {
     if (!state_.operational) return;
     if (state_.seen_cycle && uint32_t(now - state_.last_command_ms) >= state_.board_command.lease_ms) {
+        layout_fault();
         state_.board_fault |= 4;
         stop_all(3);
     }
+    if (raw_only(state_.mode)) return;
     const bool sdo_owner = state_.owner == OWNER_SDO;
     for (unsigned i = 0; i < device_count_; ++i)
         devices_[i].check_timeouts(now, sdo_owner, state_.config.feedback_timeout_ms);
 }
 bool GatewayApplication::accept_candidate(const CycleCommand &candidate, uint32_t now, ProcessResult &result)
 {
+    if (state_.mode == OperatingMode::SingleFd) {
+        const auto &batch = candidate.raw[0];
+        // 无板级控制头：先用新的空批次建会话，再按 BatchSeq 续租。
+        if (!state_.operational || !startup_.running() || layout_.state != RawState::Active ||
+            batch.kind != RawCanBatch::Kind::SingleFd || !batch.valid || batch.count > batch.capacity() ||
+            (!state_.session_armed && (!batch.sequence || batch.count)) ||
+            (state_.seen_cycle && (!newer(batch.sequence, state_.last_cycle) ||
+             now - state_.last_command_ms >= state_.config.max_command_lease_ms))) return false;
+        state_.seen_cycle = state_.session_armed = true;
+        state_.last_cycle = batch.sequence;
+        state_.last_command_ms = now;
+        state_.board_command.lease_ms = state_.config.max_command_lease_ms;
+        return true;
+    }
     const auto &b = candidate.board;
     if (startup_.enforced()) {
         if (!state_.operational || !startup_.running()) return false;
@@ -248,7 +302,7 @@ bool GatewayApplication::accept_candidate(const CycleCommand &candidate, uint32_
     const bool next_cycle = state_.seen_cycle && b.sequence == state_.last_cycle + 1U;
     if (stop)
         stop_all(0);
-    if (neutral_run_.active && (!next_cycle || neutral_run_.awaiting)) {
+    if (neutral_run_.active && (!next_cycle || neutral_feedback_pending())) {
         stop_neutral_run(true);
         return false;
     }
@@ -261,7 +315,7 @@ bool GatewayApplication::accept_candidate(const CycleCommand &candidate, uint32_
                 !(channel.control_bits & 1) || (channel.control_bits & 2) ||
                 !(b.enabled_channels & (1u << bus)) || !(b.enabled_devices & candidate.active_devices & (1u << a))) {
                 devices_[a].stop(0);
-                if (devices_[a].neutral_mit_only()) stop_neutral_run(true);
+                if (neutral_run_.active & (1U << a)) stop_neutral_run(true);
             }
         }
     unsigned enabled_channels = 0;
@@ -289,6 +343,7 @@ bool GatewayApplication::accept_candidate(const CycleCommand &candidate, uint32_
     if (state_.mode == OperatingMode::Raw || (startup_.enforced() && stop)) {
         return true;
     }
+    neutral_run_.sent_this_cycle = 0;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; c++) {
         const auto &ch = candidate.channels[c];
         state_.channel_command[c] = ch;
@@ -298,13 +353,14 @@ bool GatewayApplication::accept_candidate(const CycleCommand &candidate, uint32_
             const auto &cmd = candidate.devices[a];
             bool permit = valid && !stop && (b.enabled_channels & (1u << c)) && (b.enabled_devices & (1u << a)) && (ch.control_bits & 1) && !(ch.control_bits & 2) && (candidate.active_devices & (1u << a));
             if (devices_[a].neutral_mit_only()) {
-                if (neutral_run_.closed) continue;
+                const uint32_t bit = 1U << a;
+                if (neutral_run_.closed & bit) continue;
                 const bool allowed = next_cycle && state_.owner == OWNER_PDO && permit && !b.unmapped_device_requested &&
                     ch.period_us == policy::neutral_mit_period_us && neutral_window_open(dcu_time_now_us());
-                const bool accepted = devices_[a].accept_neutral_mit(cmd, allowed, neutral_run_.active);
+                const bool accepted = devices_[a].accept_neutral_mit(cmd, allowed, neutral_run_.active & bit);
                 if (accepted && devices_[a].neutral_mit_requested())
-                    neutral_run_.active = true;
-                else if (neutral_run_.active)
+                    neutral_run_.active |= bit;
+                else if (neutral_run_.active & bit)
                     stop_neutral_run(true);
                 continue;
             }
@@ -325,14 +381,15 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         b->feedback_timeout_ms < 5 || b->feedback_timeout_ms > 20)
         return false;
     if (configuration.device_count > DCU_MOTOR_DEVICE_CAPACITY ||
-        (configuration.device_count && !configuration.devices) ||
-        (state_.mode == OperatingMode::Raw && configuration.device_count))
+        (configuration.device_count && !configuration.devices))
         return false;
     for (const auto &channel : configuration.channels) {
         if (channel.role > 3 || channel.frame_format > 1 || channel.raw_rate_limit > 8 ||
-            (!channel.enabled && channel.role))
+            (!channel.enabled && channel.role) ||
+            (channel.passthrough_ids && (!channel.enabled || channel.frame_format != 1 || (channel.role & 1))))
             return false;
     }
+    unsigned neutral_bus = DCU_DEVICE_CAN_BUS_COUNT;
     uint8_t counts[DCU_DEVICE_CAN_BUS_COUNT]{};
     for (unsigned a = 0; a < configuration.device_count; ++a) {
         const auto &device = configuration.devices[a];
@@ -343,11 +400,10 @@ bool GatewayApplication::initialize(const Configuration &configuration)
             return false;
         if (device.neutral_mit_only) {
             const auto *applied = dcu_can_channel_config(bus);
-            unsigned channels = 0;
-            for (const auto &channel : configuration.channels) channels += channel.enabled;
-            if (configuration.device_count != 1 || channels != 1 || !applied || !applied->single_shot ||
+            if ((neutral_bus != DCU_DEVICE_CAN_BUS_COUNT && bus != neutral_bus) || !applied || !applied->timestamp_eof ||
                 device.neutral_mit_frame_limit < 2 || device.neutral_mit_frame_limit > DCU_NEUTRAL_MIT_MAX_FRAMES)
                 return false;
+            neutral_bus = bus;
         } else if (device.neutral_mit_frame_limit)
             return false;
         const auto &channel = configuration.channels[bus];
@@ -359,10 +415,13 @@ bool GatewayApplication::initialize(const Configuration &configuration)
                 configuration.devices[previous].can_id == device.can_id)
                 return false;
     }
+    neutral_run_.bus = neutral_bus;
+    readiness_devices_ = 0;
     state_.last_process_us = UINT32_MAX;
     state_.config = *b;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
         state_.channels[c] = configuration.channels[c];
+        layout_.limits[c] = configuration.channels[c].raw_rate_limit;
         schedule_[c].reset_budget(dcu_time_now_ms());
     }
     for (unsigned a = 0; a < configuration.device_count; ++a) {
@@ -374,8 +433,10 @@ bool GatewayApplication::initialize(const Configuration &configuration)
             for (auto &count : bus_device_count_) count = 0;
             return false;
         }
+        transactions_.bind_slot(a, bus_device_count_[device.bus]);
         devices_on_bus_[device.bus][bus_device_count_[device.bus]++] = a;
-        if (device.neutral_mit_only) neutral_run_.limit = device.neutral_mit_frame_limit;
+        if (device.neutral_mit_only) neutral_run_.limit[a] = device.neutral_mit_frame_limit;
+        else readiness_devices_ |= 1U << a;
         ++device_count_;
     }
     state_.config_ready = true;
@@ -394,14 +455,16 @@ bool GatewayApplication::consume_feedback(unsigned c, const dcu_can_frame_t &fra
         const unsigned index = devices_on_bus_[c][j];
         auto &device = devices_[index];
         if (!device.matches(frame.id) || !device.accepts_payload(bytes)) continue;
-        if (neutral_run_.active && (!neutral_run_.awaiting || !neutral_window_open(now_us))) return false;
+        const uint32_t bit = 1U << index;
+        if (device.neutral_mit_only() && neutral_run_.active &&
+            (!(neutral_run_.awaiting & bit) || !neutral_window_open(now_us))) return false;
         const bool verified = transactions_.consume_reply(c, index, device, frame, bytes, stamp, now, now_us);
         if (device.neutral_mit_only() && neutral_run_.active) {
-            if (!verified || !neutral_run_.awaiting) return false;
-            neutral_run_.awaiting = false;
-            if (neutral_run_.submitted == neutral_run_.limit) {
-                neutral_run_.active = false;
-                neutral_run_.closed = true;
+            if (!verified) return false;
+            neutral_run_.awaiting &= ~bit;
+            if (neutral_run_.submitted[index] == neutral_run_.limit[index]) {
+                neutral_run_.active &= ~bit;
+                neutral_run_.closed |= bit;
             }
             return true;
         }
@@ -438,6 +501,8 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
     uint32_t now = dcu_time_now_ms();
     if (startup_.enforced()) step_startup(now);
     result.consumed = candidate != nullptr;
+    if (candidate && (layout_.state == RawState::Draining || layout_.state == RawState::Requested))
+        reject_raw(*candidate);
     result.accepted = candidate && accept_candidate(*candidate, now, result);
     check_timeouts(now);
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; c++) {
@@ -445,21 +510,27 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
         process_bus(c, now, now_us);
     }
     if (startup_.enforced() && !startup_.running() && state_.owner != OWNER_NONE) {
+        layout_fault();
         revoke_business();
         result.accepted = false;
         result.mirrored_devices = 0;
     }
-    if (result.accepted && startup_.running())
+    advance_layout(now);
+    if (result.accepted && startup_.running() && layout_.state == RawState::Active)
         result.raw_mirrored = process_raw(*candidate, now);
     return result;
 }
 
 void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
 {
-    if (neutral_run_.active && (dcu_can_bus_state(c) != DCU_CAN_BUS_ERROR_ACTIVE || dcu_can_rx_drops(c)))
+    const bool pure = raw_only(state_.mode);
+    const bool handed_off = layout_.switching && (layout_.pending_motor_owner & (1U << c));
+    const unsigned motors = pure || handed_off ? 0 : bus_device_count_[c];
+    if (neutral_run_.active && c == neutral_run_.bus && (dcu_can_bus_state(c) != DCU_CAN_BUS_ERROR_ACTIVE || dcu_can_rx_drops(c)))
         stop_neutral_run(true);
     collect_tx_events(c);
-    transactions_.expire_poll(c, now, now_us);
+    for (unsigned j = 0; j < motors; ++j)
+        transactions_.expire_poll(c, devices_on_bus_[c][j], now, now_us);
     schedule_[c].refill(now);
     dcu_can_frame_t f;
     dcu_can_rx_stamp_t stamp;
@@ -467,51 +538,63 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
     for (; n < 32 && dcu_can_receive(c, &f, &stamp); n++) {
         if (transactions_.awaiting_tx(c))
             collect_tx_events(c);
-        const bool routed = consume_feedback(c, f, stamp, now, dcu_time_now_us());
-        if (!routed && neutral_run_.active) stop_neutral_run(true);
-        const bool raw_channel = state_.channels[c].role >= 2;
-        if (f.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD) {
-            if (!routed || raw_channel) ++state_.legacy_rx_drop[c];
-        } else if (raw_channel) raw_.receive(c, f);
+        const bool routed = !pure && consume_feedback(c, f, stamp, now, dcu_time_now_us());
+        if (!routed && neutral_run_.active && c == neutral_run_.bus) stop_neutral_run(true);
+        const bool raw_enabled = raw_channel(c) &&
+            RawCanPolicy::matches_route(state_.channels[c].passthrough_ids, f);
+        if (f.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD && state_.mode != OperatingMode::SingleFd) {
+            if (!routed || raw_enabled) ++state_.legacy_rx_drop[c];
+        } else if (raw_enabled) {
+            if (layout_.state == RawState::Active) raw_.receive(c, f);
+            else if (layout_.state == RawState::Draining || layout_.state == RawState::Requested)
+                ++layout_.drops;
+        }
     }
-    service_neutral_run(c, now, n < 32);
+    if (!pure) service_neutral_run(c, now, n < 32);
     if (dcu_can_bus_state(c) == 3) {
         state_.board_fault |= 8;
         transactions_.cancel(c, RESULT_IO);
-        for (unsigned j = 0; j < bus_device_count_[c]; ++j)
+        for (unsigned j = 0; j < motors; ++j)
             devices_[devices_on_bus_[c][j]].stop(5);
         return;
     }
-    transactions_.expire_legacy(c, now);
-    /* Do not queue a delayed start after its query snapshot has expired. */
-    for (unsigned j = 0; j < bus_device_count_[c]; ++j)
-        devices_[devices_on_bus_[c][j]].check_startup(now);
-    auto controls = controls_on_bus(c);
+    if (!pure) {
+        transactions_.expire_legacy(c, now);
+        for (unsigned j = 0; j < motors; ++j)
+            devices_[devices_on_bus_[c][j]].check_startup(now);
+    }
     if (schedule_[c].stalled(now, dcu_can_tx_progress(c),
-                             dcu_can_pending(c), state_.config.feedback_timeout_ms)) {
+                             dcu_can_pending(c, DCU_CAN_DEVICE_ANY), state_.config.feedback_timeout_ms)) {
         /* 只把“队列持续无任何发送完成”视为真正的 TX 卡死。
          * 正常多轴流水发送时 TXBRP 可以跨调度周期保持非零。 */
         dcu_can_cancel(c);
         ++state_.channel_tx_drop[c];
         ++state_.tx_total;
         state_.board_fault |= 32;
-        for (unsigned j = 0; j < bus_device_count_[c]; ++j)
+        for (unsigned j = 0; j < motors; ++j)
             if (auto &device = devices_[devices_on_bus_[c][j]]; device.active()) {
                 device.record_tx_drop();
                 device.stop(6);
             }
         return;
     }
-    if (startup_.running() && state_.operational && state_.session_armed && state_.mode != OperatingMode::Raw) {
+    // 纯透传仍消费终态事件并检查总线，但不创建电机控制、探测或参数事务。
+    if (pure || handed_off) return;
+    auto controls = controls_on_bus(c);
+    if (startup_.running() && state_.operational && state_.session_armed) {
         unsigned cost = 2u * frame_us(c, 8);
-        bool ready = !dcu_can_pending(c) && dcu_can_tx_free(c) > 0;
-        int selected = schedule_[c].next_control(controls, now_us, cost, ready);
+        ControlSet ready_controls = controls;
+        for (unsigned slot = 0; slot < bus_device_count_[c]; ++slot)
+            if ((ready_controls.active_mask & (1U << slot)) && dcu_can_pending(c, slot))
+                ready_controls.active_mask &= ~(1U << slot);
+        const bool ready = dcu_can_tx_free(c) > 0;
+        int selected = schedule_[c].next_control(ready_controls, now_us, cost, ready);
         if (selected >= 0) {
             unsigned slot = static_cast<unsigned>(selected);
             auto &device = devices_[devices_on_bus_[c][slot]];
             if (device.encode_control(f)) {
                 f.flags = state_.channels[c].frame_format ? 24 : 0;
-                if (const auto id = dcu_can_submit(c, &f)) {
+                if (const auto id = dcu_can_submit(c, slot, &f)) {
                     schedule_[c].control_submitted(slot, now_us, controls.period_us, !device.control_sent(), cost);
                     device.control_submitted(now, id);
                     controls.first_send_mask &= ~(1u << slot);
@@ -531,8 +614,8 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
         transactions_.submit_queued(c, schedule_[c], controls, fd, now, now_us);
     const bool preparing = startup_.may_probe();
     const Owner owner = state_.owner;
-    if (!transactions_.busy(c) && (preparing || (startup_.running() &&
-        (owner == OWNER_PDO || owner == OWNER_SDO) && state_.mode != OperatingMode::Raw)) &&
+    if ((preparing || (startup_.running() &&
+        (owner == OWNER_PDO || owner == OWNER_SDO))) &&
         state_.channels[c].role != 0) {
         /* Internal queries are strictly best effort.  Reserve one complete
          * control sweep and enough wall-clock slack before creating the
@@ -541,7 +624,7 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
          * decides whether and what to poll. */
         unsigned query_cost = frame_us(c, 2) + frame_us(c, 8);
         if (schedule_[c].query_window(controls, now_us, query_cost, 2u * frame_us(c, 8))) {
-            for (unsigned pass = 0; pass < 2 && !transactions_.busy(c); pass++) {
+            for (unsigned pass = 0; pass < 2; pass++) {
                 for (unsigned n = 0; n < bus_device_count_[c]; n++) {
                     unsigned slot = (state_.query_cursor[c] + n) % bus_device_count_[c];
                     const unsigned index = devices_on_bus_[c][slot];
@@ -549,10 +632,10 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
                     if (pass == 0 ? device.active() : !device.active())
                         continue;
                     if (transactions_.start_query(c, index, device, schedule_[c], controls,
-                                                  preparing || owner == OWNER_PDO, fd, now, now_us))
+                                                  preparing || owner == OWNER_PDO, fd, now, now_us)) {
                         state_.query_cursor[c] = (slot + 1) % bus_device_count_[c];
-                    if (transactions_.busy(c))
-                        break;
+                        return; // One new query per worker pass; siblings need not wait for its reply.
+                    }
                 }
             }
         }
@@ -564,25 +647,36 @@ bool GatewayApplication::process_raw(const CycleCommand &candidate, uint32_t now
     const auto mode = state_.mode;
     if (mode == OperatingMode::Motor) return false;
     RawCanPolicy policy{};
-    policy.permitted = command_permitted(now);
+    const bool single_fd = mode == OperatingMode::SingleFd;
+    policy.permitted = single_fd ? state_.session_armed && state_.operational && startup_.running() :
+                                   command_permitted(now);
     if (mode == OperatingMode::Raw && !policy.permitted) return false;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
         auto &bus = policy.buses[c];
         const auto &channel = state_.channels[c];
-        bus.can_send = channel.enabled && (state_.board_command.enabled_channels & (1u << c)) &&
-            (channel.role == 2 || channel.role == 3) && transactions_.raw_send_allowed(c, now);
-        bus.rate_limit = channel.raw_rate_limit;
+        bus.can_send = channel.enabled && (single_fd || (state_.board_command.enabled_channels & (1u << c))) &&
+            raw_channel(c) && transactions_.raw_send_allowed(c, now);
+        bus.rate_limit = raw_only(mode) ? layout_.limits[c] : channel.raw_rate_limit;
+        bus.passthrough_ids = channel.passthrough_ids;
+        bus.protect_full_bus = bus_device_count_[c] != 0;
         bus.fd_response = channel.frame_format != 0;
         bus.protected_ids[bus.protected_count++] = legacy_broadcast_id;
-        for (unsigned j = 0; j < bus_device_count_[c]; ++j)
-            bus.protected_ids[bus.protected_count++] = devices_[devices_on_bus_[c][j]].can_id();
+        if (!single_fd || !(layout_.motor_owner & (1U << c)))
+            for (unsigned j = 0; j < bus_device_count_[c]; ++j)
+                bus.protected_ids[bus.protected_count++] = devices_[devices_on_bus_[c][j]].can_id();
     }
     const unsigned batches = mode == OperatingMode::Raw ? DCU_DEVICE_CAN_BUS_COUNT : 1;
     for (unsigned c = 0; c < batches; ++c) {
-        const auto drops = raw_.process(candidate.raw[c], policy, now, raw_submit(schedule_));
+        const auto drops = raw_.process(candidate.raw[c], policy, now,
+            single_fd ? raw_submit<true>(schedule_) : raw_submit(schedule_));
         state_.tx_total += drops.total;
+        layout_.drops += drops.total;
         for (unsigned bus = 0; bus < DCU_DEVICE_CAN_BUS_COUNT; ++bus)
             state_.channel_tx_drop[bus] += drops.channel[bus];
+        if (drops.total && raw_drops() - layout_.baseline > config::raw_can::drop_limit) {
+            layout_fault();
+            return false;
+        }
     }
     return true;
 }
@@ -591,15 +685,6 @@ bool GatewayApplication::owner_change_allowed() const
 {
     return !any_active() && !transactions_.any_busy();
 }
-bool GatewayApplication::select_mode(OperatingMode mode)
-{
-    if (mode > OperatingMode::Raw ||
-        (state_.operational && mode != state_.mode) ||
-        (mode == OperatingMode::Raw && device_count_)) return false;
-    state_.mode = mode;
-    return true;
-}
-bool GatewayApplication::take_raw_frame(unsigned bus, dcu_can_frame_t &frame) { return raw_.take(bus, frame); }
 bool GatewayApplication::read_device(unsigned device, motor::MotorFeedback &feedback, motor::MotorDiagnostics &diagnostics) const
 {
     if (device >= device_count_) return false;
@@ -624,7 +709,7 @@ bool GatewayApplication::set_owner(Owner owner)
 }
 CommandResult GatewayApplication::commit_sdo_command(unsigned device, const SdoCommand &command, uint32_t now)
 {
-    if (device >= device_count_ || !devices_[device].configured()) return {};
+    if (raw_only(state_.mode) || device >= device_count_ || !devices_[device].configured()) return {};
     CommandResult result{};
     result.accepted_sequence = state_.sdo_accepted_sequence[device];
     if (command.sequence == result.accepted_sequence) {
@@ -652,7 +737,7 @@ CommandResult GatewayApplication::commit_sdo_command(unsigned device, const SdoC
 ParameterReadResult GatewayApplication::read_parameter(unsigned device, const ParameterRead &request,
                                                         uint32_t now, bool is_preop)
 {
-    if (device >= device_count_ || !devices_[device].configured()) return {};
+    if (raw_only(state_.mode) || device >= device_count_ || !devices_[device].configured()) return {};
     const auto &instance = devices_[device];
     const unsigned bus = instance.bus();
     bool permitted = !startup_.enforced() && is_preop && preop_access_allowed() && state_.owner == OWNER_SDO &&
@@ -679,20 +764,26 @@ bool initialize_profile(const dcu_production_profile_t &profile)
     config.board = {profile.max_command_lease_ms, profile.feedback_timeout_ms};
     config.devices = profile.devices;
     config.device_count = profile.device_count;
+    for (unsigned bus = 0; bus < DCU_DEVICE_CAN_BUS_COUNT; ++bus)
+        config.channels[bus].passthrough_ids = profile.passthrough_ids[bus];
     for (size_t i = 0; i < profile.channel_count; ++i) {
         const auto &channel = profile.channels[i];
         if (channel.bus >= DCU_DEVICE_CAN_BUS_COUNT || config.channels[channel.bus].enabled) return false;
         const auto *active = dcu_can_channel_config(channel.bus);
         if (!active || active->fd != channel.fd || active->nominal_bitrate_bps != channel.nominal_bitrate_bps ||
-            active->data_bitrate_bps != channel.data_bitrate_bps || active->single_shot != channel.single_shot)
+            active->data_bitrate_bps != channel.data_bitrate_bps || active->timestamp_eof != channel.timestamp_eof)
             return false;
         config.channels[channel.bus].enabled = true;
         config.channels[channel.bus].frame_format = channel.fd;
+        if (const auto limit = profile.raw_rate_limit[channel.bus]) {
+            if (profile.device_count || limit > 8) return false;
+            config.channels[channel.bus].role = 2;
+            config.channels[channel.bus].raw_rate_limit = limit;
+        }
     }
     for (size_t i = 0; i < profile.device_count; ++i) {
         const unsigned bus = profile.devices[i].bus;
-        if (bus >= DCU_DEVICE_CAN_BUS_COUNT || !config.channels[bus].enabled ||
-            (profile.devices[i].neutral_mit_only && profile.channel_count != 1))
+        if (bus >= DCU_DEVICE_CAN_BUS_COUNT || !config.channels[bus].enabled)
             return false;
         config.channels[bus].role = 1;
     }
@@ -712,6 +803,18 @@ void cycle_fault() { application.cycle_fault(); }
 bool preop_access_allowed() { return application.preop_access_allowed(); }
 bool owner_change_allowed() { return application.owner_change_allowed(); }
 bool select_mode(OperatingMode mode) { return application.select_mode(mode); }
+RawState raw_state() { return application.raw_state(); }
+uint32_t raw_drops() { return application.raw_drops(); }
+uint32_t pure_raw_limits() { return application.pure_raw_limits(); }
+bool set_pure_raw_limits(uint32_t packed) { return application.set_pure_raw_limits(packed); }
+bool stage_raw_motor_owner(uint8_t buses) { return application.stage_raw_motor_owner(buses); }
+uint8_t raw_motor_owner() { return application.raw_motor_owner(); }
+bool request_layout(OperatingMode target, uint32_t profile, uint32_t revision,
+                    const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES])
+{ return application.request_layout(target, profile, revision, digest); }
+bool map_layout(OperatingMode mode) { return application.map_layout(mode); }
+bool reset_layout() { return application.reset_layout(); }
+void layout_fault() { application.layout_fault(); }
 OperatingMode mode() { return application.mode(); }
 bool set_owner(Owner owner) { return application.set_owner(owner); }
 Owner owner() { return application.owner(); }

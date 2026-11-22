@@ -32,7 +32,9 @@ struct PublicationState {
     ChannelSlot channels[ENCOS_CHANNEL_COUNT];
     MotorSlot slots[ENCOS_AXIS_COUNT];
     mc_imu_t *imu;
-    mc_raw_t *raw;
+    mc_sideband_t *raw;
+    mc_raw_t *single_fd;
+    uint8_t slave_match;
     app::gateway_application::Publication snapshot;
 };
 

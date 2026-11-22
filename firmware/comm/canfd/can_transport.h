@@ -19,7 +19,7 @@ typedef struct {
     uint32_t nominal_bitrate_bps;
     uint32_t data_bitrate_bps; /* Zero for classic CAN. */
     bool fd;
-    bool single_shot; /* No automatic retransmission; report hardware EOF when available. */
+    bool timestamp_eof; /* Report hardware TX and RX frame-end timestamps. */
 } dcu_can_channel_config_t;
 
 typedef uint64_t dcu_can_tx_id_t;
@@ -28,6 +28,9 @@ typedef uint64_t dcu_can_tx_id_t;
 typedef struct {
     uint32_t tick;
     bool valid;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    uint32_t us; /* Captured TSU tick mapped to the worker clock, not IRQ/service time. */
+#endif
 } dcu_can_eof_t;
 
 typedef struct {
@@ -58,14 +61,26 @@ const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus);
 uint16_t dcu_can_bus_state(uint32_t bus);
 bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, dcu_can_rx_stamp_t *stamp);
 /* Includes terminal results not yet consumed by the worker. */
-bool dcu_can_pending(unsigned bus);
+/* Raw frames have no motor owner and exclude all devices until retired.
+ * Passing ANY queries the entire bus (e.g. for stall detection). */
+#define DCU_CAN_DEVICE_ANY UINT32_MAX
+#define DCU_CAN_DEVICE_RAW (UINT32_MAX - 1U)
+/* 只撤销透传；终态尚未被任务收割的槽仍算在途。 */
+bool dcu_can_drain_raw(unsigned bus);
+/* 查询 RAW 时只看透传槽（含待收割终态），不撤销任何帧。 */
+bool dcu_can_pending(unsigned bus, unsigned device);
+#if defined(CONFIG_PDO_PHASE_TRACE)
+uint32_t dcu_can_observed_retx_count(void);
+#endif
 unsigned dcu_can_tx_free(unsigned bus);
 uint32_t dcu_can_tx_progress(unsigned bus);
+/* Raw requests retired as cancelled by the controller. */
+uint32_t dcu_can_raw_tx_cancelled(unsigned bus);
 void dcu_can_cancel(unsigned bus);
 /* Bus-wide revocation from the watchdog IRQ or with global IRQs masked. */
 void dcu_can_cancel_from_isr(unsigned bus);
 bool dcu_can_cancel_tx(unsigned bus, dcu_can_tx_id_t id);
-dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *frame);
+dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_frame_t *frame);
 /* Consume one terminal event. CANCELLED means revoked, not that the frame
  * could not have appeared on the bus during a cancellation race. */
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event);

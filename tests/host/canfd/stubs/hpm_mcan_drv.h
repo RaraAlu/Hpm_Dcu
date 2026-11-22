@@ -5,7 +5,7 @@
 #include "hpm_common.h"
 typedef struct {
     uint32_t TXBTO, TXBCF, TXBRP, TXBCR, TXFQS, CCCR, TSCFG, TSS1;
-    uint32_t IR, PSR, ECR, TXEFS, RXF0S, NBTP, DBTP, TDCR;
+    uint32_t ATB, IR, PSR, ECR, TXEFS, RXF0S, NBTP, DBTP, TDCR;
 } MCAN_Type;
 typedef struct {
     bool use_ext_id, rtr, canfd_frame, bitrate_switch;
@@ -60,6 +60,7 @@ typedef struct {
 #define MCAN_CAN_ID_TYPE_STANDARD 0U
 #define MCAN_CCCR_DAR_MASK 0x40U
 #define MCAN_CCCR_UTSU_MASK 0x400U
+#define MCAN_TSCFG_TBPRE_GET(x) (((x) >> 8) & 255U)
 #define MCAN_TSCFG_TSUE_MASK 0x1U
 #define MCAN_TSCFG_TBCS_MASK 0x2U
 #define MCAN_TSCFG_SCP_MASK 0x4U

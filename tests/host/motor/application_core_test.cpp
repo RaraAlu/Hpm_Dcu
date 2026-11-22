@@ -24,6 +24,7 @@ static std::deque<dcu_can_frame_t> received[ENCOS_CHANNEL_COUNT];
 static std::vector<std::pair<unsigned, dcu_can_frame_t>> sent;
 static std::deque<dcu_can_tx_event_t> tx_events[ENCOS_CHANNEL_COUNT];
 static dcu_can_tx_id_t tx_serial;
+static std::vector<unsigned> sent_slots;
 static const dcu_can_channel_config_t applied_channels[] = {
     {2, 1000000, 5000000, true, false}, {0, 1000000, 0, false, false},
 };
@@ -43,14 +44,16 @@ uint32_t dcu_time_now_ms(void) { return now_ms; }
 uint32_t dcu_time_now_us(void) { return now_us; }
 uint16_t dcu_can_bus_state(uint32_t bus) { return bus_states[bus]; }
 uint32_t dcu_can_rx_drops(unsigned) { return 0; }
-bool dcu_can_pending(unsigned) { return false; }
+bool dcu_can_pending(unsigned, unsigned) { return false; }
+bool dcu_can_drain_raw(unsigned) { return true; }
 unsigned dcu_can_tx_free(unsigned) { return 8; }
 uint32_t dcu_can_tx_progress(unsigned) { return 0; }
 void dcu_can_cancel(unsigned) { ++canceled; }
 bool dcu_can_cancel_tx(unsigned, dcu_can_tx_id_t id) { CHECK(id); ++canceled; return true; }
-dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *frame)
+dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned slot, const dcu_can_frame_t *frame)
 {
     sent.emplace_back(bus, *frame);
+    sent_slots.push_back(slot);
     tx_events[bus].push_back({++tx_serial, DCU_CAN_TX_COMPLETED, {}});
     return tx_serial;
 }
@@ -107,6 +110,7 @@ static void initialize_core(const app::detail::Configuration &config, app::Opera
     parameters::initialize({});
     CHECK(app::detail::initialize_fixture(config));
     CHECK(app::select_mode(mode));
+    CHECK(app::map_layout(mode));
 }
 
 static void begin_session(app::CycleCommand &command, app::Owner owner)
@@ -216,7 +220,7 @@ static void production_profile()
 {
     const auto status_motor = bjcx_on_bus2();
     dcu_motor_device_profile_t devices[]{status_motor, classic_motor};
-    const dcu_production_profile_t valid{applied_channels, 2, devices, 2, 8, 15, {}};
+    const dcu_production_profile_t valid{applied_channels, 2, devices, 2, 8, 15, {}, {}, {}};
     for (unsigned i = 0; i < 15; ++i) {
         auto invalid = valid;
         dcu_can_channel_config_t channels[]{applied_channels[0], applied_channels[1]};
@@ -239,7 +243,7 @@ static void production_profile()
         case 11: bad_device.protocol = DCU_MOTOR_PROTOCOL_UNSPECIFIED; break;
         case 12: bad_device.type = nullptr; break;
         case 13: bad_device.model_profile_id = 0x8000; break;
-        case 14: channels[0].single_shot = true; break; // Applied controller still retries.
+        case 14: channels[0].timestamp_eof = true; break; // Applied controller has no EOF timestamps.
         }
         CHECK(!app::initialize_profile(invalid));
         CHECK(!app::channel_configuration(2).enabled && sent.empty());
@@ -257,6 +261,33 @@ static void production_profile()
     CHECK(sent.size() == 2);
     CHECK(sent[0].first == 0 && sent[0].second.id == classic_motor.can_id && sent[0].second.dlc == 2);
     CHECK(sent[1].first == 2 && sent[1].second.id == status_motor.can_id && sent[1].second.data[0] == 0x17);
+}
+
+static void interleaved_slots()
+{
+    // Profile IDs 1..7 are bus 2 slots 0..6. Slot 6 uses the legacy queue.
+    dcu_motor_device_profile_t devices[8]{classic_motor};
+    for (unsigned i = 1; i < 7; ++i) {
+        devices[i] = bjcx_on_bus2();
+        devices[i].can_id = i;
+    }
+    devices[7] = classic_motor;
+    devices[7].bus = 2;
+    devices[7].encos.frame_format = 1;
+    devices[7].can_id = 7;
+    parameters::initialize({});
+    CHECK(app::initialize_profile({applied_channels, 2, devices, 8, 8, 15, {}, {}, {}}));
+    CHECK(app::set_owner(app::OWNER_SDO));
+    tick(); // BJCX slot 0 has no reply.
+    CHECK(sent.size() == 1 && sent[0].second.id == 1 && sent_slots[0] == 0);
+    CHECK(app::read_parameter(7, {1, 0, 0x101}, now_ms, true).accepted);
+    tick();
+    CHECK(sent.size() == 2 && sent[1].second.id == 7 && sent_slots[1] == 6);
+    for (unsigned slot = 1; slot < 6; ++slot) {
+        tick(); // No replies to any of the previous queries on this bus.
+        CHECK(sent.size() == slot + 2 && sent.back().second.id == slot + 1 && sent_slots.back() == slot);
+    }
+    CHECK(!app::owner_change_allowed() && parameters::inspect(2).device == 7);
 }
 
 static void query_before_sideband()
@@ -413,6 +444,7 @@ int main(int argc, char **argv)
     CHECK(argc == 2);
     if (!std::strcmp(argv[1], "configuration")) configuration_values();
     else if (!std::strcmp(argv[1], "production_profile")) production_profile();
+    else if (!std::strcmp(argv[1], "interleaved_slots")) interleaved_slots();
     else if (!std::strcmp(argv[1], "query_before_sideband")) query_before_sideband();
     else if (!std::strcmp(argv[1], "stop")) stop_and_snapshots();
     else if (!std::strcmp(argv[1], "sdo")) sdo_sequence();

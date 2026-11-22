@@ -30,6 +30,17 @@ public:
     bool preop_access_allowed() const;
     bool owner_change_allowed() const;
     bool select_mode(OperatingMode mode);
+    RawState raw_state() const { return layout_.state; }
+    bool request_layout(OperatingMode target, uint32_t profile, uint32_t revision,
+                        const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES]);
+    bool map_layout(OperatingMode mode);
+    bool reset_layout();
+    void layout_fault();
+    uint32_t raw_drops() const;
+    uint32_t pure_raw_limits() const;
+    bool set_pure_raw_limits(uint32_t packed);
+    bool stage_raw_motor_owner(uint8_t buses);
+    uint8_t raw_motor_owner() const { return layout_.motor_owner; }
     OperatingMode mode() const { return state_.mode; }
     bool set_owner(Owner owner);
     Owner owner() const { return state_.owner; }
@@ -44,6 +55,25 @@ public:
     bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame);
 
 private:
+    bool drain_raw();
+    bool raw_channel(unsigned bus) const;
+    bool raw_motor_bus_idle(uint8_t buses) const;
+    void checkpoint_raw_losses();
+    uint32_t channel_losses(unsigned bus) const;
+    void clear_layout_business();
+    void advance_layout(uint32_t now);
+    void activate_layout();
+    void reject_raw(const CycleCommand &candidate);
+    struct RawLayout {
+        RawState state{};
+        OperatingMode target{};
+        bool selected{}, started{}, reset{}, switching{}, running{};
+        uint32_t drain_ms{}, drops{}, baseline{}, revision{};
+        uint64_t session{};
+        uint8_t limits[DCU_DEVICE_CAN_BUS_COUNT]{};
+        uint8_t pending_motor_owner{}, motor_owner{};
+        uint32_t loss_origin[DCU_DEVICE_CAN_BUS_COUNT]{};
+    } layout_{};
     unsigned frame_us(unsigned bus, unsigned bytes) const;
     ControlSet controls_on_bus(unsigned bus) const;
     bool any_active() const;
@@ -71,9 +101,11 @@ private:
     BusScheduler schedule_[DCU_DEVICE_CAN_BUS_COUNT]{};
     CanTransactions transactions_{};
     ProductionStartup startup_{};
+    uint32_t readiness_devices_{};
     struct NeutralRun {
-        uint32_t limit{}, submitted{}, period_ns{}, cutoff_us{};
-        bool active{}, awaiting{}, closed{};
+        uint32_t limit[DCU_MOTOR_DEVICE_CAPACITY]{}, submitted[DCU_MOTOR_DEVICE_CAPACITY]{};
+        uint32_t period_ns{}, cutoff_us{}, active{}, awaiting{}, closed{}, sent_this_cycle{};
+        unsigned bus{DCU_DEVICE_CAN_BUS_COUNT};
     } neutral_run_{};
     struct Session {
         ChannelConfiguration channels[DCU_DEVICE_CAN_BUS_COUNT]{};

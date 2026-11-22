@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "cycle_config.h"
 
 /* Every handoff field is accessed atomically across ISR/task ownership. */
 typedef struct {
@@ -20,6 +21,13 @@ typedef struct {
     uint16_t ssc_sync0_latch;
     uint32_t pending_epoch, processed_epoch;
 } dcu_cycle_runtime_t;
+
+#define DCU_RAW_PDO_QUEUE_DEPTH 4U
+typedef struct {
+    uint32_t enabled, read, write, fault, worker_us, lease_us;
+    uint32_t image[DCU_RAW_PDO_QUEUE_DEPTH][DCU_SINGLE_FD_PDO_BYTES / sizeof(uint32_t)];
+    bool configured, published;
+} dcu_raw_pdo_t;
 
 #define DCU_CYCLE_TIMING_BINS 2048U
 

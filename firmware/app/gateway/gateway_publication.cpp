@@ -5,9 +5,7 @@ namespace dcu::app::gateway_application::detail {
 
 bool GatewayApplication::neutral_feedback_pending() const
 {
-    for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c)
-        if (transactions_.neutral_pending(c)) return true;
-    return false;
+    return neutral_run_.awaiting || (neutral_run_.active & ~neutral_run_.sent_this_cycle);
 }
 
 void GatewayApplication::prepare_publication(Publication &snapshot)
@@ -32,7 +30,7 @@ void GatewayApplication::prepare_publication(Publication &snapshot)
         ch->tx_drops = state_.channel_tx_drop[c];
         ch->role = state_.channels[c].role;
         ch->raw_drops = compatibility_drops;
-        for (unsigned j = 0; j < bus_device_count_[c]; ++j) {
+        for (unsigned j = 0; !raw_only(state_.mode) && j < bus_device_count_[c]; ++j) {
             const unsigned a = devices_on_bus_[c][j];
             auto &device = snapshot.devices[a];
             const auto status = devices_[a].read_feedback(now, state_.config.feedback_timeout_ms,

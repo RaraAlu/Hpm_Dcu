@@ -30,6 +30,8 @@ typedef struct {
     size_t device_count;
     uint16_t max_command_lease_ms, feedback_timeout_ms;
     dcu_gateway_profile_t readiness;
+    uint8_t raw_rate_limit[DCU_CAN_BUS_COUNT];
+    uint8_t passthrough_ids[DCU_CAN_BUS_COUNT]; // Standard IDs 1..8, separate from motion devices.
 } dcu_production_profile_t;
 
 #ifdef __cplusplus

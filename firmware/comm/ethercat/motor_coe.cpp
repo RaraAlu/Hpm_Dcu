@@ -19,7 +19,9 @@ namespace pdo_layout = dcu::ethercat::pdo_layout;
 namespace adapter = dcu::ethercat::motor_adapter;
 
 namespace {
+static_assert(pdo_layout::assignment_capacity == sizeof(TMC_ASSIGN::aEntries) / sizeof(uint16_t));
 constexpr uint16_t profile_update_index = 0x2100;
+constexpr uint16_t raw_switch_index = 0x2101;
 constexpr unsigned candidate_bytes = sizeof(mc_profile_update_t::Candidate);
 
 uint32_t load_le(const uint8_t *p, unsigned n)
@@ -72,7 +74,7 @@ UINT8 MC_AssignWrite(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 
 {
     if (complete)
         return ABORTIDX_COMPLETE_ACCESS_NOT_SUPPORTED;
-    if (!preop())
+    if ((nAlStatus & STATE_MASK) != STATE_PREOP)
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     TMC_ASSIGN *v = index == 0x1C12 ? &gRxAssign : &gTxAssign;
     if (sub > pdo_layout::assignment_capacity)
@@ -126,6 +128,24 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         memcpy(data, &values[sub - 3], bytes);
         return 0;
     }
+    if (index == raw_switch_index) {
+        if (sub < 3) return ABORTIDX_WRITE_ONLY_ENTRY;
+        if (sub > 8) return ABORTIDX_SUBINDEX_NOT_EXISTING;
+        if (bytes != (sub == 3 || sub == 6 ? 1u : 4u)) return ABORTIDX_PARAM_LENGTH_ERROR;
+        uint32_t value = 0;
+        switch (sub) {
+        case 3: value = static_cast<uint8_t>(raw_state()); break;
+        case 4: value = raw_drops(); break;
+        case 5: value = pure_raw_limits(); break;
+        case 6: value = raw_motor_owner(); break;
+        default:
+            for (unsigned bus = 0; bus < DCU_CAN_BUS_COUNT; ++bus)
+                value += sub == 7 ? dcu_can_tx_progress(bus) : dcu_can_raw_tx_cancelled(bus);
+            break;
+        }
+        memcpy(data, &value, bytes);
+        return 0;
+    }
     // Project the immutable active Profile through existing read-only descriptors.
     if (startup_enabled() && index >= axis_object_base(0) && index < axis_object_base(ENCOS_AXIS_COUNT)) {
         const unsigned offset = index - axis_object_base(0);
@@ -162,7 +182,12 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         else if (index >= 0x2400 && index < 0x2400 + 16 * ENCOS_AXIS_COUNT &&
                  (index - 0x2400) % 16 == 0)
             adapter::refresh_axis_feedback((index - 0x2400) / 16);
-        memcpy(data, o->data + f->offset, bytes);
+        if ((index == 0x6400 && (mode() != OperatingMode::MotorWithRaw || raw_state() != RawState::Active)) ||
+            (index == 0x6401 && (mode() != OperatingMode::SingleFd || raw_state() != RawState::Active)) ||
+            (index >= 0x6500 && index <= 0x6530 && !(index & 15) &&
+             (mode() != OperatingMode::Raw || raw_state() != RawState::Active)))
+            memset(data, 0, bytes);
+        else memcpy(data, o->data + f->offset, bytes);
         return 0;
     }
     return ABORTIDX_SUBINDEX_NOT_EXISTING;
@@ -189,12 +214,41 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
     if (!(field->access & 2))
         return ABORTIDX_READ_ONLY_ENTRY;
     bool command = index >= 0x2200 && index <= 0x23B0, owner = index == 0x2003;
-    if (!command && !owner && !preop())
+    if (index != raw_switch_index && !command && !owner && !preop())
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     if (bytes != field->bytes) {
         if (index == profile_update_index && sub == 1)
             profile_update::discard();
         return ABORTIDX_PARAM_LENGTH_ERROR;
+    }
+    if (index == raw_switch_index) {
+        const auto *wire = reinterpret_cast<const uint8_t *>(data);
+        if (sub == 5) {
+            if (!preop()) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+            return set_pure_raw_limits(load_le(wire, 4)) ? 0 : ABORTIDX_VALUE_EXCEEDED;
+        }
+        if (sub == 6) {
+            if (!preop()) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+            return stage_raw_motor_owner(*wire) ? 0 : ABORTIDX_VALUE_EXCEEDED;
+        }
+        if (sub == 1) {
+            const auto al = nAlStatus & STATE_MASK;
+            if (al != STATE_OP && al != STATE_PREOP) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+            static_assert(sizeof(mc_raw_switch_t::LayoutRequest) == 9 + DCU_GATEWAY_DIGEST_BYTES);
+            uint8_t digest[DCU_GATEWAY_DIGEST_BYTES];
+            memcpy(digest, wire + 9, sizeof(digest));
+            if (!request_layout(static_cast<OperatingMode>(wire[0]), load_le(wire + 1, 4),
+                                load_le(wire + 5, 4), digest)) return ABORTIDX_VALUE_EXCEEDED;
+            motor_control_clear_raw_input();
+            return 0;
+        }
+        if (*wire == 2) { // 主站报告 WKC 或会话故障。
+            motor_control_raw_link_lost();
+            return 0;
+        }
+        if (*wire != 1) return ABORTIDX_VALUE_EXCEEDED;
+        return (nAlStatus & STATE_MASK) == STATE_PREOP && reset_layout() ? 0 :
+            ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     }
     if (index == profile_update_index) {
         if (sub == 1)

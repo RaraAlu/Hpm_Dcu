@@ -46,6 +46,9 @@ class ApplicationCoreTest(unittest.TestCase):
     def test_production_profile_binds_drivers_on_applied_buses_without_ethercat(self):
         self.run_command([str(self.executable), "production_profile"])
 
+    def test_seven_bus_local_slots_pipeline_with_legacy_owner_at_profile_index_seven(self):
+        self.run_command([str(self.executable), "interleaved_slots"])
+
     def test_faulted_bus_does_not_skip_later_queries_and_raw_stays_last(self):
         self.run_command([str(self.executable), "query_before_sideband"])
 

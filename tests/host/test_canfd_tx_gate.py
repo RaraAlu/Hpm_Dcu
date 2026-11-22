@@ -17,6 +17,7 @@ class CanFdTxGateTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="dcu-canfd-gate-")
         cls.addClassCleanup(directory.cleanup)
         cls.executable = Path(directory.name) / "tx_gate"
+        cls.trace_executable = Path(directory.name) / "tx_gate_trace"
         cls.tdc_executable = Path(directory.name) / "tx_gate_tdc"
         command = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors",
                    "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections"]
@@ -26,6 +27,7 @@ class CanFdTxGateTest(unittest.TestCase):
                         "firmware/cfg", "firmware/ports"):
             command.extend(("-I", str(ROOT / include)))
         source = str(ROOT / "tests/host/canfd/tx_gate_test.c")
+        cls.run_command([*command, "-DCONFIG_PDO_PHASE_TRACE=1", source, "-o", str(cls.trace_executable)])
         cls.run_command([*command, source, "-o", str(cls.executable)])
         cls.run_command([*command, "-DCONFIG_CAN3_TDCO_AB_TEST=1", source, "-o", str(cls.tdc_executable)])
 
@@ -34,6 +36,13 @@ class CanFdTxGateTest(unittest.TestCase):
         result = subprocess.run(command, capture_output=True, text=True, timeout=30)
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)
+
+    def test_device_ownership_survives_out_of_order_fifo_retirement(self):
+        self.run_command([str(self.executable), "device_pending"])
+
+    def test_trace_converts_real_eof_and_counts_observed_tx_errors(self):
+        for scenario in ("frame_eof", "retry_completed"):
+            self.run_command([str(self.trace_executable), scenario])
 
     def test_fault_while_staging_cannot_submit_after_cancellation(self):
         self.run_command([str(self.executable), "staging_fault"])
@@ -69,14 +78,20 @@ class CanFdTxGateTest(unittest.TestCase):
         self.run_command([str(self.executable), "tdc_baseline"])
         self.run_command([str(self.tdc_executable), "tdc_comparison"])
 
-    def test_single_shot_failure_releases_the_tx_slot_without_retry(self):
-        self.run_command([str(self.executable), "single_shot_failure"])
+    def test_hardware_retry_keeps_one_token_and_preserves_first_error(self):
+        self.run_command([str(self.executable), "retry_completed"])
 
-    def test_single_shot_tx_rx_eof_metadata_uses_real_capture_slots(self):
-        self.run_command([str(self.executable), "single_shot_eof"])
+    def test_cancelled_hardware_retry_cannot_publish_success(self):
+        self.run_command([str(self.executable), "retry_cancelled"])
+
+    def test_tx_rx_eof_metadata_uses_real_capture_slots(self):
+        self.run_command([str(self.executable), "frame_eof"])
 
     def test_a_controller_not_in_eof_mode_cannot_activate(self):
         self.run_command([str(self.executable), "bad_eof_mode"])
+
+    def test_a_controller_with_retries_disabled_cannot_activate(self):
+        self.run_command([str(self.executable), "bad_dar_mode"])
 
     def test_invalid_or_partial_profile_does_not_activate_controllers(self):
         for scenario in ("invalid_profile", "partial_profile"):

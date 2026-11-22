@@ -17,6 +17,7 @@
 #endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
 #include "detail/pdo_phase_trace.h"
+#include "encos_interface.h"
 #endif
 #include <string.h>
 
@@ -28,9 +29,13 @@ static pdo_pipeline_t pipeline __attribute__((section(".fast_ram.bss")));
 /* These fields alone cross ISR/task ownership; every access is atomic. */
 static dcu_cycle_handoff_t handoff;
 static dcu_cycle_runtime_t runtime;
+static dcu_raw_pdo_t raw_pdo;
 
 #if defined(CONFIG_PDO_PHASE_TRACE)
 static volatile dcu_pdo_phase_trace_t pdo_phase_trace;
+
+static uint32_t sync_retx_baseline;
+static uint32_t sample_retx_baseline;
 
 static uint32_t phase_le32(const uint8_t *bytes)
 {
@@ -41,9 +46,17 @@ static uint32_t phase_le32(const uint8_t *bytes)
 static volatile dcu_pdo_phase_sample_t *phase_record_latch(const pdo_pipeline_view_t *view,
                                                            uint32_t worker_us)
 {
+    const uint32_t baseline = __atomic_load_n(&sync_retx_baseline, __ATOMIC_ACQUIRE);
+    if (pdo_phase_trace.count) {
+        volatile dcu_pdo_phase_sample_t *prev =
+            &pdo_phase_trace.sample[(pdo_phase_trace.count - 1U) % DCU_PDO_PHASE_SAMPLES];
+        if (view->epoch - prev->epoch == 1U) prev->retx_count = baseline - sample_retx_baseline;
+    }
+    sample_retx_baseline = baseline;
     uint32_t i = pdo_phase_trace.count++ % DCU_PDO_PHASE_SAMPLES;
     volatile dcu_pdo_phase_sample_t *sample = &pdo_phase_trace.sample[i];
     *sample = (dcu_pdo_phase_sample_t){.sequence = phase_le32(view->data), .epoch = view->epoch,
+        .last_consumed_offset_from_sync0 = UINT32_MAX,
         .rx_ready_us = view->ready_us, .sync0_us = view->sync_us, .worker_us = worker_us};
     return sample;
 }
@@ -54,6 +67,13 @@ static volatile dcu_pdo_phase_sample_t *phase_current(uint32_t epoch)
     if (!count) return NULL;
     volatile dcu_pdo_phase_sample_t *sample = &pdo_phase_trace.sample[(count - 1U) % DCU_PDO_PHASE_SAMPLES];
     return sample->epoch == epoch ? sample : NULL;
+}
+
+void dcu_trace_neutral_consumed(uint32_t consumed_us)
+{
+    volatile dcu_pdo_phase_sample_t *sample = phase_current(__atomic_load_n(&pipeline.epoch, __ATOMIC_ACQUIRE));
+    if (sample && runtime.outputs_running && !sample->published_us)
+        sample->last_consumed_offset_from_sync0 = consumed_us - sample->sync0_us;
 }
 
 static uint32_t phase_command_after_release(const volatile dcu_pdo_phase_sample_t *sample,
@@ -70,8 +90,11 @@ static void phase_record_publish(volatile dcu_pdo_phase_sample_t *sample, uint32
     if (!sample) return;
     uint16_t capacity;
     const uint8_t *wire = dcu_ssc_txpdo_buffer(&capacity);
-    if (wire && capacity >= 8U) sample->accepted = phase_le32(wire + 4);
+    // 单帧档没有 AcceptedCycleSeq，偏移 4 是 ValidMask。
+    if (wire && capacity >= 8U && nPdOutputSize != sizeof(mc_raw_t))
+        sample->accepted = phase_le32(wire + 4);
     sample->published_us = end_us;
+    sample->retx_count = dcu_can_observed_retx_count() - sample_retx_baseline;
     uint32_t dc_low;
     HW_EscReadDWord(dc_low, ESC_SYSTEMTIME_OFFSET);
     sample->dc_sample_us = dcu_time_now_us();
@@ -110,6 +133,26 @@ static inline uint32_t read_handoff(const uint32_t *value)
 static inline void write_handoff(uint32_t *value, uint32_t next)
 {
     __atomic_store_n(value, next, __ATOMIC_RELEASE);
+}
+
+static DCU_FAST_CODE void raw_pdo_fault(void)
+{
+    if (__atomic_exchange_n(&raw_pdo.fault, 1U, __ATOMIC_ACQ_REL)) return;
+    dcu_tx_inhibit();
+    const uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    for (unsigned c = 0; c < DCU_CAN_BUS_COUNT; ++c) dcu_can_cancel_from_isr(c);
+    restore_global_irq(irq & CSR_MSTATUS_MIE_MASK);
+}
+
+static DCU_FAST_CODE uint32_t *raw_pdo_reserve(uint16_t size, uint32_t *write)
+{
+    if (!read_handoff(&raw_pdo.enabled) || size != DCU_SINGLE_FD_PDO_BYTES) return NULL;
+    *write = read_handoff(&raw_pdo.write);
+    if (*write - read_handoff(&raw_pdo.read) >= DCU_RAW_PDO_QUEUE_DEPTH) {
+        raw_pdo_fault();
+        return NULL;
+    }
+    return raw_pdo.image[*write % DCU_RAW_PDO_QUEUE_DEPTH];
 }
 
 static bool sm2_sync_selected(void)
@@ -174,7 +217,18 @@ uint16_t dcu_cycle_configure(void)
     if (runtime.outputs_running)
         return ALSTATUSCODE_DCINVALIDSYNCCFG;
     runtime.configured = false;
+    raw_pdo.configured = false;
     const bool sm2 = sm2_sync_selected();
+    if (motor_control_event_pdo()) {
+        if (!sm2_configuration_matches() || nPdOutputSize != DCU_SINGLE_FD_PDO_BYTES)
+            return ALSTATUSCODE_SYNCHRONNOTSUPPORTED;
+        write_handoff(&handoff.sm2_cycles, 0U);
+        raw_pdo.configured = runtime.configured = true;
+        raw_pdo.published = false;
+        cycle_diagnostics.configured_period_ns = 0;
+        motor_control_prepare_input();
+        return ALSTATUSCODE_NOERROR;
+    }
     uint32_t period_ns = DCU_SM2_CYCLE_NS;
     if (sm2) {
         if (!sm2_configuration_matches())
@@ -204,6 +258,23 @@ uint16_t dcu_cycle_start_outputs(void)
 {
     if (!runtime.configured)
         return ALSTATUSCODE_DCINVALIDSYNCCFG;
+    if (raw_pdo.configured) {
+        if (!sm2_configuration_matches()) return ALSTATUSCODE_DCINVALIDSYNCCFG;
+        const uint32_t lease = motor_control_event_lease_us();
+        if (!lease) return ALSTATUSCODE_DCINVALIDSYNCCFG;
+        write_handoff(&raw_pdo.read, 0);
+        write_handoff(&raw_pdo.write, 0);
+        write_handoff(&raw_pdo.fault, 0);
+        write_handoff(&raw_pdo.worker_us, dcu_time_now_us());
+        write_handoff(&raw_pdo.lease_us, lease);
+        raw_pdo.published = false;
+        runtime.command_pending = false;
+        runtime.outputs_running = true;
+        motor_control_set_neutral_window(0, 0);
+        dcu_tx_allow();
+        write_handoff(&raw_pdo.enabled, 1);
+        return ALSTATUSCODE_NOERROR;
+    }
     if (!cycle_configuration_matches())
         return ALSTATUSCODE_DCINVALIDSYNCCFG;
     memset((void *)&cycle_timing, 0, sizeof(cycle_timing));
@@ -264,8 +335,10 @@ uint16_t dcu_cycle_start_outputs(void)
 
 void dcu_cycle_stop_outputs(void)
 {
+    write_handoff(&raw_pdo.enabled, 0);
+    raw_pdo.published = false;
     pdo_pipeline_enable(&pipeline, false);
-    if (runtime.outputs_running) {
+    if (runtime.outputs_running && !raw_pdo.configured) {
         LatchInputSync0Value = runtime.ssc_sync0_latch;
         LatchInputSync0Counter = 0U;
     }
@@ -277,6 +350,7 @@ void dcu_cycle_stop_inputs(void)
 {
     dcu_cycle_stop_outputs();
     runtime.configured = false;
+    raw_pdo.configured = false;
     dcu_tx_allow();
 }
 
@@ -343,6 +417,15 @@ static void stage_finish(bool committed, const void *data, bool direct, uint32_t
 
 void dcu_cycle_stage(const void *data)
 {
+    if (read_handoff(&raw_pdo.enabled)) {
+        uint32_t write;
+        uint32_t *destination = raw_pdo_reserve(nPdOutputSize, &write);
+        if (destination) {
+            memcpy(destination, data, DCU_SINGLE_FD_PDO_BYTES);
+            write_handoff(&raw_pdo.write, write + 1U);
+        }
+        return;
+    }
     if (!read_handoff(&pipeline.enabled)) return;
     uint32_t sequence = stage_begin();
     stage_finish(pdo_pipeline_stage(&pipeline, data, nPdOutputSize, sequence), data, false, 0U);
@@ -351,6 +434,14 @@ void dcu_cycle_stage(const void *data)
 DCU_FAST_CODE bool dcu_cycle_stage_read(uint16_t address, uint16_t size,
                                         uint32_t (*read_output)(void *, uint16_t, uint16_t))
 {
+    if (read_handoff(&raw_pdo.enabled)) {
+        uint32_t write;
+        uint32_t *destination = raw_pdo_reserve(size, &write);
+        if (!destination) return false;
+        (void)read_output(destination, address, size);
+        write_handoff(&raw_pdo.write, write + 1U);
+        return true;
+    }
     uint32_t index;
     uint8_t *destination = pdo_pipeline_reserve(&pipeline, size, &index);
     if (!destination) return false;
@@ -366,6 +457,9 @@ DCU_FAST_CODE void dcu_cycle_sync0_isr(void)
     if (read_handoff(&handoff.sm2_cycles))
         return;
     const uint32_t sync_us = dcu_time_now_us();
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    __atomic_store_n(&sync_retx_baseline, dcu_can_observed_retx_count(), __ATOMIC_RELEASE);
+#endif
     if (pdo_pipeline_sync(&pipeline, sync_us)) {
         const uint32_t busy = read_handoff(&handoff.stage_busy);
         write_handoff(&handoff.miss_epoch, read_handoff(&pipeline.epoch));
@@ -400,6 +494,8 @@ static bool check_faults(uint32_t now_us)
     cycle_diagnostics.fault_last_stage_us = read_handoff(&handoff.stage_done_us);
 #if defined(CONFIG_PDO_PHASE_TRACE)
     pdo_phase_trace.fault_epoch = read_handoff(&pipeline.epoch);
+    volatile dcu_pdo_phase_sample_t *sample = phase_current(pdo_phase_trace.fault_epoch);
+    if (sample) sample->retx_count = dcu_can_observed_retx_count() - sample_retx_baseline;
     pdo_phase_trace.fault_us = now_us;
     pdo_phase_trace.fault_flags = faults;
 #endif
@@ -480,9 +576,39 @@ static void publish_due(void)
     (void)check_faults(dcu_time_now_us());
 }
 
+static void raw_pdo_step(void)
+{
+    if (runtime.outputs_running && !sm2_configuration_matches()) raw_pdo_fault();
+    if (runtime.outputs_running && take(&raw_pdo.fault)) {
+        dcu_cycle_stop_outputs();
+        motor_control_cycle_fault();
+        ECAT_StateChange(STATE_SAFEOP, ALSTATUSCODE_UNSPECIFIEDERROR);
+    }
+    uint32_t read = read_handoff(&raw_pdo.read);
+    if (runtime.outputs_running && !runtime.command_pending && read != read_handoff(&raw_pdo.write)) {
+        motor_control_output(raw_pdo.image[read % DCU_RAW_PDO_QUEUE_DEPTH]);
+        write_handoff(&raw_pdo.read, read + 1U);
+        runtime.command_pending = true;
+    }
+    if (motor_control_process()) runtime.command_pending = false;
+    write_handoff(&raw_pdo.worker_us, dcu_time_now_us());
+    /* The previous image may contain a CAN frame. Retire it only after SM3 was read. */
+    if (bEcatInputUpdateRunning &&
+        (!raw_pdo.published || (SWAPWORD(HW_GetALEventRegister()) & PROCESS_INPUT_EVENT))) {
+        motor_control_prepare_input();
+        PDO_InputMapping();
+        raw_pdo.published = true;
+    }
+}
+
 void dcu_cycle_step(void)
 {
     uint32_t start = dcu_time_now_us();
+    uint32_t ticks;
+    if (raw_pdo.configured) {
+        raw_pdo_step();
+        goto ssc;
+    }
     const bool sm2 = read_handoff(&handoff.sm2_cycles);
     if (runtime.outputs_running && !cycle_configuration_matches())
         pdo_pipeline_fault(&pipeline, PDO_PIPELINE_CONFIG_CHANGED);
@@ -550,9 +676,10 @@ void dcu_cycle_step(void)
     }
     publish_due();
 
-    uint32_t ticks = take(&handoff.timer_pending);
+ssc:
+    ticks = take(&handoff.timer_pending);
     if (ticks > DCU_MAX_DEFERRED_SSC_TICKS) {
-        if (runtime.outputs_running)
+        if (runtime.outputs_running && !raw_pdo.configured)
             pdo_pipeline_fault(&pipeline, PDO_PIPELINE_SYNC_LOST);
         ticks = DCU_MAX_DEFERRED_SSC_TICKS;
     }
@@ -562,8 +689,8 @@ void dcu_cycle_step(void)
     MainLoop();
     service_local_sync_recovery();
     if (!runtime.outputs_running && update_idle_input) {
-        motor_control_prepare_input();
-        if (runtime.configured && sm2 && bEcatInputUpdateRunning)
+        if (!raw_pdo.configured) motor_control_prepare_input();
+        if (runtime.configured && !raw_pdo.configured && read_handoff(&handoff.sm2_cycles) && bEcatInputUpdateRunning)
             PDO_InputMapping();
 #if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
         /* A Store request deferred in SAFEOP/OP must still reach flash once
@@ -571,7 +698,7 @@ void dcu_cycle_step(void)
         ecat_flash_eeprom_flush();
 #endif
     }
-    (void)check_faults(dcu_time_now_us());
+    if (!raw_pdo.configured) (void)check_faults(dcu_time_now_us());
     uint32_t duration = dcu_time_now_us() - start;
     if (duration > cycle_diagnostics.worker_max_us)
         cycle_diagnostics.worker_max_us = duration;
@@ -581,6 +708,11 @@ void dcu_cycle_watchdog_isr(void)
 {
     /* Independent of task progress; never mutate SSC or motor objects here. */
     const uint32_t now_us = dcu_time_now_us();
+    if (read_handoff(&raw_pdo.enabled)) {
+        if (now_us - read_handoff(&raw_pdo.worker_us) >= read_handoff(&raw_pdo.lease_us))
+            raw_pdo_fault();
+        return;
+    }
     check_sm2_gap(now_us);
     if (__atomic_load_n(&pipeline.enabled, __ATOMIC_ACQUIRE) &&
         pdo_pipeline_check(&pipeline, now_us)) {

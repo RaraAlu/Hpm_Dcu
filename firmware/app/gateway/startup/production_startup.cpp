@@ -71,7 +71,7 @@ void ProductionStartup::observe(unsigned device, uint32_t stamp, uint32_t now)
     verified_ |= 1U << device;
 }
 
-void ProductionStartup::step(uint32_t now, unsigned expected, bool healthy)
+void ProductionStartup::step(uint32_t now, uint32_t expected_mask, bool healthy)
 {
     if (!boot_called_) return;
     const auto t = time_us(now);
@@ -89,7 +89,8 @@ void ProductionStartup::step(uint32_t now, unsigned expected, bool healthy)
     if (state != DCU_GATEWAY_PREPARING && state != DCU_GATEWAY_READY && state != DCU_GATEWAY_RUNNING)
         return;
     uint32_t oldest = 0;
-    for (unsigned i = 0; i < expected; ++i) {
+    for (unsigned i = 0; expected_mask; ++i, expected_mask >>= 1) {
+        if (!(expected_mask & 1U)) continue;
         const uint32_t age = now - stamps_ms_[i];
         if (!(verified_ & (1U << i)) || age >= ttl_ms_) return;
         if (age > oldest) oldest = age;
