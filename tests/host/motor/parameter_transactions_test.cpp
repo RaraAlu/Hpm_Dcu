@@ -28,7 +28,7 @@ static void simulate_transmitted(unsigned bus, uint32_t now)
 {
     static dcu_can_tx_id_t serial;
     service::mark_submitted(bus, now, ++serial);
-    service::finish_tx(bus, {serial, DCU_CAN_TX_COMPLETED});
+    service::finish_tx(bus, {serial, DCU_CAN_TX_COMPLETED, {}});
 }
 static void response(unsigned axis, bool maintenance, const dcu_can_frame_t &frame)
 {
@@ -88,16 +88,16 @@ int main(int argc, char **argv)
         auto frame = reply(1);
         frame.data[2] = 0x3F; frame.data[3] = 0x80;
         CHECK(!service::consume(1, 7, frame, 2).valid && !queries && !completions);
-        service::finish_tx(0, {11, DCU_CAN_TX_COMPLETED});
-        service::finish_tx(1, {10, DCU_CAN_TX_COMPLETED});
+        service::finish_tx(0, {11, DCU_CAN_TX_COMPLETED, {}});
+        service::finish_tx(1, {10, DCU_CAN_TX_COMPLETED, {}});
         CHECK(service::inspect(1).awaiting_tx && !service::consume(1, 7, frame, 2).valid);
-        service::finish_tx(1, {11, DCU_CAN_TX_CANCELLED});
+        service::finish_tx(1, {11, DCU_CAN_TX_CANCELLED, {}});
         CHECK(!service::inspect(1).busy && last_result == RESULT_IO && completions == 1 && !queries);
-        service::finish_tx(1, {11, DCU_CAN_TX_COMPLETED});
+        service::finish_tx(1, {11, DCU_CAN_TX_COMPLETED, {}});
         CHECK(!service::consume(1, 7, frame, 3).valid && completions == 1 && !queries);
         CHECK(service::start_query(1, 7, 1, 1, 4, dialect, 8, 1));
         service::mark_submitted(1, 4, 12);
-        service::finish_tx(1, {12, DCU_CAN_TX_COMPLETED});
+        service::finish_tx(1, {12, DCU_CAN_TX_COMPLETED, {}});
         CHECK(service::inspect(1).busy && completions == 1 && !queries);
         auto wrong_id = frame;
         ++wrong_id.id;

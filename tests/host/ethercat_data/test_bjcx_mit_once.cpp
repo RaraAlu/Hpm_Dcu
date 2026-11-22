@@ -48,10 +48,10 @@ void round_trip()
     assert(!exchange.dispatch(request(seq + 1), true, true, 90, deadline, tx));
     auto f = reply();
     assert(!exchange.rx(bus, f, 147));
-    exchange.tx_event(bus + 1, {token, DCU_CAN_TX_COMPLETED}, 147);
-    exchange.tx_event(bus, {token + 1, DCU_CAN_TX_COMPLETED}, 147);
+    exchange.tx_event(bus + 1, {token, DCU_CAN_TX_COMPLETED, {}}, 147);
+    exchange.tx_event(bus, {token + 1, DCU_CAN_TX_COMPLETED, {}}, 147);
     assert(!exchange.rx(bus, f, 148));
-    exchange.tx_event(bus, {token, DCU_CAN_TX_COMPLETED}, 147);
+    exchange.tx_event(bus, {token, DCU_CAN_TX_COMPLETED, {}}, 147);
     assert(!exchange.rx(bus, f, 146));
     assert(!exchange.rx(bus, f, 147));
     assert(!exchange.rx(bus + 1, f, 214));
@@ -95,7 +95,7 @@ void failure_is_terminal()
             exchange.submitted(0);
         } else {
             start(exchange);
-            exchange.tx_event(bus, {token, scenario == 1 ? DCU_CAN_TX_CANCELLED : DCU_CAN_TX_COMPLETED}, 147);
+            exchange.tx_event(bus, {token, scenario == 1 ? DCU_CAN_TX_CANCELLED : DCU_CAN_TX_COMPLETED, {}}, 147);
             if (scenario == 2) {
                 exchange.poll(false, 170);
             } else if (scenario == 3) {

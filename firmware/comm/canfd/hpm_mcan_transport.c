@@ -56,7 +56,8 @@ static const uint32_t s_irq[DCU_CAN_BUS_COUNT] = {
 #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && MCAN_SOC_MSG_BUF_IN_AHB_RAM
 /* HPM5E31 的 MCAN Message RAM 位于专用 AHB SRAM，四路必须各自独立。 */
 _Static_assert((CANFD_RX_FIFO_DEPTH + CANFD_TX_FIFO_DEPTH) *
-                   (MCAN_MESSAGE_HEADER_SIZE_IN_BYTES + DCU_CAN_MAX_PAYLOAD) <=
+                   (MCAN_MESSAGE_HEADER_SIZE_IN_BYTES + DCU_CAN_MAX_PAYLOAD) +
+                   CANFD_TX_FIFO_DEPTH * sizeof(mcan_tx_event_fifo_elem_t) + sizeof(uint32_t) <=
                    MCAN_MSG_BUF_SIZE_IN_WORDS * sizeof(uint32_t),
                "MCAN FIFOs exceed Message RAM");
 ATTR_PLACE_AT(".ahb_sram") static uint32_t s_mcan_ram[DCU_CAN_BUS_COUNT][MCAN_MSG_BUF_SIZE_IN_WORDS];
@@ -68,6 +69,10 @@ static volatile uint32_t s_rx_lost[DCU_CAN_BUS_COUNT];
 static uint32_t s_tx_progress[DCU_CAN_BUS_COUNT];
 static tx_slot_t s_tx[DCU_CAN_BUS_COUNT][CANFD_TX_FIFO_DEPTH];
 static dcu_can_tx_id_t s_tx_serial[DCU_CAN_BUS_COUNT];
+/* First observed protocol error per active bus/boot, read by JTAG with the target halted. */
+static volatile canfd_first_fault_t s_first_fault[DCU_CAN_BUS_COUNT];
+static const uint32_t s_protocol_errors =
+    MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE;
 static volatile uint8_t s_led_ticks[DCU_CAN_BUS_COUNT][CANFD_LED_KIND_COUNT];
 static uint16_t s_heartbeat_ticks;
 static dcu_can_channel_config_t s_channels[DCU_CAN_BUS_COUNT];
@@ -104,24 +109,90 @@ void dcu_mcan_led_tick(void)
     }
 }
 
+/* Only called from MCAN IRQ or under the kernel mask, before clearing IR or touching TX ownership. */
+static void latch_protocol_fault(unsigned bus, canfd_fault_source_t source, uint32_t ir, uint32_t psr)
+{
+    volatile canfd_first_fault_t *dst = &s_first_fault[bus];
+    if (dst->valid) return;
+    MCAN_Type *base = s_mcan[bus];
+    dst->observed_us = dcu_time_now_us();
+    dst->source = source;
+    dst->ir = ir;
+    dst->psr = psr;
+    dst->ecr = base->ECR;
+    dst->txbrp = base->TXBRP;
+    dst->txbto = base->TXBTO;
+    dst->txbcf = base->TXBCF;
+    dst->txefs = base->TXEFS;
+    dst->rxf0s = base->RXF0S;
+    dst->nbtp = base->NBTP;
+    dst->dbtp = base->DBTP;
+    dst->tdcr = base->TDCR;
+    dst->cccr = base->CCCR;
+    for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i)
+        dst->tx_id[i] = s_tx[bus][i].id;
+    __atomic_store_n(&dst->valid, 1U, __ATOMIC_RELEASE);
+}
+
+static void capture_pending_protocol_fault(unsigned bus, canfd_fault_source_t source)
+{
+    if (s_first_fault[bus].valid) return;
+    MCAN_Type *base = s_mcan[bus];
+    const uint32_t ir = mcan_get_interrupt_flags(base);
+    if (ir & s_protocol_errors) latch_protocol_fault(bus, source, ir, base->PSR);
+}
+
+static bool is_protocol_error_code(uint32_t code)
+{
+    return code > 0U && code < 7U;
+}
+
+static uint32_t read_bus_psr(unsigned bus)
+{
+    MCAN_Type *base = s_mcan[bus];
+    if (s_first_fault[bus].valid) return base->PSR;
+
+    /* PSR consumes the error code. Keep any sample taken before the IRQ can run. */
+    taskENTER_CRITICAL();
+    const uint32_t before = mcan_get_interrupt_flags(base);
+    uint32_t psr = base->PSR;
+    if (!s_first_fault[bus].valid) {
+        const bool lec = is_protocol_error_code(MCAN_PSR_LEC_GET(psr));
+        const bool dlec = is_protocol_error_code(MCAN_PSR_DLEC_GET(psr));
+        if (before & s_protocol_errors) {
+            latch_protocol_fault(bus, CANFD_FAULT_FROM_STATE_READ, before, psr);
+        } else {
+            const uint32_t after = mcan_get_interrupt_flags(base);
+            if (after & s_protocol_errors) {
+                if (!((lec && (after & MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE)) ||
+                      (dlec && (after & MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE))))
+                    psr = base->PSR;
+                latch_protocol_fault(bus, CANFD_FAULT_FROM_STATE_READ, after, psr);
+            } else if (lec || dlec) {
+                /* Keep the code even if the event flag was not observed with this PSR read. */
+                latch_protocol_fault(bus, CANFD_FAULT_FROM_STATE_READ, after, psr);
+            }
+        }
+    }
+    taskEXIT_CRITICAL();
+    return psr;
+}
+
 uint16_t dcu_can_bus_state(uint32_t bus)
 {
-    mcan_protocol_status_t status = {0};
-
     if (!dcu_can_channel_config(bus)) return DCU_CAN_BUS_DISABLED;
-    if (mcan_get_protocol_status(s_mcan[bus], &status) != status_success) {
-        return DCU_CAN_BUS_ERROR_WARNING;
-    }
-    if (status.in_bus_off_state) {
-        return DCU_CAN_BUS_OFF;
-    }
-    if (status.in_error_passive_state) {
-        return DCU_CAN_BUS_ERROR_PASSIVE;
-    }
-    if (status.in_warning_state) {
-        return DCU_CAN_BUS_ERROR_WARNING;
-    }
+    const uint32_t psr = read_bus_psr(bus);
+    if (psr & MCAN_PSR_BO_MASK) return DCU_CAN_BUS_OFF;
+    if (psr & MCAN_PSR_EP_MASK) return DCU_CAN_BUS_ERROR_PASSIVE;
+    if (psr & MCAN_PSR_EW_MASK) return DCU_CAN_BUS_ERROR_WARNING;
     return DCU_CAN_BUS_ERROR_ACTIVE;
+}
+
+static dcu_can_eof_t read_eof(MCAN_Type *base, bool captured, unsigned slot)
+{
+    if (!captured || !mcan_is_tsu_timestamp_available(base, slot))
+        return (dcu_can_eof_t){0};
+    return (dcu_can_eof_t){mcan_read_32bit_tsu_timestamp(base, slot), true};
 }
 
 static void receive_isr(uint32_t bus)
@@ -129,10 +200,19 @@ static void receive_isr(uint32_t bus)
     const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
     if (!channel) return;
     MCAN_Type *base=s_mcan[bus]; uint32_t flags=mcan_get_interrupt_flags(base);
+    if ((flags & s_protocol_errors) && !s_first_fault[bus].valid) {
+        const UBaseType_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
+        if (!s_first_fault[bus].valid)
+            latch_protocol_fault(bus, CANFD_FAULT_FROM_IRQ, flags, base->PSR);
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
+    }
     mcan_clear_interrupt_flags(base,flags);
     while(mcan_get_rxfifo_fill_level(base,0U)) {
         mcan_rx_message_t f;
         if(mcan_read_rxfifo(base,0,&f)!=status_success)break;
+        dcu_can_eof_t eof = {0};
+        if (channel->single_shot)
+            eof = read_eof(base, f.rx_timestamp_captured, f.rx_timestamp_pointer);
         led_pulse(bus,CANFD_LED_RX);
         rx_queue_t *q=&s_rx[bus]; uint8_t next=(q->write+1)&31;
         const uint8_t bytes = dcu_can_dlc_to_bytes(f.dlc, f.canfd_frame);
@@ -147,7 +227,10 @@ static void receive_isr(uint32_t bus)
             .flags=(f.use_ext_id ? DCU_CAN_FLAG_EXTENDED : 0) |
                    (f.canfd_frame ? DCU_CAN_FLAG_FD : 0) | (f.bitrate_switch ? DCU_CAN_FLAG_BRS : 0)};
         memcpy(item->frame.data, f.data_8, bytes);
-        item->timestamp=dcu_time_now_ms();
+        item->stamp = (dcu_can_rx_stamp_t){dcu_time_now_ms(), eof};
+#if defined(CONFIG_PDO_PHASE_TRACE)
+        item->observed_us = dcu_time_now_us();
+#endif
         __asm__ volatile("" ::: "memory");q->write=next;
     }
     if (flags & MCAN_EVENT_TRANSMIT) led_pulse(bus, CANFD_LED_TX);
@@ -166,6 +249,15 @@ SDK_DECLARE_EXT_ISR_M(IRQn_MCAN3, mcan3_isr);
 
 hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
 {
+    // Global acceptance stores RX frames but does not request a TSU capture.
+    static const mcan_filter_elem_t timestamp_standard = {
+        .filter_type = MCAN_FILTER_TYPE_CLASSIC_FILTER,
+        .filter_config = MCAN_FILTER_ELEM_CFG_STORE_IN_RX_FIFO0_IF_MATCH,
+        .can_id_type = MCAN_CAN_ID_TYPE_STANDARD,
+        .sync_message = 1U,
+        .filter_id = 0U,
+        .filter_mask = 0U,
+    };
     if (s_active_mask || !channels || !count || count > DCU_CAN_BUS_COUNT)
         return status_invalid_argument;
     uint32_t requested = 0;
@@ -214,16 +306,35 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         config.baudrate_fd = channel->data_bitrate_bps;
         config.enable_canfd = channel->fd;
         config.enable_tdc = channel->fd;
+        config.disable_auto_retransmission = channel->single_shot;
+#if defined(CONFIG_CAN3_TDCO_AB_TEST)
+        /* Match the wheeled chassis TDCO trial without changing the TDCF baseline. */
+        if (bus == 3U && channel->fd && channel->single_shot && clock_hz == 80000000U &&
+            config.baudrate == 1000000U && config.baudrate_fd == 5000000U) {
+            config.tdc_config.ssp_offset = 13U;
+            config.tdc_config.filter_window_length = 12U;
+        }
+#endif
+        if (channel->single_shot) {
+            config.use_timestamping_unit = true;
+            config.timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_EXT_TS_VAL_USED;
+            config.tsu_config.enable_tsu = true;
+            config.tsu_config.capture_on_sof = false;
+            config.tsu_config.use_ext_timebase = false;
+            config.tsu_config.enable_64bit_timestamp = false;
+        }
         mcan_get_default_ram_config(s_mcan[bus], &config.ram_config, channel->fd);
 
         /*
-         * 仅启用实际使用的 RX FIFO0 和 TX FIFO。内部槽支持 64 字节，
-         * 独立于既有 Raw PDO 的 8 字节线上布局。
+         * RX/TX FIFO 内部槽支持 64 字节，独立于 Raw PDO 的 8 字节线上布局。
+         * 单发模式通过标准帧过滤项请求 RX EOF，其余帧保留原有接收策略。
          */
-        config.ram_config.enable_std_filter = false;
+        config.ram_config.enable_std_filter = channel->single_shot;
+        config.ram_config.std_filter_elem_count = channel->single_shot ? 1U : 0U;
         config.ram_config.enable_ext_filter = false;
-        /* 不分配过滤表时也必须清零默认过滤项，否则驱动会拒绝该配置。 */
-        config.all_filters_config.std_id_filter_list.mcan_filter_elem_count = 0U;
+        config.all_filters_config.std_id_filter_list.mcan_filter_elem_count = channel->single_shot ? 1U : 0U;
+        config.all_filters_config.std_id_filter_list.filter_elem_list =
+            channel->single_shot ? &timestamp_standard : NULL;
         config.all_filters_config.ext_id_filter_list.mcan_filter_elem_count = 0U;
         config.ram_config.rxfifos[0].enable = 1U;
         config.ram_config.rxfifos[0].elem_count = CANFD_RX_FIFO_DEPTH;
@@ -234,7 +345,9 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         config.ram_config.txbuf_dedicated_txbuf_elem_count = 0U;
         config.ram_config.txbuf_fifo_or_queue_elem_count = CANFD_TX_FIFO_DEPTH;
         config.ram_config.txfifo_or_txqueue_mode = 0U; /* 0=FIFO，保持槽位发送顺序。 */
-        config.ram_config.enable_tx_evt_fifo = false;
+        config.ram_config.enable_tx_evt_fifo = channel->single_shot;
+        config.ram_config.tx_evt_fifo_elem_count = channel->single_shot ? CANFD_TX_FIFO_DEPTH : 0U;
+        config.ram_config.tx_evt_fifo_watermark = 0U;
         /*
          * TX 完成中断有两级开关：除全局 TC 外，还必须在 TXBTIE 中使能
          * 对应 TX FIFO 元素；否则报文能正常上总线，但不会产生 TX 灯事件。
@@ -247,6 +360,12 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         if (status != status_success) {
             return status;
         }
+        if (channel->single_shot &&
+            (!mcan_is_tsu_used(s_mcan[bus]) ||
+             !(s_mcan[bus]->CCCR & MCAN_CCCR_DAR_MASK) ||
+             (s_mcan[bus]->TSCFG & (MCAN_TSCFG_TSUE_MASK | MCAN_TSCFG_SCP_MASK |
+                                   MCAN_TSCFG_TBCS_MASK | MCAN_TSCFG_EN64_MASK)) != MCAN_TSCFG_TSUE_MASK))
+            return status_fail;
         mcan_interrupt_line_select(s_mcan[bus], config.interrupt_mask, 0U);
         s_channels[bus] = *channel;
     }
@@ -261,12 +380,12 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
 
 
 uint32_t dcu_can_rx_drops(unsigned bus) { return dcu_can_channel_config(bus) ? s_rx_lost[bus] : 0; }
-bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, uint32_t *stamp)
+bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, dcu_can_rx_stamp_t *stamp)
 {
     if (!dcu_can_channel_config(bus) || !f || !stamp) return false;
     rx_queue_t *q=&s_rx[bus];intc_m_disable_irq(s_irq[bus]);
     bool available=q->read!=q->write;
-    if(available){*f=q->item[q->read].frame;*stamp=q->item[q->read].timestamp;q->read=(q->read+1)&31;}
+    if(available){*f=q->item[q->read].frame;*stamp=q->item[q->read].stamp;q->read=(q->read+1)&31;}
     intc_m_enable_irq(s_irq[bus]);return available;
 }
 bool dcu_can_pending(unsigned bus)
@@ -284,21 +403,43 @@ uint32_t dcu_can_tx_progress(unsigned bus)
 {
     return dcu_can_channel_config(bus) ? s_tx_progress[bus] : 0;
 }
+
+static void collect_tx_eofs(unsigned bus, MCAN_Type *base)
+{
+    mcan_tx_event_fifo_elem_t event;
+    for (unsigned n = 0; n < CANFD_TX_FIFO_DEPTH && mcan_read_tx_evt_fifo(base, &event) == status_success; ++n) {
+        const dcu_can_eof_t eof = read_eof(base, event.tx_timestamp_captured, event.tx_timestamp_pointer);
+        // DAR may report a successful transmission as ET=2. TXBTO is still required.
+        if (!eof.valid || (event.event_type != 1 && event.event_type != 2)) continue;
+        for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
+            tx_slot_t *slot = &s_tx[bus][i];
+            if (slot->id && (uint8_t)slot->id == event.message_marker) {
+                slot->eof = eof;
+                break;
+            }
+        }
+    }
+}
+
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
 {
-    if (!dcu_can_channel_config(bus) || !event) return false;
+    const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
+    if (!channel || !event) return false;
     MCAN_Type *base = s_mcan[bus];
     bool found = false;
     taskENTER_CRITICAL();
+    capture_pending_protocol_fault(bus, CANFD_FAULT_BEFORE_TX_EVENT);
     const uint32_t pending = base->TXBRP;
     const uint32_t completed = base->TXBTO;
     const uint32_t cancelled = base->TXBCF;
     const uint32_t terminal = (completed | cancelled) & ~pending;
+    if (channel->single_shot) collect_tx_eofs(bus, base);
     for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
         tx_slot_t *slot = &s_tx[bus][i];
         if (!slot->id || !(terminal & (1U << i))) continue;
         const bool sent = !slot->revoked && (completed & (1U << i));
-        *event = (dcu_can_tx_event_t){slot->id, sent ? DCU_CAN_TX_COMPLETED : DCU_CAN_TX_CANCELLED};
+        *event = (dcu_can_tx_event_t){.id = slot->id, .status = sent ? DCU_CAN_TX_COMPLETED : DCU_CAN_TX_CANCELLED};
+        if (sent) event->eof = slot->eof;
         if (sent) ++s_tx_progress[bus];
         slot->id = 0;
         found = true;
@@ -312,6 +453,7 @@ bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
  * watchdog IRQs with the FreeRTOS threshold, leaving Sync0/PDI unmasked. */
 static bool cancel_locked(unsigned bus, dcu_can_tx_id_t id)
 {
+    capture_pending_protocol_fault(bus, CANFD_FAULT_BEFORE_CANCEL);
     const uint32_t pending = s_mcan[bus]->TXBRP;
     uint32_t requests = 0;
     for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
@@ -362,6 +504,12 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *f)
     tx.dlc = f->dlc;
     tx.canfd_frame = (f->flags & DCU_CAN_FLAG_FD) != 0;
     tx.bitrate_switch = (f->flags & DCU_CAN_FLAG_BRS) != 0;
+    if (channel->single_shot) {
+        tx.timestamp_capture_enable = true;
+        tx.event_fifo_control = true;
+        // At most one FIFO's worth of unconsumed tags can coexist per bus.
+        tx.message_marker_l = (uint8_t)(s_tx_serial[bus] + 1U);
+    }
     memcpy(tx.data_8, f->data, dcu_can_dlc_to_bytes(f->dlc, tx.canfd_frame));
     intc_m_disable_irq(s_irq[bus]);
     dcu_can_tx_id_t id = 0;

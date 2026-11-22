@@ -369,11 +369,11 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
     transactions_.expire_poll(c, now);
     schedule_[c].refill(now);
     dcu_can_frame_t f;
-    uint32_t stamp;
+    dcu_can_rx_stamp_t stamp;
     for (unsigned n = 0; n < 32 && dcu_can_receive(c, &f, &stamp); n++) {
         if (transactions_.awaiting_tx(c))
             collect_tx_events(c);
-        const bool routed = consume_feedback(c, f, stamp, now);
+        const bool routed = consume_feedback(c, f, stamp.observed_ms, now);
         const bool raw_channel = state_.channels[c].role >= 2;
         if (f.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD) {
             if (!routed || raw_channel) ++state_.legacy_rx_drop[c];

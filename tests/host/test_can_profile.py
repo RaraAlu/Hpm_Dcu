@@ -15,13 +15,13 @@ class CanProfileTest(unittest.TestCase):
     def test_single_bus_is_encoded_without_a_default_entry(self):
         self.assertEqual(self.profile["channels"][0]["bus"], 2)
         result = header(self.profile)
-        self.assertIn("{ 2U, 1000000U, 5000000U, true }", result)
-        self.assertEqual(result.count("U, true }"), 1)
-        self.assertNotIn("U, false }", result)
+        self.assertIn("{ 2U, 1000000U, 5000000U, true, false }", result)
+        self.assertEqual(result.count("U, true, false }"), 1)
+        self.assertNotIn("U, false, false }", result)
 
     def test_classic_has_no_data_bitrate(self):
         self.profile["channels"] = [{"bus": 1, "mode": "classic", "nominal_bitrate_kbps": 1000}]
-        self.assertIn("{ 1U, 1000000U, 0U, false }", header(self.profile))
+        self.assertIn("{ 1U, 1000000U, 0U, false, false }", header(self.profile))
         self.profile["channels"][0]["data_bitrate_kbps"] = 5000
         with self.assertRaises(ValueError):
             header(self.profile)

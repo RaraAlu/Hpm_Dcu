@@ -3,11 +3,15 @@
 
 #include <stdint.h>
 #include "can_transport.h"
+#include "cfg/can_bus_config.h"
 #include "hpm_gpio_drv.h"
 
 typedef struct {
     dcu_can_frame_t frame;
-    uint32_t timestamp;
+    dcu_can_rx_stamp_t stamp;
+#if defined(CONFIG_PDO_PHASE_TRACE)
+    uint32_t observed_us;
+#endif
 } rx_item_t;
 
 typedef struct {
@@ -18,7 +22,23 @@ typedef struct {
 typedef struct {
     dcu_can_tx_id_t id;
     bool revoked;
+    dcu_can_eof_t eof;
 } tx_slot_t;
+
+typedef enum {
+    CANFD_FAULT_FROM_IRQ = 1,
+    CANFD_FAULT_FROM_STATE_READ,
+    CANFD_FAULT_BEFORE_TX_EVENT,
+    CANFD_FAULT_BEFORE_CANCEL,
+} canfd_fault_source_t;
+
+typedef struct {
+    uint32_t valid, observed_us, source;
+    uint32_t ir, psr, ecr;
+    uint32_t txbrp, txbto, txbcf, txefs, rxf0s;
+    uint32_t nbtp, dbtp, tdcr, cccr;
+    dcu_can_tx_id_t tx_id[CANFD_TX_FIFO_DEPTH];
+} canfd_first_fault_t;
 
 typedef struct {
     GPIO_Type *ctrl;

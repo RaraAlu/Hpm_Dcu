@@ -71,11 +71,11 @@ uint32_t dcu_time_now_ms(void) { return test_ms; }
 uint32_t dcu_time_now_us(void) { return test_us; }
 uint32_t dcu_can_rx_drops(unsigned) { return 0; }
 uint16_t dcu_can_bus_state(uint32_t bus) { return bus_states[bus]; }
-bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stamp)
+bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, dcu_can_rx_stamp_t *stamp)
 {
     if (incoming[bus].empty()) return false;
     *frame = incoming[bus].front().first;
-    *stamp = incoming[bus].front().second;
+    *stamp = {incoming[bus].front().second, {}};
     incoming[bus].pop_front();
     return true;
 }
@@ -98,7 +98,7 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *frame)
 {
     if (!allow_send) return 0;
     sent.emplace_back(bus, *frame);
-    tx_events[bus].push_back({++test_tx_serial, DCU_CAN_TX_COMPLETED});
+    tx_events[bus].push_back({++test_tx_serial, DCU_CAN_TX_COMPLETED, {}});
     return test_tx_serial;
 }
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
@@ -113,12 +113,12 @@ static void simulate_service_transmitted(unsigned bus, uint32_t now)
 {
     const auto id = ++test_tx_serial;
     parameters::mark_submitted(bus, now, id);
-    parameters::finish_tx(bus, {id, DCU_CAN_TX_COMPLETED});
+    parameters::finish_tx(bus, {id, DCU_CAN_TX_COMPLETED, {}});
 }
 
 static bool use_generated_profile, use_mixed_profile;
 static const dcu_can_channel_config_t test_channels[] = {
-    {0, 1000000, 0, false}, {1, 1000000, 0, false}, {2, 1000000, 0, false}, {3, 1000000, 0, false},
+    {0, 1000000, 0, false, false}, {1, 1000000, 0, false, false}, {2, 1000000, 0, false, false}, {3, 1000000, 0, false, false},
 };
 static const dcu_motor_device_profile_t test_device{
     "test_encos", 0, 1, 0x8000, 0, -10000000, 10000000, 20000000, 10000, 100,

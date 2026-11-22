@@ -19,9 +19,21 @@ typedef struct {
     uint32_t nominal_bitrate_bps;
     uint32_t data_bitrate_bps; /* Zero for classic CAN. */
     bool fd;
+    bool single_shot; /* No automatic retransmission; report hardware EOF when available. */
 } dcu_can_channel_config_t;
 
 typedef uint64_t dcu_can_tx_id_t;
+
+/* Hardware frame-end ticks are only comparable on the same controller. */
+typedef struct {
+    uint32_t tick;
+    bool valid;
+} dcu_can_eof_t;
+
+typedef struct {
+    uint32_t observed_ms;
+    dcu_can_eof_t eof;
+} dcu_can_rx_stamp_t;
 
 typedef enum {
     DCU_CAN_TX_COMPLETED,
@@ -31,6 +43,7 @@ typedef enum {
 typedef struct {
     dcu_can_tx_id_t id;
     dcu_can_tx_status_t status;
+    dcu_can_eof_t eof;
 } dcu_can_tx_event_t;
 
 #ifdef __cplusplus
@@ -43,7 +56,7 @@ extern "C" {
 uint32_t dcu_can_rx_drops(unsigned bus);
 const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus);
 uint16_t dcu_can_bus_state(uint32_t bus);
-bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stamp_ms);
+bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, dcu_can_rx_stamp_t *stamp);
 /* Includes terminal results not yet consumed by the worker. */
 bool dcu_can_pending(unsigned bus);
 unsigned dcu_can_tx_free(unsigned bus);

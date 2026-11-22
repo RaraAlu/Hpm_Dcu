@@ -17,6 +17,7 @@ class CanFdTxGateTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="dcu-canfd-gate-")
         cls.addClassCleanup(directory.cleanup)
         cls.executable = Path(directory.name) / "tx_gate"
+        cls.tdc_executable = Path(directory.name) / "tx_gate_tdc"
         command = [cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors",
                    "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
@@ -24,7 +25,9 @@ class CanFdTxGateTest(unittest.TestCase):
         for include in ("tests/host/canfd/stubs", "firmware/comm/canfd", "firmware/app/cycle",
                         "firmware/cfg", "firmware/ports"):
             command.extend(("-I", str(ROOT / include)))
-        cls.run_command([*command, str(ROOT / "tests/host/canfd/tx_gate_test.c"), "-o", str(cls.executable)])
+        source = str(ROOT / "tests/host/canfd/tx_gate_test.c")
+        cls.run_command([*command, source, "-o", str(cls.executable)])
+        cls.run_command([*command, "-DCONFIG_CAN3_TDCO_AB_TEST=1", source, "-o", str(cls.tdc_executable)])
 
     @staticmethod
     def run_command(command):
@@ -62,10 +65,28 @@ class CanFdTxGateTest(unittest.TestCase):
     def test_profile_initializes_only_the_selected_controller(self):
         self.run_command([str(self.executable), "single_profile"])
 
+    def test_tdco_comparison_only_overrides_can3_when_enabled(self):
+        self.run_command([str(self.executable), "tdc_baseline"])
+        self.run_command([str(self.tdc_executable), "tdc_comparison"])
+
+    def test_single_shot_failure_releases_the_tx_slot_without_retry(self):
+        self.run_command([str(self.executable), "single_shot_failure"])
+
+    def test_single_shot_tx_rx_eof_metadata_uses_real_capture_slots(self):
+        self.run_command([str(self.executable), "single_shot_eof"])
+
+    def test_a_controller_not_in_eof_mode_cannot_activate(self):
+        self.run_command([str(self.executable), "bad_eof_mode"])
+
     def test_invalid_or_partial_profile_does_not_activate_controllers(self):
         for scenario in ("invalid_profile", "partial_profile"):
             with self.subTest(scenario=scenario):
                 self.run_command([str(self.executable), scenario])
+
+    def test_first_protocol_fault_is_captured_before_ack_or_tx_bookkeeping(self):
+        for source in ("irq", "poll", "poll_edge", "poll_read_clear", "psr_only", "tx_event", "cancel"):
+            with self.subTest(source=source):
+                self.run_command([str(self.executable), f"first_fault_{source}"])
 
 
 if __name__ == "__main__":

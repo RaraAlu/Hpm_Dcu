@@ -25,7 +25,7 @@ static std::vector<std::pair<unsigned, dcu_can_frame_t>> sent;
 static std::deque<dcu_can_tx_event_t> tx_events[ENCOS_CHANNEL_COUNT];
 static dcu_can_tx_id_t tx_serial;
 static const dcu_can_channel_config_t applied_channels[] = {
-    {2, 1000000, 5000000, true}, {0, 1000000, 0, false},
+    {2, 1000000, 5000000, true, false}, {0, 1000000, 0, false, false},
 };
 static const dcu_motor_device_profile_t classic_motor{
     "test_motor", 0, 1, 0x8000, 0, -10000000, 10000000, 20000000, 10000, 100,
@@ -50,7 +50,7 @@ bool dcu_can_cancel_tx(unsigned, dcu_can_tx_id_t id) { CHECK(id); ++canceled; re
 dcu_can_tx_id_t dcu_can_submit(unsigned bus, const dcu_can_frame_t *frame)
 {
     sent.emplace_back(bus, *frame);
-    tx_events[bus].push_back({++tx_serial, DCU_CAN_TX_COMPLETED});
+    tx_events[bus].push_back({++tx_serial, DCU_CAN_TX_COMPLETED, {}});
     return tx_serial;
 }
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
@@ -60,12 +60,12 @@ bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
     tx_events[bus].pop_front();
     return true;
 }
-bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, uint32_t *stamp)
+bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, dcu_can_rx_stamp_t *stamp)
 {
     if (received[bus].empty()) return false;
     *frame = received[bus].front();
     received[bus].pop_front();
-    *stamp = now_ms;
+    *stamp = {now_ms, {}};
     return true;
 }
 

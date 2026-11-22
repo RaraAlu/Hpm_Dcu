@@ -70,7 +70,7 @@ static void lifecycle()
     for (uint8_t code = 1; code <= 4; ++code) {
         CHECK(parameters::start_query(0, 0, code, 1, 1, motor::ParameterDialect::EncosLegacy, 1, 0));
         parameters::mark_submitted(0, 1, code);
-        parameters::finish_tx(0, {code, DCU_CAN_TX_COMPLETED});
+        parameters::finish_tx(0, {code, DCU_CAN_TX_COMPLETED, {}});
         dcu_can_frame_t reply{};
         reply.id = 1;
         reply.dlc = 6;
@@ -86,7 +86,7 @@ static void lifecycle()
     dcu_can_frame_t control{};
     CHECK(axis.encode_control(control) && control.id == 1 && control.dlc == 8);
     axis.control_submitted(1, 5);
-    CHECK(axis.finish_tx({5, DCU_CAN_TX_COMPLETED}));
+    CHECK(axis.finish_tx({5, DCU_CAN_TX_COMPLETED, {}}));
     dcu_can_frame_t reply{};
     reply.id = 1;
     reply.dlc = 8;
@@ -117,7 +117,7 @@ static void lifecycle()
     axis.control_submitted(2, 6);
     axis.check_timeouts(22, false, 20);
     CHECK(!axis.active() && canceled == 1);
-    CHECK(axis.finish_tx({6, DCU_CAN_TX_CANCELLED}));
+    CHECK(axis.finish_tx({6, DCU_CAN_TX_CANCELLED, {}}));
     CHECK(axis.read_feedback(22, 20, feedback, diagnostics).fault && feedback.bridge_fault == 4);
     CHECK(diagnostics.tx_complete_count == 1);
     CHECK(axis.bind(0, configuration(), 0));

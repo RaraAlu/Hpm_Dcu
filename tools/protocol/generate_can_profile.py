@@ -123,7 +123,7 @@ def header(profile):
             uint(data, 16, "data_bitrate_kbps", 1)
         # Current production bus budgets are calibrated for these rates.
         require(nominal == 1000 and (not fd or data == 5000), "bitrate unsupported by the current bus budget")
-        lines.append(f"    {{ {bus}U, {nominal * 1000}U, {data * 1000}U, {'true' if fd else 'false'} }},")
+        lines.append(f"    {{ {bus}U, {nominal * 1000}U, {data * 1000}U, {'true' if fd else 'false'}, false }},")
     lines.append("};")
     devices = profile["devices"]
     require(type(devices) is list and len(devices) <= 28, "devices: expected a list of up to 28 entries")

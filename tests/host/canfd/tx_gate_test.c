@@ -13,9 +13,17 @@ static unsigned critical_depth, stage_calls, commits;
 static uint8_t expected_dlc = 8;
 static mcan_tx_frame_t staged;
 static mcan_rx_message_t pending_rx;
+static mcan_tx_event_fifo_elem_t pending_event;
+static bool event_ready, force_sof;
+static uint32_t tsu_ticks[4][16];
 static unsigned rx_fill, configured, fail_at, enabled_irqs, enabled_phys;
 static uint32_t irq_flags = MCAN_INT_RXFIFO0_NEW_MSG;
-static const dcu_can_channel_config_t fd_bus0 = {0, 1000000, 5000000, true};
+static uint32_t observed_us;
+static unsigned ir_reads_to_inject;
+static uint32_t injected_psr;
+static bool clear_first_error_evidence_on_ack;
+static unsigned expected_can3_tdco;
+static const dcu_can_channel_config_t fd_bus0 = {0, 1000000, 5000000, true, false};
 static const dcu_can_channel_config_t *expected = &fd_bus0;
 
 static void fault_timer(void)
@@ -29,7 +37,7 @@ static void fault_timer(void)
 }
 
 bool dcu_tx_inhibited(void) { return inhibited; }
-uint32_t dcu_time_now_us(void) { return 0; }
+uint32_t dcu_time_now_us(void) { return observed_us; }
 uint32_t dcu_time_now_ms(void) { return 42; }
 void test_enter_critical(void) { ++critical_depth; }
 void test_exit_critical(void)
@@ -63,6 +71,31 @@ int mcan_init(MCAN_Type *base, mcan_config_t *config, uint32_t clock)
     const dcu_can_channel_config_t *channel = &expected[configured++];
     CHECK(base == &test_mcan[channel->bus] && clock == 80000000U);
     CHECK(config->enable_canfd == channel->fd && config->enable_tdc == channel->fd);
+    const unsigned tdco = channel->bus == 3U ? expected_can3_tdco : 0U;
+    CHECK(config->tdc_config.ssp_offset == tdco);
+    CHECK(config->tdc_config.filter_window_length == (tdco ? 12U : 0U));
+    CHECK(config->disable_auto_retransmission == channel->single_shot);
+    CHECK(config->use_timestamping_unit == channel->single_shot);
+    CHECK(config->ram_config.enable_tx_evt_fifo == channel->single_shot);
+    if (channel->single_shot) {
+        CHECK(config->timestamp_cfg.timestamp_selection == MCAN_TIMESTAMP_SEL_EXT_TS_VAL_USED);
+        CHECK(config->tsu_config.enable_tsu && !config->tsu_config.capture_on_sof &&
+              !config->tsu_config.use_ext_timebase && !config->tsu_config.enable_64bit_timestamp);
+        CHECK(config->ram_config.tx_evt_fifo_elem_count == CANFD_TX_FIFO_DEPTH);
+        CHECK(config->ram_config.enable_std_filter && config->ram_config.std_filter_elem_count == 1U);
+        CHECK(config->all_filters_config.std_id_filter_list.mcan_filter_elem_count == 1U);
+        const mcan_filter_elem_t *filter = config->all_filters_config.std_id_filter_list.filter_elem_list;
+        CHECK(filter && filter->sync_message == 1U);
+        CHECK(filter->filter_type == MCAN_FILTER_TYPE_CLASSIC_FILTER &&
+              filter->filter_config == MCAN_FILTER_ELEM_CFG_STORE_IN_RX_FIFO0_IF_MATCH &&
+              filter->can_id_type == MCAN_CAN_ID_TYPE_STANDARD &&
+              filter->filter_id == 0U && filter->filter_mask == 0U);
+        base->CCCR = MCAN_CCCR_DAR_MASK | MCAN_CCCR_UTSU_MASK;
+        base->TSCFG = MCAN_TSCFG_TSUE_MASK | (force_sof ? MCAN_TSCFG_SCP_MASK : 0);
+    } else {
+        CHECK(!config->ram_config.enable_std_filter &&
+              config->all_filters_config.std_id_filter_list.mcan_filter_elem_count == 0U);
+    }
     CHECK(config->baudrate == channel->nominal_bitrate_bps && config->baudrate_fd == channel->data_bitrate_bps);
     CHECK(config->ram_config.rxfifos[0].enable &&
           config->ram_config.rxfifos[0].elem_count == CANFD_RX_FIFO_DEPTH &&
@@ -74,20 +107,49 @@ int mcan_init(MCAN_Type *base, mcan_config_t *config, uint32_t clock)
 void mcan_interrupt_line_select(MCAN_Type *base, uint32_t mask, unsigned line)
 { (void)base; CHECK(mask & MCAN_INT_RXFIFO0_NEW_MSG); CHECK(line == 0); }
 uint32_t mcan_get_interrupt_flags(MCAN_Type *base)
-{ CHECK(base == HPM_MCAN0); return irq_flags; }
+{
+    CHECK(dcu_can_channel_config((unsigned)(base - test_mcan)));
+    if (ir_reads_to_inject && --ir_reads_to_inject == 0) {
+        base->IR = MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE;
+        base->PSR = injected_psr;
+    }
+    return irq_flags | base->IR;
+}
 void mcan_clear_interrupt_flags(MCAN_Type *base, uint32_t flags)
-{ CHECK(base == HPM_MCAN0 && flags == irq_flags); }
+{
+    CHECK(dcu_can_channel_config((unsigned)(base - test_mcan)) && flags == (irq_flags | base->IR));
+    base->IR &= ~flags;
+    if (clear_first_error_evidence_on_ack) {
+        base->PSR = 0x707U;
+        base->ECR = 0;
+    }
+}
 unsigned mcan_get_rxfifo_fill_level(MCAN_Type *base, unsigned fifo)
-{ CHECK(base == HPM_MCAN0 && fifo == 0); return rx_fill; }
+{ CHECK((base == HPM_MCAN0 || base == HPM_MCAN1) && fifo == 0); return rx_fill; }
 int mcan_read_rxfifo(MCAN_Type *base, unsigned fifo, mcan_rx_message_t *frame)
 {
-    CHECK(base == HPM_MCAN0 && fifo == 0 && rx_fill == 1);
+    CHECK((base == HPM_MCAN0 || base == HPM_MCAN1) && fifo == 0 && rx_fill == 1);
     *frame = pending_rx;
     --rx_fill;
     return status_success;
 }
-int mcan_get_protocol_status(MCAN_Type *base, mcan_protocol_status_t *status)
-{ CHECK(dcu_can_channel_config((unsigned)(base - test_mcan))); memset(status, 0, sizeof(*status)); return 0; }
+int mcan_read_tx_evt_fifo(MCAN_Type *base, mcan_tx_event_fifo_elem_t *event)
+{
+    CHECK(base == HPM_MCAN1 && critical_depth == 1);
+    if (!event_ready) return status_fail;
+    *event = pending_event;
+    event_ready = false;
+    return status_success;
+}
+bool mcan_is_tsu_used(MCAN_Type *base) { return (base->CCCR & MCAN_CCCR_UTSU_MASK) != 0; }
+bool mcan_is_tsu_timestamp_available(MCAN_Type *base, unsigned slot)
+{ return slot < 16 && (base->TSS1 & (1U << slot)) != 0; }
+uint32_t mcan_read_32bit_tsu_timestamp(MCAN_Type *base, uint32_t slot)
+{
+    CHECK(mcan_is_tsu_timestamp_available(base, slot));
+    base->TSS1 &= ~(1U << slot);
+    return tsu_ticks[base - test_mcan][slot];
+}
 int mcan_request_and_fill_txfifo(MCAN_Type *base, mcan_tx_frame_t *frame, uint32_t *index)
 {
     (void)base;
@@ -119,6 +181,87 @@ static void finish_hardware(unsigned bus, bool sent, bool cancelled)
     if (cancelled) test_mcan[bus].TXBCF |= slot;
 }
 
+static void test_first_fault(const char *scenario)
+{
+    const dcu_can_channel_config_t channels[] = {fd_bus0, {1, 1000000, 5000000, true, true}};
+    expected = channels;
+    CHECK(dcu_mcan_init(channels, 2) == status_success);
+    const dcu_can_frame_t frame = {.id = 2, .dlc = 8, .flags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS};
+    const dcu_can_tx_id_t id = dcu_can_submit(1, &frame);
+    CHECK(id && !s_first_fault[1].valid);
+    MCAN_Type *base = HPM_MCAN1;
+    observed_us = 12345678;
+    base->IR = MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE;
+    base->PSR = 0x001c340fU;
+    base->ECR = 0x00010008U;
+    base->DBTP = 0x00800a33U;
+    base->NBTP = 0x26003a13U;
+    base->TDCR = 0x00000c0cU;
+    base->TXEFS = 0x123U;
+    base->RXF0S = 0x456U;
+    canfd_fault_source_t source = CANFD_FAULT_FROM_STATE_READ;
+    bool terminal = true, error_flag = true;
+    if (!strcmp(scenario, "first_fault_irq")) {
+        source = CANFD_FAULT_FROM_IRQ;
+        finish_hardware(1, false, true);
+        clear_first_error_evidence_on_ack = true;
+        mcan1_isr();
+        CHECK(base->ECR == 0 && !base->IR);
+    } else if (!strcmp(scenario, "first_fault_poll")) {
+        finish_hardware(1, false, true);
+        CHECK(dcu_can_bus_state(1) == DCU_CAN_BUS_ERROR_ACTIVE);
+    } else if (!strcmp(scenario, "first_fault_poll_edge")) {
+        finish_hardware(1, false, true);
+        base->IR = 0;
+        base->PSR = 0x707U;
+        injected_psr = 0x001c340fU;
+        ir_reads_to_inject = 2;
+        CHECK(dcu_can_bus_state(1) == DCU_CAN_BUS_ERROR_ACTIVE && !ir_reads_to_inject);
+    } else if (!strcmp(scenario, "first_fault_poll_read_clear")) {
+        finish_hardware(1, false, true);
+        base->IR = 0;
+        injected_psr = 0x001c370fU; // The first PSR read consumed DLEC before PED was seen.
+        ir_reads_to_inject = 2;
+        CHECK(dcu_can_bus_state(1) == DCU_CAN_BUS_ERROR_ACTIVE && !ir_reads_to_inject);
+    } else if (!strcmp(scenario, "first_fault_psr_only")) {
+        finish_hardware(1, false, true);
+        base->IR = 0;
+        error_flag = false;
+        CHECK(dcu_can_bus_state(1) == DCU_CAN_BUS_ERROR_ACTIVE);
+    } else if (!strcmp(scenario, "first_fault_tx_event")) {
+        source = CANFD_FAULT_BEFORE_TX_EVENT;
+        finish_hardware(1, false, true);
+        dcu_can_tx_event_t event;
+        CHECK(dcu_can_take_tx_event(1, &event) && event.id == id && event.status == DCU_CAN_TX_CANCELLED);
+        CHECK(!dcu_can_pending(1));
+    } else if (!strcmp(scenario, "first_fault_cancel")) {
+        source = CANFD_FAULT_BEFORE_CANCEL;
+        terminal = false;
+        dcu_can_cancel_from_isr(1);
+        CHECK(base->TXBCR == 4);
+    } else {
+        CHECK(false);
+    }
+
+    const canfd_first_fault_t first = s_first_fault[1];
+    CHECK(first.valid == 1 && first.source == source && first.observed_us == 12345678);
+    CHECK(first.psr == 0x001c340fU && first.ecr == 0x00010008U);
+    CHECK((first.ir & s_protocol_errors) == (error_flag ? MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE : 0));
+    CHECK(first.txbrp == (terminal ? 0U : 4U) && !first.txbto && first.txbcf == (terminal ? 4U : 0U));
+    CHECK(first.nbtp == base->NBTP && first.dbtp == base->DBTP && first.tdcr == base->TDCR &&
+          first.cccr == base->CCCR && first.txefs == base->TXEFS && first.rxf0s == base->RXF0S);
+    for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i)
+        CHECK(first.tx_id[i] == (i == 2 ? id : 0U));
+    CHECK(!s_first_fault[0].valid);
+    observed_us += 50;
+    base->IR = MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE;
+    base->PSR = MCAN_PSR_EW_MASK | MCAN_PSR_EP_MASK | 5U;
+    CHECK(dcu_can_bus_state(1) == DCU_CAN_BUS_ERROR_PASSIVE);
+    mcan1_isr();
+    CHECK(s_first_fault[1].source == first.source && s_first_fault[1].psr == first.psr &&
+          s_first_fault[1].observed_us == first.observed_us);
+}
+
 static void test_roundtrip(void)
 {
     const uint8_t sizes[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 32, 48, 64};
@@ -139,10 +282,11 @@ static void test_roundtrip(void)
         memset(pending_rx.data_8 + sizes[i], 0x99, sizeof(pending_rx.data_8) - sizes[i]);
         rx_fill = 1;
         mcan0_isr();
-        uint32_t stamp = 0;
+        dcu_can_rx_stamp_t stamp = {0};
         dcu_can_frame_t received;
         CHECK(dcu_can_receive(0, &received, &stamp));
-        CHECK(stamp == 42 && received.id == frame.id && received.dlc == frame.dlc && received.flags == frame.flags);
+        CHECK(stamp.observed_ms == 42 && !stamp.eof.valid && received.id == frame.id &&
+              received.dlc == frame.dlc && received.flags == frame.flags);
         CHECK(!memcmp(received.data, frame.data, sizes[i]));
         for (unsigned b = sizes[i]; b < sizeof(received.data); ++b) CHECK(received.data[b] == 0);
         CHECK(!dcu_can_receive(0, &received, &stamp));
@@ -163,7 +307,7 @@ static void test_invalid_lengths(void)
             pending_rx = (mcan_rx_message_t){.std_id = 1, .dlc = dlc, .canfd_frame = fd};
             rx_fill = 1;
             mcan0_isr();
-            uint32_t stamp;
+            dcu_can_rx_stamp_t stamp;
             CHECK(!dcu_can_receive(0, &frame, &stamp));
         }
     }
@@ -173,9 +317,24 @@ static void test_invalid_lengths(void)
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
+    if (!strcmp(argv[1], "tdc_baseline") || !strcmp(argv[1], "tdc_comparison")) {
+        const dcu_can_channel_config_t channels[] = {
+            {1, 1000000, 5000000, true, true},
+            {3, 1000000, 5000000, true, true},
+        };
+        expected = channels;
+        expected_can3_tdco = !strcmp(argv[1], "tdc_comparison") ? 13U : 0U;
+        CHECK(dcu_mcan_init(channels, 2) == status_success);
+        CHECK(configured == 2 && enabled_irqs == 0xAU && enabled_phys == 0xAU);
+        return 0;
+    }
     dcu_can_frame_t frame = {.id = 1, .dlc = 8};
+    if (!strncmp(argv[1], "first_fault_", sizeof("first_fault_") - 1)) {
+        test_first_fault(argv[1]);
+        return 0;
+    }
     if (!strcmp(argv[1], "single_profile")) {
-        const dcu_can_channel_config_t channel = {2, 500000, 0, false};
+        const dcu_can_channel_config_t channel = {2, 500000, 0, false, false};
         expected = &channel;
         CHECK(dcu_mcan_init(&channel, 1) == status_success);
         CHECK(configured == 1 && enabled_irqs == 4 && enabled_phys == 4);
@@ -183,7 +342,7 @@ int main(int argc, char **argv)
         CHECK(dcu_can_bus_state(2) == DCU_CAN_BUS_ERROR_ACTIVE);
         for (unsigned c = 0; c <= 4; ++c) {
             if (c == 2) continue;
-            uint32_t stamp;
+            dcu_can_rx_stamp_t stamp;
             CHECK(!dcu_can_channel_config(c) && dcu_can_bus_state(c) == DCU_CAN_BUS_DISABLED);
             CHECK(!dcu_can_submit(c, &frame) && !dcu_can_receive(c, &frame, &stamp));
             CHECK(!dcu_can_pending(c) && !dcu_can_tx_free(c) && !dcu_can_tx_progress(c) && !dcu_can_rx_drops(c));
@@ -208,8 +367,76 @@ int main(int argc, char **argv)
         CHECK(!configured && !enabled_irqs && !enabled_phys);
         return 0;
     }
+    if (!strcmp(argv[1], "single_shot_failure")) {
+        const dcu_can_channel_config_t channel = {1, 1000000, 5000000, true, true};
+        expected = &channel;
+        CHECK(dcu_mcan_init(&channel, 1) == status_success);
+        CHECK(dcu_can_channel_config(1)->single_shot);
+        frame.flags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+        const dcu_can_tx_id_t id = dcu_can_submit(1, &frame);
+        CHECK(id && commits == 1);
+        finish_hardware(1, false, true); /* DAR reports unsuccessful attempts via TXBCF. */
+        dcu_can_tx_event_t event;
+        CHECK(dcu_can_take_tx_event(1, &event) && event.id == id && event.status == DCU_CAN_TX_CANCELLED);
+        CHECK(!dcu_can_pending(1) && dcu_can_tx_progress(1) == 0 && commits == 1);
+        return 0;
+    }
+    if (!strcmp(argv[1], "single_shot_eof") || !strcmp(argv[1], "bad_eof_mode")) {
+        const dcu_can_channel_config_t channel = {1, 1000000, 5000000, true, true};
+        expected = &channel;
+        force_sof = !strcmp(argv[1], "bad_eof_mode");
+        if (force_sof) {
+            CHECK(dcu_mcan_init(&channel, 1) == status_fail && !enabled_irqs && !enabled_phys);
+            return 0;
+        }
+        CHECK(dcu_mcan_init(&channel, 1) == status_success);
+        frame.flags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+        dcu_can_tx_id_t id = dcu_can_submit(1, &frame);
+        CHECK(id && staged.timestamp_capture_enable && staged.event_fifo_control);
+        CHECK(staged.message_marker_l == (uint8_t)id);
+        pending_event = (mcan_tx_event_fifo_elem_t){2, staged.message_marker_l, 0, true};
+        event_ready = true;
+        HPM_MCAN1->TSS1 = 1U;
+        finish_hardware(1, true, false);
+        dcu_can_tx_event_t event;
+        CHECK(dcu_can_take_tx_event(1, &event) && event.id == id && event.status == DCU_CAN_TX_COMPLETED);
+        CHECK(event.eof.valid && event.eof.tick == 0 && !HPM_MCAN1->TSS1);
+
+        pending_rx = staged;
+        pending_rx.rx_timestamp_captured = true;
+        pending_rx.rx_timestamp_pointer = 1;
+        HPM_MCAN1->TSS1 = 1U << 1;
+        tsu_ticks[1][1] = 456;
+        rx_fill = 1;
+        mcan1_isr();
+        dcu_can_frame_t received;
+        dcu_can_rx_stamp_t stamp;
+        CHECK(dcu_can_receive(1, &received, &stamp));
+        CHECK(stamp.observed_ms == 42 && stamp.eof.valid && stamp.eof.tick == 456 && !HPM_MCAN1->TSS1);
+        rx_fill = 1; // Capture bit with no valid TSU slot is not evidence.
+        mcan1_isr();
+        CHECK(dcu_can_receive(1, &received, &stamp) && !stamp.eof.valid);
+
+        id = dcu_can_submit(1, &frame);
+        CHECK(id && pending_event.message_marker != staged.message_marker_l);
+        event_ready = true; // Marker from the stale FIFO entry must not tag the new TX.
+        HPM_MCAN1->TSS1 = 1U;
+        finish_hardware(1, true, false);
+        CHECK(dcu_can_take_tx_event(1, &event) && event.id == id && !event.eof.valid && !HPM_MCAN1->TSS1);
+
+        id = dcu_can_submit(1, &frame);
+        CHECK(id && dcu_can_cancel_tx(1, id));
+        pending_event.message_marker = staged.message_marker_l;
+        event_ready = true;
+        HPM_MCAN1->TSS1 = 1U;
+        finish_hardware(1, true, true);
+        CHECK(dcu_can_take_tx_event(1, &event) && event.id == id &&
+              event.status == DCU_CAN_TX_CANCELLED && !event.eof.valid && !HPM_MCAN1->TSS1);
+        return 0;
+    }
     if (!strcmp(argv[1], "partial_profile")) {
-        const dcu_can_channel_config_t channels[] = {{0, 1000000, 5000000, true}, {2, 1000000, 0, false}};
+        const dcu_can_channel_config_t channels[] = {{0, 1000000, 5000000, true, false},
+                                                    {2, 1000000, 0, false, false}};
         expected = channels;
         fail_at = 2;
         CHECK(dcu_mcan_init(channels, 2) != status_success);
@@ -219,7 +446,7 @@ int main(int argc, char **argv)
         return 0;
     }
     if (!strcmp(argv[1], "transaction_ids")) {
-        const dcu_can_channel_config_t channels[] = {fd_bus0, {2, 1000000, 5000000, true}};
+        const dcu_can_channel_config_t channels[] = {fd_bus0, {2, 1000000, 5000000, true, false}};
         expected = channels;
         CHECK(dcu_mcan_init(channels, 2) == status_success);
         const dcu_can_tx_id_t id0 = dcu_can_submit(0, &frame);
