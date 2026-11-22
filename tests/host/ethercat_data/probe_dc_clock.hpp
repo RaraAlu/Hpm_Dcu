@@ -8,7 +8,8 @@
 namespace one_cycle {
 // The FRMW samples SM2 frame arrival, not the RK send call. The target is the
 // early, working part of the previous board trace, not a shift of the ESC edge.
-class ReferenceFollower {
+template<uint32_t PeriodNs>
+class BasicReferenceFollower {
 public:
     static constexpr int target_sof_ns = 37000;
     static constexpr int acquire_limit_ns = 2000, tracking_limit_ns = 500;
@@ -17,7 +18,7 @@ public:
 
     bool observe(uint64_t &dc_tick, uint32_t seq, uint32_t sof, bool acquisition)
     {
-        constexpr int period = static_cast<int>(period_ns);
+        constexpr int period = static_cast<int>(PeriodNs);
         int64_t error = int32_t(sof - uint32_t(dc_tick + target_sof_ns));
         // Ignore a free-running pre-configuration clock until IgH has set the DC offset.
         if (std::abs(error) > 8 * period) return false;
@@ -64,4 +65,5 @@ private:
     int integral_{}, step_{};
     bool have_last_{};
 };
+using ReferenceFollower = BasicReferenceFollower<period_ns>;
 }
