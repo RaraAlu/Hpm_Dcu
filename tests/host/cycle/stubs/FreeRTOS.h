@@ -3,6 +3,9 @@
 #include <stddef.h>
 #include <stdint.h>
 typedef int BaseType_t;
+typedef unsigned UBaseType_t;
+#define portSET_INTERRUPT_MASK_FROM_ISR() 0U
+#define portCLEAR_INTERRUPT_MASK_FROM_ISR(mask) ((void)(mask))
 typedef uint32_t StackType_t;
 typedef struct { uint32_t unused; } StaticTask_t;
 typedef void *TaskHandle_t;

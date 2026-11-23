@@ -87,11 +87,13 @@ uint32_t dcu_can_tx_progress(unsigned) { return 0; }
 uint32_t dcu_can_raw_tx_cancelled(unsigned) { return 0; }
 void dcu_can_cancel(unsigned) { ++cancellations; }
 static dcu_can_tx_id_t test_tx_serial;
+static dcu_can_tx_id_t terminal_through = UINT64_MAX;
 static dcu_can_eof_t test_tx_eof;
 static std::deque<dcu_can_tx_event_t> tx_events[ENCOS_CHANNEL_COUNT];
 static std::vector<dcu_can_tx_id_t> raw_ids[ENCOS_CHANNEL_COUNT];
 static uint32_t last_tx_eof_us[ENCOS_CHANNEL_COUNT];
 static bool tx_seen[ENCOS_CHANNEL_COUNT];
+static std::deque<std::pair<dcu_can_tx_id_t, dcu_can_frame_t>> staged_tx[ENCOS_CHANNEL_COUNT];
 bool dcu_can_tx_serial_ready(unsigned bus)
 {
     return tx_events[bus].empty() && (!tx_seen[bus] || test_us - last_tx_eof_us[bus] >= DCU_CAN_TX_EOF_GAP_US);
@@ -125,11 +127,23 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned owner, const dcu_can_frame
     if (owner == DCU_CAN_DEVICE_RAW) raw_ids[bus].push_back(test_tx_serial);
     return test_tx_serial;
 }
+dcu_can_tx_id_t dcu_can_submit_batch(unsigned bus, const dcu_can_batch_item_t *items, unsigned count, uint32_t cutoff)
+{
+    if (!allow_send || static_cast<int32_t>(cutoff - test_us) <= 0 || !staged_tx[bus].empty()) return 0;
+    const auto first = test_tx_serial + 1;
+    for (unsigned i = 0; i < count; ++i) staged_tx[bus].emplace_back(++test_tx_serial, *items[i].frame);
+    return first;
+}
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
 {
-    if (!allow_tx_events || tx_events[bus].empty()) return false;
+    if (!allow_tx_events || tx_events[bus].empty() || tx_events[bus].front().id > terminal_through) return false;
     *event = tx_events[bus].front();
     tx_events[bus].pop_front();
+    if (!staged_tx[bus].empty() && staged_tx[bus].front().first == event->id + 1 &&
+        (!event->eof.valid || event->status == DCU_CAN_TX_CANCELLED)) {
+        for (const auto &next : staged_tx[bus]) tx_events[bus].push_back({next.first, DCU_CAN_TX_CANCELLED, {}});
+        staged_tx[bus].clear();
+    }
     auto &ids = raw_ids[bus];
     ids.erase(std::remove(ids.begin(), ids.end(), event->id), ids.end());
     return true;
@@ -176,6 +190,15 @@ void run_cycle()
 {
     test_us = std::max(test_us + DCU_WORKER_PERIOD_US, test_ms * 1000U);
     motor_control_process();
+    for (unsigned bus = 0; bus < ENCOS_CHANNEL_COUNT; ++bus) {
+        if (staged_tx[bus].empty() || !dcu_can_tx_serial_ready(bus)) continue;
+        const auto item = staged_tx[bus].front();
+        staged_tx[bus].pop_front();
+        sent.emplace_back(bus, item.second);
+        last_tx_eof_us[bus] = test_us;
+        tx_seen[bus] = true;
+        tx_events[bus].push_back({item.first, DCU_CAN_TX_COMPLETED, test_tx_eof});
+    }
 }
 void deliver(unsigned bus, const dcu_can_frame_t &frame, dcu_can_eof_t eof = {})
 {
@@ -1101,8 +1124,10 @@ static void test_encos_four_axis_production_pdo(const char *scenario)
     bool command_expected = false;
     std::deque<std::pair<dcu_can_frame_t, dcu_can_rx_stamp_t>> held;
     const auto worker = [&] {
+        // The simulated controller supplies EOF/cancellation after observing the submission.
+        terminal_through = test_tx_serial;
         test_ms = (test_us + DCU_WORKER_PERIOD_US) / 1000U;
-        test_tx_eof = {test_us * 100U + 100U, true};
+        test_tx_eof = {test_us * 100U + 100U, true, test_us};
         run_cycle();
         while (read < sent.size()) {
             const auto [bus, tx] = sent[read++];
@@ -1114,7 +1139,7 @@ static void test_encos_four_axis_production_pdo(const char *scenario)
                 else if (!regular) { rx.data[2] = 0x3f; rx.data[3] = 0x80; } // 1 rpm or 1 A
             } else {
                 CHECK(command_expected && tx.dlc == sizeof(mit_zero) && !std::memcmp(tx.data, mit_zero, sizeof(mit_zero)));
-                CHECK(!last_tx_us || test_us - last_tx_us >= 100);
+                CHECK(!last_tx_us || test_us - last_tx_us >= DCU_CAN_TX_EOF_GAP_US);
                 last_tx_us = test_us;
                 ++transmitted[tx.id - 1];
                 rx = {tx.id, 8, tx.flags, {0x20, 0x80, static_cast<uint8_t>(tx.id), 0x80, 8, 0, 50, 50}};
@@ -1130,7 +1155,7 @@ static void test_encos_four_axis_production_pdo(const char *scenario)
                 }
             }
             const bool good_eof = !(command_expected && beat == 2 && tx.id == 3 && is("bad_eof"));
-            dcu_can_rx_stamp_t stamp{test_ms, {test_tx_eof.tick + 10U, good_eof}};
+            dcu_can_rx_stamp_t stamp{test_ms, {test_tx_eof.tick + 10U, good_eof, test_us}};
             if (command_expected && beat == 2 && tx.id == 3 && is("old_rx")) stamp.eof.tick = test_tx_eof.tick - 1U;
             if (endurance && tx.dlc == 8) {
                 held.emplace_back(rx, stamp);
@@ -1185,7 +1210,8 @@ static void test_encos_four_axis_production_pdo(const char *scenario)
         if (failed) std::memcpy(previous, ssc_txpdo, sizeof(previous));
         cycle(true, MC_AXIS_ARM | MC_AXIS_START_MOTION);
         CHECK(motor_control_cyclic_feedback_required() == 0x1e);
-        CHECK(motor_control_cyclic_feedback_missing() == (failed ? 1U << 3 : 0));
+        const bool stopped_tail = failed && (is("bad_tx_eof") || is("cancel_tx"));
+        CHECK(motor_control_cyclic_feedback_missing() == (stopped_tail ? 0x18U : failed ? 1U << 3 : 0));
         CHECK(motor_pdo::load<mc_board_tx_t>(ssc_txpdo, 0).AcceptedCycleSeq == sequence - failed);
         if (failed) CHECK(!std::memcmp(previous, ssc_txpdo, sizeof(previous)));
         const auto masks = evidence();
@@ -1193,10 +1219,10 @@ static void test_encos_four_axis_production_pdo(const char *scenario)
         CHECK(masks.requested == (regular ? 0 : all));
         CHECK(masks.tx_complete == masks.requested && masks.rx_matched == masks.requested);
         for (unsigned n = 0; n < 4; ++n) {
-            CHECK(transmitted[n] == beat - (n == 2 && failed && is("nonzero")));
+            CHECK(transmitted[n] == beat - ((n == 2 && failed && is("nonzero")) || (n == 3 && stopped_tail)));
             if (failed) {
                 const auto slot = 14 + n;
-                CHECK(read_sdo<uint32_t>(0x2400 + 16 * slot, 2) == beat - (n == 2 && no_tx));
+                CHECK(read_sdo<uint32_t>(0x2400 + 16 * slot, 2) == beat - ((n == 2 && no_tx) || (n == 3 && stopped_tail)));
                 MotorFeedback f{};
                 MotorDiagnostics d{};
                 CHECK(read_device(1 + n, f, d));
@@ -1456,7 +1482,7 @@ int main(int argc, char **argv)
         CHECK(test_input_size == (pipeline ? 160 : 128));
         CHECK(motor_control_boot_startup(uint64_t{startup_epoch} << 32));
         if (!std::strcmp(scenario, "_quota_equivalence")) CHECK(!write_limits(1U << 24));
-        test_tx_eof = {UINT32_MAX - 2, true};
+        test_tx_eof = {UINT32_MAX - 2, true, test_us};
         test_ms = 1;
         run_cycle();
         CHECK(startup_state() == DCU_GATEWAY_READY && sent.empty());
@@ -1519,7 +1545,7 @@ int main(int argc, char **argv)
 
         dcu_can_frame_t reply{can_id, 10, fd_brs, {0x80, 0x10, 0, 0x3f, 0x80}};
         if (!std::strcmp(scenario, "_baseline_equivalence") || !std::strcmp(scenario, "_quota_equivalence")) {
-            deliver(bus, reply, {1, true});
+            deliver(bus, reply, {1, true, test_us});
             motor_control_prepare_input();
             CHECK(axis_feedback(slot)->ValidFlags == 0x37);
             std::fwrite(wire, 1, motor_pdo::layout::active().bytes(1, false), stdout);
@@ -1529,7 +1555,7 @@ int main(int argc, char **argv)
         }
         if (pipeline) {
             // No sibling TX before the first retires, even if its submit-time gap elapsed.
-            test_tx_eof = {20, true};
+            test_tx_eof = {20, true, test_us};
             run_cycle();
             run_cycle();
             CHECK(sent.size() == 1 && tx_events[bus].size() == 1);
@@ -1538,7 +1564,7 @@ int main(int argc, char **argv)
             CHECK(sent.size() == 2 && sent.back().second.id == 3 && tx_events[bus].size() == 1);
             // Replies may still arrive in reverse order; TX pacing never waits on RX.
             reply.id = 3;
-            deliver(bus, reply, {21, true});
+            deliver(bus, reply, {21, true, test_us});
             motor_control_prepare_input();
             CHECK(axis_feedback(slot + 1)->ValidFlags == 0x37 && !axis_feedback(slot)->ValidFlags);
             CHECK(motor_control_neutral_feedback_pending());
@@ -1552,7 +1578,7 @@ int main(int argc, char **argv)
                 return 0;
             }
             reply.id = can_id;
-            deliver(bus, reply, {1, true}); // Valid for the first TX, not the second.
+            deliver(bus, reply, {1, true, test_us}); // Valid for the first TX, not the second.
             CHECK(!motor_control_neutral_feedback_pending());
             motor_control_prepare_input();
             CHECK(axis_feedback(slot)->ValidFlags == 0x37 && axis_feedback(slot + 1)->ValidFlags == 0x37);
@@ -1560,9 +1586,9 @@ int main(int argc, char **argv)
             run_cycle();
             run_cycle();
             CHECK(sent.size() == 4 && sent[2].second.data[15] == 1 && sent[3].second.data[15] == 1);
-            deliver(bus, reply, {21, true});
+            deliver(bus, reply, {21, true, test_us});
             reply.id = 3;
-            deliver(bus, reply, {22, true});
+            deliver(bus, reply, {22, true, test_us});
             submit(13, start, true);
             run_cycle();
             run_cycle();
@@ -1580,7 +1606,7 @@ int main(int argc, char **argv)
                 CHECK(!motor_control_neutral_feedback_pending());
             }
             allow_tx_events = true;
-            deliver(bus, reply, {1, true});
+            deliver(bus, reply, {1, true, test_us});
             motor_control_prepare_input();
             CHECK(axis_feedback(slot)->ValidFlags == (retry_recovers ? 0x37U : 0U));
             CHECK(sent.size() == 1 && !motor_control_neutral_feedback_pending());
@@ -1592,7 +1618,7 @@ int main(int argc, char **argv)
             return 0;
         }
         if (*scenario && std::strcmp(scenario, "_endurance")) {
-            dcu_can_eof_t eof{1, true};
+            dcu_can_eof_t eof{1, true, test_us};
             if (!std::strcmp(scenario, "_deadline"))
                 test_us += 300; // Worker step adds 50 us: equal to the reply timeout.
             else if (!std::strcmp(scenario, "_cancel"))
@@ -1636,7 +1662,7 @@ int main(int argc, char **argv)
             CHECK(sent.size() == 1);
             return 0;
         }
-        deliver(bus, reply, {1, true}); // Valid wrap of the 32-bit MCAN timebase.
+        deliver(bus, reply, {1, true, test_us}); // Valid wrap of the 32-bit MCAN timebase.
         motor_control_prepare_input();
         CHECK(axis_feedback(slot)->ValidFlags == 0x37 && axis_feedback(slot)->ActualPosition == 17453);
         CHECK(axis_feedback(slot)->StatusWord & 16U);
@@ -1654,7 +1680,7 @@ int main(int argc, char **argv)
             const auto &[actual_bus, frame] = sent.back();
             CHECK(actual_bus == bus && frame.id == can_id && frame.dlc == 10 && frame.flags == fd_brs);
             CHECK(std::memcmp(frame.data, mit, 15) == 0 && frame.data[15] == static_cast<uint8_t>(i));
-            deliver(bus, reply, {test_tx_eof.tick + 1U, true});
+            deliver(bus, reply, {test_tx_eof.tick + 1U, true, test_us});
             motor_control_prepare_input();
             CHECK(axis_feedback(slot)->ValidFlags == 0x37 && (axis_feedback(slot)->StatusWord & 16U));
             CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 11 + i);

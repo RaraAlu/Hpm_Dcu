@@ -12,7 +12,7 @@ enum {
     DCU_CAN_BUS_ERROR_PASSIVE = 2,
     DCU_CAN_BUS_OFF = 3,
     DCU_CAN_BUS_DISABLED = 4,
-    DCU_CAN_TX_EOF_GAP_US = 100,
+    DCU_CAN_TX_EOF_GAP_US = 50,
 };
 
 typedef struct {
@@ -24,14 +24,16 @@ typedef struct {
 } dcu_can_channel_config_t;
 
 typedef uint64_t dcu_can_tx_id_t;
+typedef struct {
+    unsigned owner;
+    const dcu_can_frame_t *frame;
+} dcu_can_batch_item_t;
 
 /* Hardware frame-end ticks are only comparable on the same controller. */
 typedef struct {
     uint32_t tick;
     bool valid;
-#if defined(CONFIG_PDO_PHASE_TRACE)
     uint32_t us; /* Captured TSU tick mapped to the worker clock, not IRQ/service time. */
-#endif
 } dcu_can_eof_t;
 
 typedef struct {
@@ -54,7 +56,7 @@ typedef struct {
 extern "C" {
 #endif
 
-/* Single worker owns submission, RX and TX event consumption. IDs are scoped
+/* Single worker owns admission, RX and TX event consumption. IDs are scoped
  * to the physical bus and this boot. Zero means the frame was not submitted.
  * A TX event says nothing about the validity of any received reply. */
 uint32_t dcu_can_rx_drops(unsigned bus);
@@ -85,6 +87,10 @@ void dcu_can_cancel(unsigned bus);
 void dcu_can_cancel_from_isr(unsigned bus);
 bool dcu_can_cancel_tx(unsigned bus, dcu_can_tx_id_t id);
 dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_frame_t *frame);
+/* All or none. Contiguous IDs identify individual results; only the first TXBAR is issued here. */
+dcu_can_tx_id_t dcu_can_submit_batch(unsigned bus, const dcu_can_batch_item_t *items, unsigned count,
+                                     uint32_t cutoff_us);
+void dcu_can_gap_elapsed_isr(void);
 /* Consume one terminal event. CANCELLED means revoked, not that the frame
  * could not have appeared on the bus during a cancellation race. */
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event);

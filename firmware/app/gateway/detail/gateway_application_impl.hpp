@@ -12,6 +12,10 @@
 
 namespace dcu::app::gateway_application::detail {
 
+struct BatchSample {
+    uint32_t sequence, preview, deadline_us, queued_us, tx_eof_us, rx_eof_us, matched_us, encoded_us;
+};
+
 // MainLoop and SDO callbacks share one task; only the C/C++ entry points own this object.
 class GatewayApplication {
 public:
@@ -56,6 +60,8 @@ public:
     void neutral_feedback_deadline() { stop_neutral_run(true); }
     bool neutral_feedback_pending() const;
     void set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us);
+    void preview_axis(unsigned a, const motor::Command &command);
+    void reset_preview(uint32_t seq) { preview_.mask = 0; preview_.sequence = seq; }
     uint32_t cyclic_feedback_required() const { return cyclic_.required; }
     uint32_t cyclic_feedback_missing() const { return cyclic_.required & ~cyclic_.matched; }
     void fault_cyclic_feedback(uint32_t missing);
@@ -115,9 +121,17 @@ private:
     ProductionStartup startup_{};
     uint32_t readiness_devices_{};
     uint32_t timestamped_encos_{}, loopback_devices_{};
+    struct {
+        uint32_t mask{}, sequence{};
+        uint32_t encoded_us[DCU_MOTOR_DEVICE_CAPACITY]{};
+        motor::Command commands[DCU_MOTOR_DEVICE_CAPACITY]{};
+        dcu_can_frame_t frames[DCU_MOTOR_DEVICE_CAPACITY]{};
+    } preview_{};
     struct CyclicFeedback {
         uint32_t period_us{}, deadline_us{}, required{}, submitted{}, completed{}, matched{};
         uint8_t buses{};
+        uint8_t queued[DCU_DEVICE_CAN_BUS_COUNT]{};
+        dcu_can_frame_t frames[DCU_MOTOR_DEVICE_CAPACITY]{};
         dcu_can_eof_t tx_eof[DCU_MOTOR_DEVICE_CAPACITY]{};
     } cyclic_{};
     struct NeutralRun {

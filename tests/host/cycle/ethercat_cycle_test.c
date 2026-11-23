@@ -66,10 +66,15 @@ static uint32_t read_sm2_into_slot(void *destination, uint16_t address, uint16_t
 }
 
 uint32_t dcu_time_now_us(void) { return time_us; }
+uint32_t dcu_time_ticks(void) { return time_us * 24U; }
+uint32_t dcu_time_tick_hz(void) { return 24000000U; }
 bool dcu_worker_timer_ack(void) { return true; }
+bool dcu_can_wake_timer_ack(void) { return false; }
+void dcu_can_gap_elapsed_isr(void) {}
 void dcu_worker_timer_start(void) {}
 uint32_t dcu_time_now_ms(void) { return time_us / 1000U; }
 void dcu_can_cancel_from_isr(unsigned channel) { CHECK(channel < 4); ++cancel_calls; }
+void motor_control_preview(const void *data) { (void)data; }
 void motor_control_output(const void *data)
 {
     ++output_calls;

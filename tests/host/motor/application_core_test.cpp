@@ -72,6 +72,16 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned slot, const dcu_can_frame_
     tx_events[bus].push_back(event);
     return tx_serial;
 }
+dcu_can_tx_id_t dcu_can_submit_batch(unsigned bus, const dcu_can_batch_item_t *items, unsigned count, uint32_t cutoff)
+{
+    if (static_cast<int32_t>(cutoff - now_us) <= 0) return 0;
+    const auto first = tx_serial + 1;
+    for (unsigned i = 0; i < count; ++i) {
+        dcu_can_submit(bus, items[i].owner, items[i].frame);
+        tx_events[bus].back().eof.tick += i * DCU_CAN_TX_EOF_GAP_US;
+    }
+    return first;
+}
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
 {
     if (tx_events[bus].empty()) return false;
@@ -223,18 +233,24 @@ static void cyclic_mit_sweep(app::OperatingMode mode)
     const auto first = sent.size();
     const uint32_t start = now_us + 1000;
     const uint32_t deadline = start + 1600;
+    app::reset_preview(command.board.sequence + 1);
+    for (unsigned a = 0; a < 4; ++a) {
+        auto preview = command.devices[a];
+        if (a == 1) preview.position_urad = 100000;
+        app::preview_axis(a, preview);
+    }
+    CHECK(sent.size() == first);
     app::set_cyclic_feedback_window(2000, deadline);
     const auto accepted = tick(&command);
     CHECK(accepted.accepted && app::cyclic_feedback_missing() == 0xf);
     CHECK(accepted.mirrored_devices == 0xf);
-    CHECK(sent.size() == first + 1);
-    now_us = start + 99;
-    app::process(nullptr);
-    CHECK(sent.size() == first + 1);
+    CHECK(sent.size() == first + 4);
     for (unsigned j = 1; j < 4; ++j) {
-        now_us = start + 100 * j;
+        now_us = start + DCU_CAN_TX_EOF_GAP_US * j;
         app::process(nullptr);
-        CHECK(sent.size() == first + j + 1 && app::cyclic_feedback_missing() == 0xf);
+        CHECK(sent.size() == first + 4 && app::cyclic_feedback_missing() == 0xf);
+        CHECK(sent[first+j].second.id == sent[first].second.id + j);
+        CHECK(!memcmp(sent[first+j].second.data, sent[first].second.data, 8));
     }
     const auto queue_reply = [&](unsigned sent_index, uint32_t eof, bool valid) {
         dcu_can_frame_t frame{};
@@ -247,15 +263,16 @@ static void cyclic_mit_sweep(app::OperatingMode mode)
         received[0].push_back(frame);
         dcu_can_eof_t stamp{};
         stamp.tick = eof;
+        stamp.us = eof;
         stamp.valid = valid;
         receive_eofs.push_back(stamp);
     };
     queue_reply(0, start - 1, true);
-    queue_reply(1, start + 101, false);
+    queue_reply(1, start + DCU_CAN_TX_EOF_GAP_US + 1, false);
     now_us = start + 350;
     app::process(nullptr);
     CHECK(app::cyclic_feedback_missing() == 0xf);
-    for (unsigned j = 4; j-- > 0;) queue_reply(j, start + 100 * j + 1, true);
+    for (unsigned j = 4; j-- > 0;) queue_reply(j, start + DCU_CAN_TX_EOF_GAP_US * j + 1, true);
     now_us = start + 450;
     app::process(nullptr);
     CHECK(app::cyclic_feedback_missing() == 0 && sent.size() == first + 4);

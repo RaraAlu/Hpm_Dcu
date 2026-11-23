@@ -98,6 +98,21 @@ bool motor_control_event_pdo(void)
 uint32_t motor_control_event_lease_us(void)
 { return uint32_t{application::profile_policy().max_command_lease_ms} * 1000U; }
 
+void motor_control_preview(const void *data)
+{
+    const auto mode = application::mode();
+    if (mode != application::OperatingMode::Motor && mode != application::OperatingMode::MotorWithRaw) return;
+    const auto board = pdo::board(data);
+    application::reset_preview(board.CycleSeq);
+    if ((board.BoardControl & 3U) != 1U) return;
+    uint32_t slots = board.AxisEnableMask & layout::active().command_axes;
+    while (slots) {
+        const unsigned slot = __builtin_ctz(slots);
+        slots &= slots - 1;
+        application::preview_axis(adapter::device_for_slot(slot), axis_codec::command(pdo::axis(data, slot)));
+    }
+}
+
 void motor_control_output(const void *data)
 {
     input.mode = application::mode();

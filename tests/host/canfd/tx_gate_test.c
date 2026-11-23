@@ -38,6 +38,18 @@ static void fault_timer(void)
 }
 
 bool dcu_tx_inhibited(void) { return inhibited; }
+static uint32_t due_us;
+static bool window_current = true;
+void dcu_can_arm_gap_at_us(uint32_t due) { due_us = due; }
+bool dcu_cyclic_tx_window_current(uint32_t cutoff) { (void)cutoff; return window_current; }
+static mcan_tx_frame_t dedicated[CANFD_PACED_SLOTS];
+int mcan_write_txbuf(MCAN_Type *base, uint32_t i, mcan_tx_frame_t *frame)
+{
+    CHECK(base == HPM_MCAN1 && i < CANFD_PACED_SLOTS && !(base->TXBRP & (1U << i)));
+    dedicated[i] = *frame;
+    return status_success;
+}
+void dcu_worker_wake_from_can_isr(void) {}
 uint32_t dcu_time_now_us(void) { return observed_us; }
 uint32_t dcu_time_now_ms(void) { return 42; }
 void test_enter_critical(void) { ++critical_depth; }
@@ -469,6 +481,52 @@ int main(int argc, char **argv)
               event.status == DCU_CAN_TX_CANCELLED && !event.eof.valid && !HPM_MCAN1->TSS1);
         return 0;
     }
+    if (!strncmp(argv[1], "paced_", 6)) {
+        const dcu_can_channel_config_t channels[] = {fd_bus0, {1, 1000000, 5000000, true, true}};
+        expected = channels;
+        CHECK(dcu_mcan_init(channels, 2) == status_success);
+        MCAN_Type *base = HPM_MCAN1;
+        base->TXFQS = 8;
+        dcu_can_frame_t frames[4] = {0};
+        dcu_can_batch_item_t items[4];
+        for (unsigned i = 0; i < 4; ++i) {
+            frames[i].id = i + 1; frames[i].flags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS; frames[i].dlc = 8;
+            items[i] = (dcu_can_batch_item_t){i, &frames[i]};
+        }
+        const dcu_can_tx_id_t first = dcu_can_submit_batch(1, items, 4, 1600);
+        CHECK(first && commits == 1 && base->TXBRP == 1);
+        for (unsigned i = 0; i < 4; ++i) {
+            CHECK(dedicated[i].std_id == i + 1 && dedicated[i].message_marker_l == (uint8_t)(first+i));
+            irq_flags = MCAN_INT_TX_EVT_FIFO_NEW_ENTRY;
+            base->TXBRP &= ~(1U << i); base->TXBTO |= 1U << i;
+            pending_event = (mcan_tx_event_fifo_elem_t){1, dedicated[i].message_marker_l, 0, true};
+            base->TSS1 = 1; event_ready = true;
+            tsu_ticks[1][0] = base->ATB = UINT32_MAX - 1000U + i * 30000U;
+            observed_us = 200U + 150U * i;
+            receive_isr(1);
+            if (i == 3) break;
+            CHECK(due_us == observed_us + DCU_CAN_TX_EOF_GAP_US && commits == i + 1);
+            base->ATB += s_tx_gap_ticks[1] - 1; observed_us = due_us;
+            test_enter_critical(); dcu_can_gap_elapsed_isr(); test_exit_critical();
+            CHECK(commits == i + 1);
+            if (i == 0 && !strcmp(argv[1], "paced_cancel")) dcu_can_cancel(1);
+            if (i == 0 && !strcmp(argv[1], "paced_stale")) window_current = false;
+            ++base->ATB;
+            test_enter_critical(); dcu_can_gap_elapsed_isr(); test_exit_critical();
+            if (i == 0 && strcmp(argv[1], "paced_chain")) {
+                CHECK(commits == 1 && !base->TXBRP); break;
+            }
+            CHECK(commits == i + 2 && base->TXBRP == (1U << (i+1)));
+        }
+        for (unsigned i = 0; i < 4; ++i) {
+            dcu_can_tx_event_t event;
+            CHECK(dcu_can_take_tx_event(1, &event) && event.id == first+i);
+            CHECK((event.status == DCU_CAN_TX_COMPLETED && event.eof.valid) ==
+                  (i == 0 || !strcmp(argv[1], "paced_chain")));
+        }
+        CHECK(!dcu_can_pending(1, DCU_CAN_DEVICE_ANY));
+        return 0;
+    }
     if (!strcmp(argv[1], "serial_eof_gap")) {
         const dcu_can_channel_config_t channels[] = {fd_bus0, {1, 1000000, 5000000, true, true}};
         expected = channels;
@@ -483,25 +541,27 @@ int main(int argc, char **argv)
         test_mcan[1].TSS1 = 1;
         const uint32_t eof = UINT32_MAX - 3999U;
         tsu_ticks[1][0] = eof;
-        test_mcan[1].ATB = eof + 19999U;
+        const uint32_t gap_ticks = 200U * DCU_CAN_TX_EOF_GAP_US;
+        test_mcan[1].ATB = eof + gap_ticks - 1U;
         finish_hardware(1, true, false);
         CHECK(!dcu_can_tx_serial_ready(1)); // A completed but unretired request still owns the bus.
         dcu_can_tx_event_t event;
         CHECK(dcu_can_take_tx_event(1, &event) && event.eof.valid && event.eof.tick == eof);
         CHECK(!dcu_can_tx_serial_ready(1));
-        test_mcan[1].ATB = eof + 20000U;
+        test_mcan[1].ATB = eof + gap_ticks;
         CHECK(!dcu_can_tx_serial_ready(1));
-        test_mcan[1].ATB = eof + 20001U;
+        test_mcan[1].ATB = eof + gap_ticks + 1U;
         CHECK(dcu_can_tx_serial_ready(1)); // No RX was observed.
 
         const dcu_can_tx_id_t next = dcu_can_submit(1, 1, &frame);
         CHECK(next && dcu_can_cancel_tx(1, next));
         finish_hardware(1, true, true);
         observed_us = UINT32_MAX - 49U;
+        const uint32_t retirement_us = observed_us;
         CHECK(dcu_can_take_tx_event(1, &event) && event.status == DCU_CAN_TX_CANCELLED);
-        observed_us = 50;
+        observed_us = retirement_us + DCU_CAN_TX_EOF_GAP_US;
         CHECK(!dcu_can_tx_serial_ready(1));
-        observed_us = 51;
+        ++observed_us;
         CHECK(dcu_can_tx_serial_ready(1));
         return 0;
     }

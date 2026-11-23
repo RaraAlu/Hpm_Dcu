@@ -126,6 +126,8 @@ bool read_device(unsigned device, motor::MotorFeedback &feedback, motor::MotorDi
 void prepare_publication(Publication &snapshot);
 bool neutral_feedback_pending();
 void set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us);
+void reset_preview(uint32_t sequence);
+void preview_axis(unsigned device, const motor::Command &command);
 uint32_t cyclic_feedback_required();
 uint32_t cyclic_feedback_missing();
 void fault_cyclic_feedback(uint32_t missing);

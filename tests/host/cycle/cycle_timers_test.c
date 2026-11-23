@@ -12,6 +12,7 @@ test_machine_timer_t test_machine_timer;
 static uint32_t machine_hz = 24000000U, micro_hz = 1000000U;
 static unsigned starts, clears, enables;
 static bool status;
+static uint32_t gap_reload;
 static int divider_result;
 
 uint32_t clock_get_frequency(uint32_t clock)
@@ -28,13 +29,19 @@ void gptmr_channel_get_default_config(void *timer, gptmr_channel_config_t *confi
 { (void)timer; memset(config, 0, sizeof(*config)); }
 void gptmr_channel_config(void *timer, uint32_t channel, gptmr_channel_config_t *config, bool start)
 {
-    CHECK(channel == 0 && !config->enable_cmp_output && !start);
-    CHECK(config->reload == (timer == HPM_GPTMR1 ? UINT32_MAX : 1200));
+    CHECK(channel <= 1 && !config->enable_cmp_output && !start);
+    CHECK(config->reload == (timer == HPM_GPTMR1 || channel == 1 ? UINT32_MAX : 1200));
 }
-void gptmr_start_counter(void *timer, uint32_t channel) { (void)timer; CHECK(channel == 0); ++starts; }
-void gptmr_clear_status(void *timer, uint32_t mask) { CHECK(timer == HPM_GPTMR2 && mask == 1); ++clears; }
-void gptmr_enable_irq(void *timer, uint32_t mask) { CHECK(timer == HPM_GPTMR2 && mask == 1); ++enables; }
-bool gptmr_check_status(void *timer, uint32_t mask) { CHECK(timer == HPM_GPTMR2 && mask == 1); return status; }
+void gptmr_start_counter(void *timer, uint32_t channel) { (void)timer; CHECK(channel <= 1); ++starts; }
+void gptmr_clear_status(void *timer, uint32_t mask) { CHECK(timer == HPM_GPTMR2 && (mask == 1 || mask == 2)); ++clears; }
+void gptmr_enable_irq(void *timer, uint32_t mask) { CHECK(timer == HPM_GPTMR2 && (mask == 1 || mask == 2)); ++enables; }
+bool gptmr_check_status(void *timer, uint32_t mask) { CHECK(timer == HPM_GPTMR2 && (mask == 1 || mask == 2)); return status; }
+void gptmr_stop_counter(void *timer, uint32_t ch) { CHECK(timer == HPM_GPTMR2 && ch == 1); }
+void gptmr_channel_reset_count(void *timer, uint32_t ch) { CHECK(timer == HPM_GPTMR2 && ch == 1); }
+void gptmr_channel_config_update_reload(void *timer, uint32_t ch, uint32_t value)
+{ CHECK(timer == HPM_GPTMR2 && ch == 1); gap_reload = value; }
+void intc_m_disable_irq(uint32_t irq) { CHECK(irq == IRQn_GPTMR2); }
+void intc_m_enable_irq(uint32_t irq) { CHECK(irq == IRQn_GPTMR2); }
 void intc_m_enable_irq_with_priority(uint32_t irq, uint32_t priority)
 { CHECK(irq == IRQn_GPTMR2 && priority == DCU_IRQ_WORKER_PRIORITY); ++enables; }
 
@@ -58,6 +65,8 @@ int main(int argc, char **argv)
     CHECK(dcu_time_now_ms() == 0);
     if (!strcmp(argv[1], "elapsed")) {
         test_machine_timer.MTIME = origin + 23999;
+        CHECK(dcu_time_tick_hz() == 24000000U);
+        CHECK(dcu_time_ticks() == (uint32_t)(origin + 23999));
         CHECK(dcu_time_now_ms() == 0);
         test_machine_timer.MTIME++;
         CHECK(dcu_time_now_ms() == 1);
@@ -82,10 +91,18 @@ int main(int argc, char **argv)
         }
     } else if (!strcmp(argv[1], "worker")) {
         dcu_worker_timer_start();
-        CHECK(starts == 2 && clears == 1 && enables == 2);
-        CHECK(!dcu_worker_timer_ack() && clears == 1);
+        CHECK(starts == 2 && clears == 2 && enables == 3);
+        CHECK(!dcu_worker_timer_ack() && clears == 2);
         status = true;
-        CHECK(dcu_worker_timer_ack() && clears == 2);
+        CHECK(dcu_worker_timer_ack() && clears == 3);
+        test_timebase.CHANNEL[0].CNT = UINT32_MAX - 19;
+        dcu_can_arm_gap_at_us(80);
+        CHECK(gap_reload == 2400 && starts == 3);
+        dcu_can_arm_gap_at_us(90);
+        CHECK(starts == 3);
+        dcu_can_arm_gap_at_us(30);
+        CHECK(gap_reload == 1200 && starts == 4);
+        CHECK(dcu_can_wake_timer_ack() && !wake_armed);
     } else {
         CHECK(false);
     }

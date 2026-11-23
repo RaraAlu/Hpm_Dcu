@@ -10,6 +10,7 @@ extern test_machine_timer_t test_machine_timer;
 #define HPM_MCHTMR (&test_machine_timer)
 #define clock_mchtmr0 3U
 #define IRQn_ESC_SYNC0 10U
+#define IRQn_ESC 9U
 #define IRQn_GPTMR2 11U
 #define clock_gptmr2 2U
 #define clock_gptmr1 1U
@@ -20,6 +21,7 @@ void restore_global_irq(uint32_t mask);
 #define ATTR_RAMFUNC
 #define SDK_DECLARE_EXT_ISR_M(irq, handler)
 void intc_m_disable_irq(uint32_t irq);
+void intc_m_enable_irq(uint32_t irq);
 void intc_m_enable_irq_with_priority(uint32_t irq, uint32_t priority);
 uint32_t disable_global_irq(uint32_t mask);
 void clock_add_to_group(uint32_t clock, uint32_t group);

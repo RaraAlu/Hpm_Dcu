@@ -29,6 +29,7 @@
 static volatile dcu_cycle_diagnostics_t cycle_diagnostics;
 /* Task-owned timing statistics, read via the debugger only after stopping. */
 static volatile dcu_cycle_timing_t cycle_timing;
+static volatile dcu_cyclic_latency_t cyclic_latency __attribute__((section(".noncacheable.bss")));
 static pdo_pipeline_t pipeline __attribute__((section(".fast_ram.bss")));
 
 /* These fields alone cross ISR/task ownership; every access is atomic. */
@@ -334,6 +335,7 @@ uint16_t dcu_cycle_start_outputs(void)
     (void)take(&handoff.sync0_pending);
     (void)take(&handoff.sync1_pending);
     write_handoff(&handoff.stage_sequence, 0U);
+    runtime.preview_sequence = 0U;
     write_handoff(&handoff.stage_busy, 0U);
     write_handoff(&handoff.stage_done_us, 0U);
     cycle_diagnostics.faults = 0;
@@ -372,6 +374,8 @@ uint16_t dcu_cycle_start_outputs(void)
     motor_control_set_neutral_window(0, 0);
     dcu_tx_allow();
     pipeline.stage_clock_us = dcu_time_now_us;
+    cyclic_latency = (dcu_cyclic_latency_t){.tick_hz = dcu_time_tick_hz()};
+    if (!read_handoff(&handoff.sm2_cycles)) pipeline.latch_clock_ticks = dcu_time_ticks;
 #if defined(CONFIG_SYNC0_HW_CAPTURE_TEST)
     if (!read_handoff(&handoff.sm2_cycles))
         dcu_sync0_capture_begin(pipeline.period_ns);
@@ -641,7 +645,9 @@ static void publish_due(void)
 #if defined(CONFIG_PDO_PHASE_TRACE)
     if (sample) sample->esc_begin_us = dcu_time_now_us();
 #endif
+    uint32_t elapsed_ticks = 0;
     if (cyclic) {
+        const uint32_t latch_ticks = read_handoff(&pipeline.latch_ticks);
         uint16_t capacity;
         const void *image = dcu_ssc_txpdo_buffer(&capacity);
         if (capacity < nPdInputSize || !hw_esc_publish_pdo_before(nEscAddrInputData, image, nPdInputSize, deadline)) {
@@ -649,6 +655,7 @@ static void publish_due(void)
             (void)check_faults(dcu_time_now_us());
             return;
         }
+        elapsed_ticks = dcu_time_ticks() - latch_ticks;
     } else {
         PDO_InputMapping();
     }
@@ -664,6 +671,18 @@ static void publish_due(void)
     DCU_FIRST_TRACE_AT(end_us, DCU_FIRST_SM3_WRITTEN, epoch, packed_us, 0, 0);
     DCU_FIRST_TRACE(DCU_FIRST_SM3_MARK, epoch, marked, read_handoff(&pipeline.faults), end_us);
     if (marked) {
+        if (cyclic) {
+            if (!cyclic_latency.count) {
+                cyclic_latency.first_epoch = epoch;
+                cyclic_latency.min_ticks = elapsed_ticks;
+            }
+            if (elapsed_ticks < cyclic_latency.min_ticks) cyclic_latency.min_ticks = elapsed_ticks;
+            if (elapsed_ticks > cyclic_latency.max_ticks) cyclic_latency.max_ticks = elapsed_ticks;
+            cyclic_latency.last_epoch = epoch;
+            cyclic_latency.last_sync_us = sync_us;
+            cyclic_latency.last_end_us = end_us;
+            ++cyclic_latency.count;
+        }
         cycle_diagnostics.published_epoch = epoch;
 #if defined(CONFIG_PDO_PHASE_TRACE)
         phase_record_publish(sample, end_us);
@@ -695,6 +714,23 @@ static void raw_pdo_step(void)
         PDO_InputMapping();
         raw_pdo.published = true;
     }
+}
+
+static void preview_ready_sm2(void)
+{
+    static uint8_t image[PDO_PIPELINE_RX_MAX] __attribute__((aligned(4)));
+    if (!runtime.outputs_running || read_handoff(&handoff.sm2_cycles) ||
+        read_handoff(&pipeline.ready) >= PDO_PIPELINE_SLOT_COUNT ||
+        runtime.preview_sequence == read_handoff(&handoff.stage_sequence)) return;
+    // Only the PDI producer can recycle or write the image. Sync0 remains unmasked.
+    intc_m_disable_irq(IRQn_ESC);
+    const uint32_t index = read_handoff(&pipeline.ready);
+    if (index < PDO_PIPELINE_SLOT_COUNT) {
+        runtime.preview_sequence = pipeline.slot[index].sequence;
+        memcpy(image, pipeline.slot[index].data, pipeline.output_size);
+    }
+    intc_m_enable_irq_with_priority(IRQn_ESC, DCU_IRQ_PDI_PRIORITY);
+    if (index < PDO_PIPELINE_SLOT_COUNT) motor_control_preview(image);
 }
 
 void dcu_cycle_step(void)
@@ -795,6 +831,7 @@ void dcu_cycle_step(void)
         read_handoff(&pipeline.cyclic_epoch) == read_handoff(&pipeline.epoch) && !read_handoff(&pipeline.published)) return;
 
 ssc:
+    if (!raw_pdo.configured) preview_ready_sm2();
     ticks = take(&handoff.timer_pending);
     if (ticks > DCU_MAX_DEFERRED_SSC_TICKS) {
         if (runtime.outputs_running && !raw_pdo.configured)
@@ -820,6 +857,13 @@ ssc:
     uint32_t duration = dcu_time_now_us() - start;
     if (duration > cycle_diagnostics.worker_max_us)
         cycle_diagnostics.worker_max_us = duration;
+}
+
+DCU_FAST_CODE bool dcu_cyclic_tx_window_current(uint32_t cutoff_us)
+{
+    return read_handoff(&pipeline.enabled) && !read_handoff(&pipeline.faults) &&
+           !read_handoff(&pipeline.published) &&
+           pdo_pipeline_cyclic_deadline(&pipeline, read_handoff(&pipeline.sync_us)) == cutoff_us;
 }
 
 void dcu_cycle_watchdog_isr(void)

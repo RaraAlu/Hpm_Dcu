@@ -47,6 +47,7 @@ typedef struct {
     } all_filters_config;
 } mcan_config_t;
 #define MCAN_EVENT_TRANSMIT 1U
+#define MCAN_INT_TX_EVT_FIFO_NEW_ENTRY (1U << 12)
 #define MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE 0x10000000U
 #define MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE 0x08000000U
 #define MCAN_EVENT_ERROR (2U | MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE | MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE)
@@ -59,6 +60,7 @@ typedef struct {
 #define MCAN_FILTER_ELEM_CFG_STORE_IN_RX_FIFO0_IF_MATCH 1U
 #define MCAN_CAN_ID_TYPE_STANDARD 0U
 #define MCAN_CCCR_DAR_MASK 0x40U
+#define MCAN_CCCR_INIT_MASK 1U
 #define MCAN_CCCR_UTSU_MASK 0x400U
 #define MCAN_TSCFG_TBPRE_GET(x) (((x) >> 8) & 255U)
 #define MCAN_TSCFG_TSUE_MASK 0x1U
@@ -84,6 +86,7 @@ int mcan_init(MCAN_Type *base, mcan_config_t *config, uint32_t clock);
 void mcan_interrupt_line_select(MCAN_Type *base, uint32_t mask, unsigned line);
 void mcan_cancel_tx_buf_send_request(MCAN_Type *base, unsigned index);
 int mcan_request_and_fill_txfifo(MCAN_Type *base, mcan_tx_frame_t *frame, uint32_t *index);
+int mcan_write_txbuf(MCAN_Type *base, uint32_t index, mcan_tx_frame_t *frame);
 int mcan_transmit_via_txfifo_nonblocking(MCAN_Type *base, mcan_tx_frame_t *frame, uint32_t *index);
 void mcan_send_add_request(MCAN_Type *base, uint32_t index);
 #endif

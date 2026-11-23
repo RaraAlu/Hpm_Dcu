@@ -23,14 +23,22 @@ _Static_assert(DCU_WORKER_TASK_PRIORITY < configMAX_PRIORITIES,
 _Static_assert(configMAX_SYSCALL_INTERRUPT_PRIORITY == DCU_IRQ_KERNEL_PRIORITY,
                "Kernel and cycle IRQ masks must use the same threshold");
 
-SDK_DECLARE_EXT_ISR_M(DCU_WORKER_TIMER_IRQ, dcu_worker_timer_isr)
-void dcu_worker_timer_isr(void)
+void dcu_worker_wake_from_can_isr(void)
 {
-    if (!dcu_worker_timer_ack()) return;
-    dcu_cycle_watchdog_isr();
     BaseType_t wake = pdFALSE;
     vTaskNotifyGiveFromISR(worker_task.handle, &wake);
     portYIELD_FROM_ISR(wake);
+}
+SDK_DECLARE_EXT_ISR_M(DCU_WORKER_TIMER_IRQ, dcu_worker_timer_isr)
+void dcu_worker_timer_isr(void)
+{
+    const UBaseType_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
+    const bool periodic = dcu_worker_timer_ack();
+    const bool gap = dcu_can_wake_timer_ack();
+    if (gap) dcu_can_gap_elapsed_isr();
+    portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
+    if (periodic) dcu_cycle_watchdog_isr();
+    if (periodic) dcu_worker_wake_from_can_isr();
 }
 static void worker(void *argument)
 {

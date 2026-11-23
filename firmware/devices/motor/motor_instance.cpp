@@ -196,8 +196,7 @@ void MotorInstance::check_startup(uint32_t now)
 }
 bool MotorInstance::encode_control(dcu_can_frame_t &frame) const
 {
-    return active() && driver_->encode(
-        state_.phase == MotorPhase::Running ? state_.command : state_.startup_command, frame) == Result::Ok;
+    return active() && preview_control(effective_control(), frame);
 }
 void MotorInstance::control_submitted(uint32_t now, dcu_can_tx_id_t id)
 {

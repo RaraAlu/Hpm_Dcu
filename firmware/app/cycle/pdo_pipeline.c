@@ -137,6 +137,7 @@ DCU_FAST_CODE bool pdo_pipeline_sync(pdo_pipeline_t *p, uint32_t now_us)
     uint32_t index = exchange(&p->ready, PDO_PIPELINE_NO_SLOT);
     if (index < PDO_PIPELINE_SLOT_COUNT &&
         claim(&p->slot[index].state, SLOT_READY, SLOT_LATCHED)) {
+        if (p->latch_clock_ticks) store(&p->latch_ticks, p->latch_clock_ticks());
         p->slot[index].epoch = epoch;
         p->slot[index].sync_us = now_us;
         uint32_t old = exchange(&p->latched, index);

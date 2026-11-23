@@ -19,7 +19,7 @@ typedef struct {
     bool local_sync_fault, safeop_error_acknowledged;
     bool command_pending;
     uint16_t ssc_sync0_latch;
-    uint32_t pending_epoch, processed_epoch;
+    uint32_t pending_epoch, processed_epoch, preview_sequence;
 } dcu_cycle_runtime_t;
 
 #define DCU_RAW_PDO_QUEUE_DEPTH 4U
@@ -30,6 +30,10 @@ typedef struct {
 } dcu_raw_pdo_t;
 
 #define DCU_CYCLE_TIMING_BINS 2048U
+
+typedef struct {
+    uint32_t tick_hz, count, min_ticks, max_ticks, first_epoch, last_epoch, last_sync_us, last_end_us;
+} dcu_cyclic_latency_t;
 
 typedef struct {
     uint32_t count, min_us, max_us, overflow;

@@ -22,9 +22,21 @@ typedef struct {
 typedef struct {
     dcu_can_tx_id_t id;
     unsigned in_flight_device;
-    bool revoked;
+    bool revoked, feedback, launched;
+    uint32_t wire_id;
     dcu_can_eof_t eof;
 } tx_slot_t;
+
+typedef struct {
+    unsigned next, count;
+    uint32_t cutoff_us, eof_tick;
+    bool armed;
+} paced_tx_t;
+
+typedef struct {
+    uint32_t hz, samples, min_gap_ticks, completed_without_eof;
+    uint32_t completed[CANFD_TX_FIFO_DEPTH];
+} feedback_stats_t;
 
 typedef struct {
     dcu_can_eof_t eof;
@@ -44,7 +56,7 @@ typedef struct {
     uint32_t ir, psr, ecr;
     uint32_t txbrp, txbto, txbcf, txefs, rxf0s;
     uint32_t nbtp, dbtp, tdcr, cccr;
-    dcu_can_tx_id_t tx_id[CANFD_TX_FIFO_DEPTH];
+    dcu_can_tx_id_t tx_id[CANFD_TX_SLOTS];
 } canfd_first_fault_t;
 
 typedef struct {

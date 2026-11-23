@@ -50,6 +50,8 @@ typedef struct {
     uint32_t advance_us;
     uint16_t output_size;
     uint32_t (*stage_clock_us)(void);
+    uint32_t (*latch_clock_ticks)(void);
+    uint32_t latch_ticks;
 } pdo_pipeline_t;
 
 typedef struct {

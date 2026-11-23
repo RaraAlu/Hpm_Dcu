@@ -40,6 +40,12 @@ public:
     bool supports_legacy_queries() const { return driver_ && driver_->capabilities().legacy_parameter_queries; }
     bool consume_feedback(const CanFrame &, uint32_t timestamp_ms, uint32_t now_ms);
     bool encode_control(dcu_can_frame_t &frame) const;
+    bool preview_control(const Command &command, CanFrame &frame) const {
+        return driver_ && driver_->encode(command, frame) == Result::Ok;
+    }
+    const Command &effective_control() const {
+        return state_.phase == detail::MotorPhase::Running ? state_.command : state_.startup_command;
+    }
     void control_submitted(uint32_t now_ms, dcu_can_tx_id_t id);
     bool finish_tx(const dcu_can_tx_event_t &event);
     void set_sdo_lease(uint16_t lease_ms, uint32_t now_ms);

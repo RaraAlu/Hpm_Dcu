@@ -12,6 +12,9 @@ bool gptmr_check_status(void *timer, uint32_t mask);
 void gptmr_clear_status(void *timer, uint32_t mask);
 void gptmr_enable_irq(void *timer, uint32_t mask);
 void gptmr_start_counter(void *timer, uint32_t channel);
+void gptmr_stop_counter(void *timer, uint32_t channel);
+void gptmr_channel_reset_count(void *timer, uint32_t channel);
+void gptmr_channel_config_update_reload(void *timer, uint32_t channel, uint32_t reload);
 void gptmr_channel_get_default_config(void *timer, gptmr_channel_config_t *config);
 void gptmr_channel_config(void *timer, uint32_t channel, gptmr_channel_config_t *config, bool start);
 #endif

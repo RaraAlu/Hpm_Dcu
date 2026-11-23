@@ -12,6 +12,7 @@ extern "C" {
 bool dcu_timebase_init(void);
 void dcu_worker_timer_start(void);
 bool dcu_worker_timer_ack(void);
+bool dcu_can_wake_timer_ack(void);
 
 #ifdef __cplusplus
 }

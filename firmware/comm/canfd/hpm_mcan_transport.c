@@ -56,7 +56,7 @@ static const uint32_t s_irq[DCU_CAN_BUS_COUNT] = {
 
 #if defined(MCAN_SOC_MSG_BUF_IN_AHB_RAM) && MCAN_SOC_MSG_BUF_IN_AHB_RAM
 /* HPM5E31 的 MCAN Message RAM 位于专用 AHB SRAM，四路必须各自独立。 */
-_Static_assert((CANFD_RX_FIFO_DEPTH + CANFD_TX_FIFO_DEPTH) *
+_Static_assert((CANFD_RX_FIFO_DEPTH + CANFD_TX_SLOTS) *
                    (MCAN_MESSAGE_HEADER_SIZE_IN_BYTES + DCU_CAN_MAX_PAYLOAD) +
                    CANFD_TX_FIFO_DEPTH * sizeof(mcan_tx_event_fifo_elem_t) + sizeof(uint32_t) <=
                    MCAN_MSG_BUF_SIZE_IN_WORDS * sizeof(uint32_t),
@@ -68,9 +68,18 @@ ATTR_PLACE_AT(".ahb_sram") static uint32_t s_mcan_ram[DCU_CAN_BUS_COUNT][MCAN_MS
 static rx_queue_t s_rx[DCU_CAN_BUS_COUNT];
 static volatile uint32_t s_rx_lost[DCU_CAN_BUS_COUNT];
 static uint32_t s_tx_progress[DCU_CAN_BUS_COUNT];
-static tx_slot_t s_tx[DCU_CAN_BUS_COUNT][CANFD_TX_FIFO_DEPTH];
+static tx_slot_t s_tx[DCU_CAN_BUS_COUNT][CANFD_TX_SLOTS];
+static paced_tx_t s_chain[DCU_CAN_BUS_COUNT];
+/* Read after the run without stopping the CPU or depending on the SDO mailbox. */
+static volatile feedback_stats_t s_feedback_stats[DCU_CAN_BUS_COUNT] __attribute__((section(".noncacheable.bss")));
+static volatile uint32_t s_feedback_gap_by_slot[DCU_CAN_BUS_COUNT][CANFD_TX_FIFO_DEPTH]
+    __attribute__((section(".noncacheable.bss")));
+static volatile uint32_t s_feedback_gap_after[DCU_CAN_BUS_COUNT][CANFD_PACED_SLOTS]
+    __attribute__((section(".noncacheable.bss")));
+static void collect_tx_eofs(unsigned bus, MCAN_Type *base);
 static tx_retirement_t s_tx_retirement[DCU_CAN_BUS_COUNT];
 static uint32_t s_tx_gap_ticks[DCU_CAN_BUS_COUNT];
+static uint32_t s_tsu_hz[DCU_CAN_BUS_COUNT];
 static uint32_t s_raw_tx_cancelled[DCU_CAN_BUS_COUNT];
 static dcu_can_tx_id_t s_tx_serial[DCU_CAN_BUS_COUNT];
 /* First observed protocol error per active bus/boot, read by JTAG with the target halted. */
@@ -137,13 +146,13 @@ static void latch_protocol_fault(unsigned bus, canfd_fault_source_t source, uint
     dst->dbtp = base->DBTP;
     dst->tdcr = base->TDCR;
     dst->cccr = base->CCCR;
-    for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i)
+    for (unsigned i = 0; i < CANFD_TX_SLOTS; ++i)
         dst->tx_id[i] = s_tx[bus][i].id;
     __atomic_store_n(&dst->valid, 1U, __ATOMIC_RELEASE);
 }
 
 #if defined(CONFIG_PDO_PHASE_TRACE)
-static uint32_t s_retx_observed, s_tsu_hz[DCU_CAN_BUS_COUNT];
+static uint32_t s_retx_observed;
 
 uint32_t dcu_can_observed_retx_count(void)
 {
@@ -225,11 +234,11 @@ static dcu_can_eof_t read_eof(unsigned bus, bool captured, unsigned slot)
     if (!captured || !mcan_is_tsu_timestamp_available(base, slot))
         return (dcu_can_eof_t){0};
     dcu_can_eof_t eof = {.tick = mcan_read_32bit_tsu_timestamp(base, slot), .valid = true};
-#if defined(CONFIG_PDO_PHASE_TRACE)
     const uint32_t current = base->ATB;
     const uint32_t now_us = dcu_time_now_us();
-    eof.us = now_us - (uint32_t)((uint64_t)(current - eof.tick) * 1000000U / s_tsu_hz[bus]);
-#endif
+    const uint32_t hz = s_tsu_hz[bus], age = current - eof.tick;
+    eof.us = now_us - (hz % 1000000U == 0 ? age / (hz / 1000000U) :
+                       (uint32_t)((uint64_t)age * 1000000U / hz));
     return eof;
 }
 
@@ -248,6 +257,11 @@ static void receive_isr(uint32_t bus)
     else if (flags & s_protocol_errors) (void)sample_psr(bus);
 #endif
     mcan_clear_interrupt_flags(base,flags);
+    if ((flags & MCAN_INT_TX_EVT_FIFO_NEW_ENTRY) && channel->timestamp_eof) {
+        const UBaseType_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
+        collect_tx_eofs(bus, base);
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
+    }
     while(mcan_get_rxfifo_fill_level(base,0U)) {
         mcan_rx_message_t f;
         if(mcan_read_rxfifo(base,0,&f)!=status_success)break;
@@ -283,6 +297,10 @@ static void receive_isr(uint32_t bus)
     }
     if (flags & MCAN_EVENT_TRANSMIT) led_pulse(bus, CANFD_LED_TX);
     if(flags&MCAN_EVENT_ERROR)led_pulse(bus,CANFD_LED_ERR);
+    const uint32_t left = s_chain[bus].cutoff_us - dcu_time_now_us();
+    if (s_chain[bus].cutoff_us && left && left <= DCU_SYNC_MAX_PERIOD_NS / 1000U &&
+        (flags & (MCAN_INT_TX_EVT_FIFO_NEW_ENTRY | MCAN_INT_RXFIFO0_NEW_MSG | MCAN_EVENT_TRANSMIT)))
+        dcu_worker_wake_from_can_isr();
 }
 
 static void mcan0_isr(void) { receive_isr(0U); }
@@ -390,7 +408,7 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         config.ram_config.rxfifos[1].enable = 0U;
         config.ram_config.enable_rxbuf = false;
         config.ram_config.txbuf_data_field_size = MCAN_DATA_FIELD_SIZE_64BYTES;
-        config.ram_config.txbuf_dedicated_txbuf_elem_count = 0U;
+        config.ram_config.txbuf_dedicated_txbuf_elem_count = channel->timestamp_eof ? CANFD_PACED_SLOTS : 0U;
         config.ram_config.txbuf_fifo_or_queue_elem_count = CANFD_TX_FIFO_DEPTH;
         config.ram_config.txfifo_or_txqueue_mode = 0U; /* 0=FIFO，保持槽位发送顺序。 */
         config.ram_config.enable_tx_evt_fifo = channel->timestamp_eof;
@@ -400,8 +418,9 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
          * TX 完成中断有两级开关：除全局 TC 外，还必须在 TXBTIE 中使能
          * 对应 TX FIFO 元素；否则报文能正常上总线，但不会产生 TX 灯事件。
          */
-        config.txbuf_trans_interrupt_mask = (1UL << CANFD_TX_FIFO_DEPTH) - 1UL;
+        config.txbuf_trans_interrupt_mask = (1UL << (channel->timestamp_eof ? CANFD_TX_SLOTS : CANFD_TX_FIFO_DEPTH)) - 1UL;
         config.interrupt_mask = MCAN_INT_RXFIFO0_NEW_MSG
+                              | (channel->timestamp_eof ? MCAN_INT_TX_EVT_FIFO_NEW_ENTRY : 0U)
                               | MCAN_EVENT_TRANSMIT
                               | MCAN_EVENT_ERROR;
         status = mcan_init(s_mcan[bus], &config, clock_hz);
@@ -421,9 +440,9 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
             if (!tsu_clock_hz) return status_fail;
             const uint64_t scale = (1U + MCAN_TSCFG_TBPRE_GET(s_mcan[bus]->TSCFG)) * UINT64_C(1000000);
             s_tx_gap_ticks[bus] = (uint32_t)(((uint64_t)tsu_clock_hz * DCU_CAN_TX_EOF_GAP_US + scale - 1U) / scale);
-#if defined(CONFIG_PDO_PHASE_TRACE)
-            s_tsu_hz[bus] = tsu_clock_hz / (1U + MCAN_TSCFG_TBPRE_GET(s_mcan[bus]->TSCFG));
-#endif
+            const uint32_t divisor = 1U + MCAN_TSCFG_TBPRE_GET(s_mcan[bus]->TSCFG);
+            s_tsu_hz[bus] = (tsu_clock_hz + divisor - 1U) / divisor;
+            s_feedback_stats[bus].hz = s_tsu_hz[bus];
         }
         s_channels[bus] = *channel;
     }
@@ -443,13 +462,22 @@ DCU_FAST_CODE bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, dcu_can_rx_
     if (!dcu_can_channel_config(bus) || !f || !stamp) return false;
     rx_queue_t *q=&s_rx[bus];intc_m_disable_irq(s_irq[bus]);
     bool available=q->read!=q->write;
+    if (available && (int32_t)(s_chain[bus].cutoff_us - dcu_time_now_us()) > 0) {
+        for (unsigned i = 0; i < s_chain[bus].count; ++i) {
+            const tx_slot_t *slot = &s_tx[bus][i];
+            if (slot->feedback && slot->wire_id == q->item[q->read].frame.id) {
+                available = false; /* Deliver this request's terminal event before its reply. */
+                break;
+            }
+        }
+    }
     if(available){*f=q->item[q->read].frame;*stamp=q->item[q->read].stamp;q->read=(q->read+1)&31;}
     intc_m_enable_irq(s_irq[bus]);return available;
 }
 bool dcu_can_pending(unsigned bus, unsigned device)
 {
     if (!dcu_can_channel_config(bus)) return false;
-    for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i)
+    for (unsigned i = 0; i < CANFD_TX_SLOTS; ++i)
         if (s_tx[bus][i].id && (device == DCU_CAN_DEVICE_ANY || s_tx[bus][i].in_flight_device == device ||
                                 (device != DCU_CAN_DEVICE_RAW && s_tx[bus][i].in_flight_device == DCU_CAN_DEVICE_ANY) ||
                                 s_tx[bus][i].in_flight_device == DCU_CAN_DEVICE_RAW)) return true;
@@ -493,6 +521,68 @@ uint32_t dcu_can_tx_progress(unsigned bus)
     return dcu_can_channel_config(bus) ? s_tx_progress[bus] : 0;
 }
 
+static void cancel_tail(unsigned bus)
+{
+    paced_tx_t *b = &s_chain[bus];
+    b->armed = false;
+    while (b->next < b->count) s_tx[bus][b->next++].revoked = true;
+}
+
+/* Task launches slot zero; only the EOF/timer IRQs can launch its successors.
+ * All payloads already reside in dedicated message RAM, outside the ordinary FIFO. */
+static DCU_FAST_CODE bool launch_paced(unsigned bus)
+{
+    paced_tx_t *b = &s_chain[bus];
+    MCAN_Type *base = s_mcan[bus];
+    const unsigned i = b->next;
+    tx_slot_t *slot = &s_tx[bus][i];
+    const uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    const bool ok = !slot->revoked && !dcu_tx_inhibited() && !(base->CCCR & MCAN_CCCR_INIT_MASK) &&
+        dcu_cyclic_tx_window_current(b->cutoff_us) && (int32_t)(b->cutoff_us - dcu_time_now_us()) > 0;
+    if (ok) {
+        slot->launched = true;
+        ++b->next;
+        const uint32_t before = base->ATB;
+        fenceiorw();
+        mcan_send_add_request(base, i);
+        fenceiorw();
+        const uint32_t after = base->ATB;
+        if (i) {
+            const uint32_t gap = before - b->eof_tick;
+            s_feedback_gap_by_slot[bus][slot->in_flight_device] = gap;
+            s_feedback_gap_after[bus][slot->in_flight_device] = after - b->eof_tick;
+            if (!s_feedback_stats[bus].samples || gap < s_feedback_stats[bus].min_gap_ticks)
+                s_feedback_stats[bus].min_gap_ticks = gap;
+            ++s_feedback_stats[bus].samples;
+        }
+    }
+    restore_global_irq(irq & CSR_MSTATUS_MIE_MASK);
+    if (!ok) cancel_tail(bus);
+    return ok;
+}
+
+static DCU_FAST_CODE void service_gap(unsigned bus)
+{
+    paced_tx_t *b = &s_chain[bus];
+    if (!b->armed) return;
+    const uint32_t elapsed = s_mcan[bus]->ATB - b->eof_tick;
+    if (elapsed < s_tx_gap_ticks[bus]) {
+        const uint32_t remaining = s_tx_gap_ticks[bus] - elapsed;
+        const uint32_t hz = s_tsu_hz[bus], per_us = hz / 1000000U;
+        const uint32_t wait = hz % 1000000U == 0 ? (remaining + per_us - 1U) / per_us :
+            (uint32_t)(((uint64_t)remaining * 1000000U + hz - 1U) / hz);
+        dcu_can_arm_gap_at_us(dcu_time_now_us() + wait);
+        return;
+    }
+    b->armed = false;
+    (void)launch_paced(bus);
+}
+
+DCU_FAST_CODE void dcu_can_gap_elapsed_isr(void)
+{
+    for (unsigned bus = 0; bus < DCU_CAN_BUS_COUNT; ++bus) service_gap(bus);
+}
+
 static void collect_tx_eofs(unsigned bus, MCAN_Type *base)
 {
     mcan_tx_event_fifo_elem_t event;
@@ -500,10 +590,19 @@ static void collect_tx_eofs(unsigned bus, MCAN_Type *base)
         const dcu_can_eof_t eof = read_eof(bus, event.tx_timestamp_captured, event.tx_timestamp_pointer);
         // ET=2 can report transmission despite cancellation; slot retirement also checks revocation.
         if (!eof.valid || (event.event_type != 1 && event.event_type != 2)) continue;
-        for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
+        for (unsigned i = 0; i < CANFD_TX_SLOTS; ++i) {
             tx_slot_t *slot = &s_tx[bus][i];
-            if (slot->id && (uint8_t)slot->id == event.message_marker) {
+            if (slot->launched && (uint8_t)slot->id == event.message_marker) {
                 slot->eof = eof;
+                paced_tx_t *b = &s_chain[bus];
+                if (slot->feedback && b->next == i + 1U && b->next < b->count) {
+                    if (slot->revoked || event.event_type != 1) cancel_tail(bus);
+                    else {
+                        b->eof_tick = eof.tick;
+                        b->armed = true;
+                        service_gap(bus);
+                    }
+                }
                 break;
             }
         }
@@ -522,11 +621,21 @@ DCU_FAST_CODE bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event
     const uint32_t completed = base->TXBTO;
     const uint32_t cancelled = base->TXBCF;
     const uint32_t terminal = (completed | cancelled) & ~pending;
-    if (channel->timestamp_eof) collect_tx_eofs(bus, base);
-    for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
+    if (channel->timestamp_eof && !s_chain[bus].count) collect_tx_eofs(bus, base);
+    for (unsigned i = 0; i < CANFD_TX_SLOTS; ++i) {
         tx_slot_t *slot = &s_tx[bus][i];
-        if (!slot->id || !(terminal & (1U << i))) continue;
-        const bool sent = !slot->revoked && (completed & (1U << i));
+        if (!slot->id || (slot->launched ? !(terminal & (1U << i)) : !slot->revoked)) continue;
+        const bool sent = slot->launched && !slot->revoked && (completed & (1U << i));
+        if (slot->feedback) {
+            if (sent && !slot->eof.valid && !dcu_tx_inhibited() &&
+                (int32_t)(s_chain[bus].cutoff_us - dcu_time_now_us()) > 0)
+                continue;
+            if ((!sent || !slot->eof.valid) && s_chain[bus].next == i + 1U) cancel_tail(bus);
+            if (sent && slot->in_flight_device < CANFD_TX_FIFO_DEPTH) {
+                ++s_feedback_stats[bus].completed[slot->in_flight_device];
+                if (!slot->eof.valid) ++s_feedback_stats[bus].completed_without_eof;
+            }
+        }
         *event = (dcu_can_tx_event_t){.id = slot->id, .status = sent ? DCU_CAN_TX_COMPLETED : DCU_CAN_TX_CANCELLED};
         if (sent) event->eof = slot->eof;
 #if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
@@ -538,13 +647,14 @@ DCU_FAST_CODE bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event
         }
 #endif
         // Raw slots may retire out of order; observing the drain bounds all of them.
-        s_tx_retirement[bus] = (tx_retirement_t){
+        if (slot->launched) s_tx_retirement[bus] = (tx_retirement_t){
             .eof = slot->in_flight_device != DCU_CAN_DEVICE_RAW ? event->eof : (dcu_can_eof_t){0},
             .observed_us = dcu_time_now_us(), .seen = true,
         };
         if (sent) ++s_tx_progress[bus];
         else if (slot->in_flight_device == DCU_CAN_DEVICE_RAW) ++s_raw_tx_cancelled[bus];
         *slot = (tx_slot_t){0};
+        if (s_chain[bus].count && !dcu_can_pending(bus, DCU_CAN_DEVICE_ANY)) s_chain[bus].count = 0;
         found = true;
         break;
     }
@@ -562,15 +672,21 @@ static bool cancel_locked(unsigned bus, dcu_can_tx_id_t id)
     capture_pending_protocol_fault(bus, CANFD_FAULT_BEFORE_CANCEL);
     const uint32_t pending = s_mcan[bus]->TXBRP;
     uint32_t requests = 0;
-    for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
+    bool stopped = false;
+    for (unsigned i = 0; i < CANFD_TX_SLOTS; ++i) {
         tx_slot_t *slot = &s_tx[bus][i];
-        if (slot->id && (!id || slot->id == id) && !slot->revoked && (pending & (1U << i))) {
+        if (!slot->id || (id && slot->id != id) || slot->revoked) continue;
+        if (slot->feedback && s_chain[bus].next < s_chain[bus].count) {
+            cancel_tail(bus);
+            stopped = true;
+        }
+        if (slot->launched && (pending & (1U << i))) {
             slot->revoked = true;
             requests |= 1U << i;
         }
     }
     if (requests) s_mcan[bus]->TXBCR = requests;
-    return requests != 0;
+    return requests != 0 || stopped;
 }
 
 void dcu_can_cancel(unsigned bus)
@@ -602,7 +718,7 @@ bool dcu_can_drain_raw(unsigned bus)
 {
     if (!dcu_can_channel_config(bus)) return true;
     bool empty = true;
-    for (unsigned i = 0; i < CANFD_TX_FIFO_DEPTH; ++i) {
+    for (unsigned i = 0; i < CANFD_TX_SLOTS; ++i) {
         const tx_slot_t *slot = &s_tx[bus][i];
         if (slot->id && slot->in_flight_device == DCU_CAN_DEVICE_RAW) {
             empty = false;
@@ -612,28 +728,35 @@ bool dcu_can_drain_raw(unsigned bus)
     return empty;
 }
 
-DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_frame_t *f)
+static mcan_tx_frame_t format_tx(const dcu_can_frame_t *f, bool timestamp, uint8_t marker)
 {
-    const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
-    if (!channel || !f || (!channel->fd && (f->flags & DCU_CAN_FLAG_FD))) return 0;
-    if (dcu_tx_inhibited() || s_tx_serial[bus] == UINT64_MAX) return 0;
-    if (!dcu_can_frame_valid(f) || dcu_can_bus_state(bus) == DCU_CAN_BUS_OFF) return 0;
-    mcan_tx_frame_t tx={0};uint32_t index;
+    mcan_tx_frame_t tx={0};
     tx.use_ext_id = (f->flags & DCU_CAN_FLAG_EXTENDED) != 0;
     if (tx.use_ext_id) tx.ext_id = f->id; else tx.std_id = f->id;
     tx.dlc = f->dlc;
     tx.canfd_frame = (f->flags & DCU_CAN_FLAG_FD) != 0;
     tx.bitrate_switch = (f->flags & DCU_CAN_FLAG_BRS) != 0;
-    if (channel->timestamp_eof) {
+    if (timestamp) {
         tx.timestamp_capture_enable = true;
         tx.event_fifo_control = true;
         // At most one FIFO's worth of unconsumed tags can coexist per bus.
-        tx.message_marker_l = (uint8_t)(s_tx_serial[bus] + 1U);
+        tx.message_marker_l = marker;
     }
     memcpy(tx.data_8, f->data, dcu_can_dlc_to_bytes(f->dlc, tx.canfd_frame));
+    return tx;
+}
+
+DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_frame_t *f)
+{
+    const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
+    if (!channel || !f || (!channel->fd && (f->flags & DCU_CAN_FLAG_FD)) || s_chain[bus].count ||
+        dcu_tx_inhibited() || s_tx_serial[bus] == UINT64_MAX || !dcu_can_frame_valid(f) ||
+        dcu_can_bus_state(bus) == DCU_CAN_BUS_OFF) return 0;
+    mcan_tx_frame_t tx = format_tx(f, channel->timestamp_eof, (uint8_t)(s_tx_serial[bus] + 1U));
+    uint32_t index;
     intc_m_disable_irq(s_irq[bus]);
     dcu_can_tx_id_t id = 0;
-    if (mcan_request_and_fill_txfifo(s_mcan[bus], &tx, &index) == status_success && index < CANFD_TX_FIFO_DEPTH) {
+    if (mcan_request_and_fill_txfifo(s_mcan[bus], &tx, &index) == status_success && index < CANFD_TX_SLOTS) {
         /* Stage outside the kernel critical section. Only the final gate, tag
          * and TX request are indivisible with respect to the fault timer.
          * Sync0/PDI remain enabled above the kernel priority threshold. */
@@ -642,7 +765,7 @@ DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, cons
          * clears that slot's TXBTO and TXBCF before starting this request. */
         if (!dcu_tx_inhibited() && !s_tx[bus][index].id) {
             id = ++s_tx_serial[bus];
-            s_tx[bus][index] = (tx_slot_t){.id = id, .in_flight_device = device};
+            s_tx[bus][index] = (tx_slot_t){.id = id, .in_flight_device = device, .launched = true};
             mcan_send_add_request(s_mcan[bus], index);
 #if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
             if (bus == 2 && dcu_first_pdo_trace_active())
@@ -657,4 +780,37 @@ DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, cons
         led_pulse(bus,CANFD_LED_ERR);
     }
     return id;
+}
+
+DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit_batch(unsigned bus, const dcu_can_batch_item_t *items,
+                                                   unsigned count, uint32_t cutoff_us)
+{
+    const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
+    if (!channel || !channel->timestamp_eof || !items || !count || count > CANFD_PACED_SLOTS ||
+        s_tx_serial[bus] > UINT64_MAX - count || !dcu_can_tx_serial_ready(bus) || dcu_tx_inhibited() ||
+        dcu_can_bus_state(bus) == DCU_CAN_BUS_OFF) return 0;
+    const dcu_can_tx_id_t first = s_tx_serial[bus] + 1U;
+    unsigned owners = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        const dcu_can_frame_t *f = items[i].frame;
+        const unsigned owner = items[i].owner;
+        if (!f || owner >= CANFD_PACED_SLOTS || (owners & (1U << owner)) || !dcu_can_frame_valid(f) ||
+            (!channel->fd && (f->flags & DCU_CAN_FLAG_FD))) return 0;
+        owners |= 1U << owner;
+        mcan_tx_frame_t tx = format_tx(f, true, (uint8_t)(first + i));
+        if (mcan_write_txbuf(s_mcan[bus], i, &tx) != status_success) return 0;
+    }
+    taskENTER_CRITICAL();
+    s_chain[bus] = (paced_tx_t){.cutoff_us = cutoff_us, .count = count};
+    for (unsigned i = 0; i < count; ++i)
+        s_tx[bus][i] = (tx_slot_t){.id = first + i, .in_flight_device = items[i].owner,
+                                   .feedback = true, .wire_id = items[i].frame->id};
+    const bool ok = launch_paced(bus);
+    if (ok) s_tx_serial[bus] += count;
+    else {
+        memset(s_tx[bus], 0, count * sizeof(tx_slot_t));
+        s_chain[bus] = (paced_tx_t){0};
+    }
+    taskEXIT_CRITICAL();
+    return ok ? first : 0;
 }

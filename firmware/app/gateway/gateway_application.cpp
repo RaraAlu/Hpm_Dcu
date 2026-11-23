@@ -15,6 +15,14 @@ using motor::RESULT_OK;
 using motor::RESULT_STATE;
 
 namespace {
+volatile BatchSample s_batch_sample[DCU_MOTOR_DEVICE_CAPACITY] __attribute__((section(".noncacheable.bss")));
+bool same_command(const motor::Command &a, const motor::Command &b)
+{
+    return a.mode == b.mode && a.control_bits == b.control_bits && a.reserved_flags == b.reserved_flags &&
+        a.position_urad == b.position_urad && a.velocity_urad_s == b.velocity_urad_s && a.torque_mNm == b.torque_mNm &&
+        a.current_cA == b.current_cA && a.current_limit_dA == b.current_limit_dA &&
+        a.kp_centi == b.kp_centi && a.kd_milli == b.kd_milli;
+}
 bool newer(uint32_t a, uint32_t b)
 {
     uint32_t d = a - b;
@@ -81,6 +89,7 @@ bool GatewayApplication::command_permitted(uint32_t now) const
 }
 void GatewayApplication::stop_all(uint16_t fault)
 {
+    preview_.mask = 0;
     cyclic_.required = cyclic_.submitted = cyclic_.completed = cyclic_.matched = 0;
     cyclic_.buses = 0;
     stop_neutral_run(fault != 0);
@@ -113,10 +122,21 @@ void GatewayApplication::set_neutral_window(uint32_t period_ns, uint32_t cutoff_
 
 void GatewayApplication::set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us)
 {
+    for (auto &slots : cyclic_.queued) slots = 0;
     cyclic_.period_us = period_us;
     cyclic_.deadline_us = deadline_us;
     cyclic_.required = cyclic_.submitted = cyclic_.completed = cyclic_.matched = 0;
     cyclic_.buses = 0;
+}
+
+void GatewayApplication::preview_axis(unsigned a, const motor::Command &command)
+{
+    if (a < device_count_ && (timestamped_encos_ & (1U << a)) &&
+        command.mode == motor::ControlMode::Impedance && devices_[a].preview_control(command, preview_.frames[a])) {
+        preview_.commands[a] = command;
+        preview_.encoded_us[a] = dcu_time_now_us();
+        preview_.mask |= 1U << a;
+    }
 }
 
 void GatewayApplication::fault_cyclic_feedback(uint32_t missing)
@@ -402,6 +422,26 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
                 }
                 const bool accepted = devices_[a].accept(cmd, permit, now);
                 const bool active = devices_[a].active();
+                if (accepted && active && (cyclic_.required & (1U << a))) {
+                    auto &frame = cyclic_.frames[a];
+                    // A first motion request may have been replaced by a position hold.
+                    const bool prepacked = preview_.sequence == b.sequence && (preview_.mask & (1U << a)) &&
+                        same_command(preview_.commands[a], devices_[a].effective_control());
+                    s_batch_sample[a].sequence = b.sequence;
+                    s_batch_sample[a].preview = prepacked;
+                    s_batch_sample[a].deadline_us = cyclic_.deadline_us;
+                    s_batch_sample[a].queued_us = s_batch_sample[a].tx_eof_us = 0;
+                    s_batch_sample[a].rx_eof_us = s_batch_sample[a].matched_us = 0;
+                    if (prepacked)
+                        frame = preview_.frames[a];
+                    else if (!devices_[a].encode_control(frame)) {
+                        devices_[a].stop(2);
+                        continue;
+                    }
+                    frame.flags = state_.channels[c].frame_format ? DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS : 0;
+                    s_batch_sample[a].encoded_us = prepacked ? preview_.encoded_us[a] : dcu_time_now_us();
+                    cyclic_.queued[c] |= 1U << j;
+                }
 #if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
                 if (c == 2)
                     DCU_FIRST_TRACE(DCU_FIRST_AXIS_ACCEPT, devices_[a].can_id(), permit, accepted, active);
@@ -543,12 +583,17 @@ DCU_FAST_CODE bool GatewayApplication::consume_feedback(unsigned c, const dcu_ca
         if (cyclic_.required & bit) {
             const auto tx = cyclic_.tx_eof[index];
             const uint32_t delta = stamp.eof.tick - tx.tick;
+            const uint32_t lead_us = cyclic_.deadline_us - stamp.eof.us;
             const auto before = device.cyclic_feedback_count();
             const bool matched = !(cyclic_.matched & bit) && tx.valid && stamp.eof.valid &&
-                delta && delta < 0x80000000U && static_cast<int32_t>(cyclic_.deadline_us - now_us) > 0 &&
+                delta && delta < 0x80000000U && lead_us != 0 && lead_us <= cyclic_.period_us &&
                 device.consume_feedback(frame, stamp.observed_ms, now) && device.active() &&
                 device.cyclic_feedback_count() != before;
-            if (matched) cyclic_.matched |= bit;
+            if (matched) {
+                cyclic_.matched |= bit;
+                s_batch_sample[index].rx_eof_us = stamp.eof.us;
+                s_batch_sample[index].matched_us = dcu_time_now_us();
+            }
             if (matched && startup_.enforced()) startup_.observe(index, stamp.observed_ms, now);
             if (c == 2)
                 DCU_FIRST_TRACE(DCU_FIRST_RX_CONSUMED, frame.id, matched,
@@ -600,6 +645,7 @@ DCU_FAST_CODE void GatewayApplication::collect_tx_events(unsigned c)
             if ((cyclic_.submitted & (1U << a)) && event.status == DCU_CAN_TX_COMPLETED) {
                 cyclic_.completed |= 1U << a;
                 cyclic_.tx_eof[a] = event.eof;
+                if (event.eof.valid) s_batch_sample[a].tx_eof_us = event.eof.us;
             }
             break;
         }
@@ -608,54 +654,54 @@ DCU_FAST_CODE void GatewayApplication::collect_tx_events(unsigned c)
 
 DCU_FAST_CODE void GatewayApplication::service_cyclic_feedback(uint32_t now, uint32_t now_us)
 {
-    if (!command_permitted(now) || dcu_tx_inhibited() ||
-        static_cast<int32_t>(cyclic_.deadline_us - now_us) <= 0) return;
+    if (!command_permitted(now) || dcu_tx_inhibited()) return;
+    const bool tx_open = static_cast<int32_t>(cyclic_.deadline_us - now_us) > 0;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
         if (!(cyclic_.buses & (1U << c))) {
-            if (neutral_run_.active && neutral_run_.bus == c) process_bus(c, now, now_us);
+            if (tx_open && neutral_run_.active && neutral_run_.bus == c) process_bus(c, now, now_us);
             continue;
         }
         if (dcu_can_bus_state(c) == DCU_CAN_BUS_OFF) continue;
         collect_tx_events(c);
         auto &scheduler = schedule_[c];
         scheduler.refill(now);
-        ControlSet controls{};
-        controls.period_us = cyclic_.period_us;
-        for (unsigned slot = 0; slot < bus_device_count_[c]; ++slot) {
-            const unsigned a = devices_on_bus_[c][slot];
-            if (((cyclic_.required & ~cyclic_.submitted) & (1U << a)) && devices_[a].active() &&
-                !transactions_.busy(c, a)) controls.active_mask |= 1U << slot;
-        }
-        controls.first_send_mask = controls.active_mask;
+        const unsigned queued = cyclic_.queued[c];
         const unsigned cost = 2U * frame_us(c, 8);
-        const int selected = scheduler.next_control(controls, now_us, cost,
-                                                    controls.active_mask && dcu_can_tx_serial_ready(c));
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        if (c == 2)
-            DCU_FIRST_TRACE(DCU_FIRST_SCHEDULE, controls.active_mask | (uint32_t{controls.first_send_mask} << 8) |
-                            (scheduler.can_afford(cost) ? 1U << 16 : 0U), static_cast<uint32_t>(selected),
-                            controls.active_mask ? dcu_first_pdo_can_gate() : DCU_FIRST_CAN_READY, now_us);
-#endif
-        // Give the next eligible TX its slot before inspecting the RX queue.
-        dcu_can_frame_t frame;
-        if (selected >= 0 && static_cast<int32_t>(cyclic_.deadline_us - dcu_time_now_us()) > 0) {
-            const unsigned slot = static_cast<unsigned>(selected);
-            const unsigned a = devices_on_bus_[c][slot];
-            auto &device = devices_[a];
-            if (device.encode_control(frame)) {
-                frame.flags = state_.channels[c].frame_format ? DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS : 0;
-                if (const auto tx = dcu_can_submit(c, slot, &frame)) {
-                    scheduler.control_submitted(slot, now_us, controls.period_us, !device.control_sent(), cost);
-                    device.control_submitted(now, tx);
-                    cyclic_.submitted |= 1U << a;
-                } else {
-                    device.record_tx_drop();
-                    ++state_.channel_tx_drop[c];
-                    ++state_.tx_total;
-                    device.stop(6);
+        if (tx_open && queued && scheduler.can_afford(__builtin_popcount(queued) * cost) &&
+            dcu_can_tx_serial_ready(c)) {
+            dcu_can_batch_item_t items[DCU_MOTOR_DEVICES_PER_BUS];
+            unsigned count = 0;
+            bool busy = false;
+            for (unsigned mask = queued; mask; mask &= mask - 1U) {
+                const unsigned slot = __builtin_ctz(mask);
+                const unsigned a = devices_on_bus_[c][slot];
+                if (!devices_[a].active()) { cyclic_.queued[c] &= ~(1U << slot); continue; }
+                if (transactions_.busy(c, a)) { busy = true; break; }
+                items[count++] = {slot, &cyclic_.frames[a]};
+            }
+            if (count && !busy) {
+                const uint32_t queued_us = dcu_time_now_us();
+                const auto first = dcu_can_submit_batch(c, items, count, cyclic_.deadline_us);
+                cyclic_.queued[c] = 0;
+                for (unsigned i = 0; i < count; ++i) {
+                    const auto slot = items[i].owner;
+                    const unsigned a = devices_on_bus_[c][slot];
+                    auto &device = devices_[a];
+                    if (first) {
+                        s_batch_sample[a].queued_us = queued_us;
+                        scheduler.control_submitted(slot, now_us, cyclic_.period_us, !device.control_sent(), cost);
+                        device.control_submitted(now, first + i);
+                        cyclic_.submitted |= 1U << a;
+                    } else if (static_cast<int32_t>(cyclic_.deadline_us - dcu_time_now_us()) > 0) {
+                        device.record_tx_drop();
+                        ++state_.channel_tx_drop[c];
+                        ++state_.tx_total;
+                        device.stop(6);
+                    }
                 }
-            } else device.stop(2);
+            }
         }
+        dcu_can_frame_t frame;
         dcu_can_rx_stamp_t stamp;
         for (unsigned n = 0; n < DCU_MOTOR_DEVICES_PER_BUS && dcu_can_receive(c, &frame, &stamp); ++n) {
             // A reply can arrive between the initial retirement check and this dequeue.
@@ -1060,6 +1106,8 @@ bool read_device(unsigned device, motor::MotorFeedback &feedback, motor::MotorDi
 void prepare_publication(Publication &snapshot) { application.prepare_publication(snapshot); }
 bool neutral_feedback_pending() { return application.neutral_feedback_pending(); }
 void set_cyclic_feedback_window(uint32_t period, uint32_t deadline) { application.set_cyclic_feedback_window(period, deadline); }
+void reset_preview(uint32_t seq) { application.reset_preview(seq); }
+void preview_axis(unsigned a, const motor::Command &command) { application.preview_axis(a, command); }
 uint32_t cyclic_feedback_required() { return application.cyclic_feedback_required(); }
 uint32_t cyclic_feedback_missing() { return application.cyclic_feedback_missing(); }
 void fault_cyclic_feedback(uint32_t missing) { application.fault_cyclic_feedback(missing); }

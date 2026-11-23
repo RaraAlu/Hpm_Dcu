@@ -90,6 +90,10 @@ class CanFdTxGateTest(unittest.TestCase):
     def test_serial_tx_waits_for_eof_and_gap_not_rx_or_other_buses(self):
         self.run_command([str(self.executable), "serial_eof_gap"])
 
+    def test_dedicated_chain_needs_no_worker_or_reply_and_cannot_outlive_window(self):
+        for scenario in ("paced_chain", "paced_cancel", "paced_stale"):
+            self.run_command([str(self.executable), scenario])
+
     def test_a_controller_not_in_eof_mode_cannot_activate(self):
         self.run_command([str(self.executable), "bad_eof_mode"])
 
