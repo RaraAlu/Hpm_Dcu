@@ -97,7 +97,8 @@ bool dcu_can_tx_serial_ready(unsigned bus)
 }
 bool dcu_can_pending(unsigned bus, unsigned owner)
 {
-    return owner == DCU_CAN_DEVICE_RAW && !raw_ids[bus].empty();
+    return owner == DCU_CAN_DEVICE_ANY ? !tx_events[bus].empty() :
+        owner == DCU_CAN_DEVICE_RAW && !raw_ids[bus].empty();
 }
 bool dcu_can_drain_raw(unsigned bus)
 {
@@ -978,7 +979,94 @@ static void test_registered_passthrough()
     CHECK(sent.size() == 3 && !read_sdo<uint8_t>(0x2101, 6) && !raw_drops());
 }
 
-static void test_encos_four_axis_production_pdo()
+static void test_hot_topology(bool timeout)
+{
+    constexpr uint32_t full = (15U << 14) | (1U << 21), subset = full ^ (1U << 15);
+    const auto rx = gRxAssign, tx = gTxAssign;
+    const auto state = readiness();
+    const auto stage = [&](uint32_t axes, uint32_t generation, bool valid = true, uint32_t buses = 12) {
+        uint16_t words[44]{};
+        auto *p = reinterpret_cast<uint8_t *>(words);
+        std::memcpy(p, &state.boot_id, 8);
+        std::memcpy(p + 8, &state.revision, 4);
+        std::memcpy(p + 12, &generation, 4);
+        std::memcpy(p + 16, &buses, 4);
+        std::memcpy(p + 20, &axes, 4);
+        std::memcpy(p + 24, object<mc_layout_identity_t>(0x2102)->Sha256, 32);
+        std::memcpy(p + 56, state.digest, 32);
+        if (!valid) p[25] ^= 1;
+        return MC_OD_Write(0x2103, 1, sizeof(words), words, 0);
+    };
+    const auto commit = [](uint32_t gen) {
+        uint16_t words[2];
+        std::memcpy(words, &gen, 4);
+        return MC_OD_Write(0x2103, 6, 4, words, 0);
+    };
+    const auto assign = [](unsigned idx, const TMC_ASSIGN &catalogue, uint16_t omit, uint16_t omit2 = 0) {
+        uint16_t n = 0;
+        CHECK(!MC_AssignWrite(idx, 0, 1, &n, 0));
+        for (unsigned i = 0; i < catalogue.u16SubIndex0; ++i) {
+            uint16_t block = catalogue.aEntries[i];
+            if (block != omit && block != omit2) CHECK(!MC_AssignWrite(idx, ++n, 2, &block, 0));
+        }
+        CHECK(!MC_AssignWrite(idx, 0, 1, &n, 0));
+    };
+    CHECK(read_sdo<uint32_t>(0x2103, 4) == full);
+    CHECK(stage(subset, 1) && stage(subset, 0, false) && stage(subset | 1, 0) && stage(full, 0, true, 4));
+    nAlStatus = STATE_OP;
+    CHECK(stage(subset, 0));
+    nAlStatus = STATE_PREOP;
+    tx_events[2].push_back({++test_tx_serial, DCU_CAN_TX_CANCELLED, {}});
+    allow_tx_events = false;
+    CHECK(!stage(subset, 0) && raw_state() == RawState::Draining);
+    CHECK(switch_action(1) && commit(1) && switch_request(0));
+    if (timeout) {
+        test_ms += 21;
+        run_cycle();
+        CHECK(raw_state() == RawState::Faulted && topology_pending() && commit(1));
+        CHECK(!motor_control_commit_topology(1) && read_sdo<uint32_t>(0x2103, 2) == 0);
+        CHECK(sent.empty());
+    }
+    allow_tx_events = true;
+    if (timeout) { CHECK(!switch_action(1)); CHECK(!stage(subset, 0)); }
+    run_cycle();
+    CHECK(!switch_action(1) && commit(2) && commit(1));
+    CHECK(read_sdo<uint32_t>(0x2103, 4) == full);
+    assign(0x1c12, rx, 0x162f);
+    assign(0x1c13, tx, 0x1a2e); // Same width, wrong physical axis.
+    CHECK(commit(1));
+    uint16_t in = 0, out = 0;
+    assign(0x1c13, tx, 0x1a2f);
+    CHECK(motor_control_mapping(&in, &out) != 0 && read_sdo<uint32_t>(0x2103, 2) == 0);
+    uint8_t old_image[216]{};
+    mc_board_rx_t stale{};
+    stale.CycleSeq = 99; stale.BoardControl = 1; stale.CommandLeaseMs = 10;
+    stale.InterfaceVersion = MC_INTERFACE_VERSION; stale.AxisEnableMask = full;
+    motor_pdo::store(old_image, 0, stale);
+    motor_control_output(old_image);
+    CHECK(!commit(1) && commit(1) && !motor_control_mapping(&in, &out) && in == 224 && out == 192);
+    motor_control_process();
+    CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == 0 && !cyclic_feedback_required());
+    CHECK(read_sdo<uint32_t>(0x2103, 4) == subset && !adapter::configured_device(15) &&
+          adapter::configured_device(16)->can_id == 3 && read_sdo<uint32_t>(0x2103, 2) == 1);
+    CHECK(!topology_pending() && owner() == OWNER_NONE);
+    for (unsigned i = 0; i < 50; ++i) { ++test_ms; run_cycle(); }
+    CHECK(!sent.empty());
+    for (const auto &submit : sent) CHECK(submit.first == 2 && submit.second.id != 2 && submit.second.dlc == 2);
+    CHECK(stage(full, 0) && !stage(full, 1) && !switch_action(1));
+    assign(0x1c12, rx, 0);
+    assign(0x1c13, tx, 0);
+    CHECK(!commit(2) && !motor_control_mapping(&in, &out) && in == 256 && out == 216);
+    CHECK(adapter::configured_device(15)->can_id == 2 && readiness().boot_id == state.boot_id &&
+          read_sdo<uint32_t>(0x2103, 2) == 2 && read_sdo<uint32_t>(0x2103, 4) == full);
+    CHECK(!stage(15U << 14, 2, true, 4) && !switch_action(1));
+    assign(0x1c12, rx, 0x1604, 0x1635);
+    assign(0x1c13, tx, 0x1a04, 0x1a35);
+    CHECK(!commit(3) && !motor_control_mapping(&in,&out) && in == 216 && out == 184);
+    CHECK(!channel_configuration(3).enabled && !adapter::configured_device(21));
+}
+
+static void test_encos_four_axis_production_pdo(const char *topology = nullptr)
 {
     auto profile = *host_hra55h100_profile();
     dcu_motor_device_profile_t devices[5]{profile.devices[0]};
@@ -1000,6 +1088,7 @@ static void test_encos_four_axis_production_pdo()
     CHECK(motor_control_init() && motor_control_boot_startup(uint64_t{startup_epoch} << 32));
     select_wire_profile(1);
     CHECK(object<mc_board_config_t>(0x2001)->AxisConfiguredMask == ((15U << 14) | (1U << 21)));
+    if (topology) { test_hot_topology(!std::strcmp(topology, "hot_timeout")); return; }
     CHECK(test_input_size == 256 && motor_pdo::layout::active().bytes(1, false) == 216);
     CHECK(gRxAssign.aEntries[3] == 0x162E && gTxAssign.aEntries[7] == 0x1A35);
     const uint16_t saved = gRxAssign.aEntries[3];
@@ -1142,6 +1231,10 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 2);
+    if (!std::strcmp(argv[1], "hot_select") || !std::strcmp(argv[1], "hot_timeout")) {
+        test_encos_four_axis_production_pdo(argv[1]);
+        return 0;
+    }
     if (!std::strcmp(argv[1], "encos_four_axis_production_pdo")) {
         test_encos_four_axis_production_pdo();
         return 0;

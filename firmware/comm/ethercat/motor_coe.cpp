@@ -22,6 +22,7 @@ namespace {
 static_assert(pdo_layout::assignment_capacity == sizeof(TMC_ASSIGN::aEntries) / sizeof(uint16_t));
 constexpr uint16_t profile_update_index = 0x2100;
 constexpr uint16_t raw_switch_index = 0x2101;
+constexpr uint16_t topology_index = 0x2103;
 constexpr unsigned candidate_bytes = sizeof(mc_profile_update_t::Candidate);
 
 uint32_t load_le(const uint8_t *p, unsigned n)
@@ -146,6 +147,15 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         memcpy(data, &value, bytes);
         return 0;
     }
+    if (index == topology_index) {
+        if (sub == 1 || sub == 6) return ABORTIDX_WRITE_ONLY_ENTRY;
+        if (sub > 5) return ABORTIDX_SUBINDEX_NOT_EXISTING;
+        if (bytes != (sub == 5 ? 8U : 4U)) return ABORTIDX_PARAM_LENGTH_ERROR;
+        const uint64_t value = sub == 2 ? adapter::topology_generation() : sub == 3 ?
+            pdo_layout::active().buses : sub == 4 ? pdo_layout::active().feedback_axes : readiness().boot_id;
+        memcpy(data, &value, bytes);
+        return 0;
+    }
     // Project the immutable active Profile through existing read-only descriptors.
     if (startup_enabled() && index >= axis_object_base(0) && index < axis_object_base(ENCOS_AXIS_COUNT)) {
         const unsigned offset = index - axis_object_base(0);
@@ -221,6 +231,20 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
             profile_update::discard();
         return ABORTIDX_PARAM_LENGTH_ERROR;
     }
+    if (index == topology_index) {
+        static_assert(sizeof(mc_topology_t::Selection) == 88);
+        const auto *p = reinterpret_cast<const uint8_t *>(data);
+        if (sub == 6) return motor_control_commit_topology(load_le(p, 4)) ? 0 : ABORTIDX_VALUE_EXCEEDED;
+        const auto active = readiness();
+        const uint64_t boot = uint64_t{load_le(p + 4, 4)} << 32 | load_le(p, 4);
+        const auto *identity = object<mc_layout_identity_t>(0x2102);
+        if (!boot || boot != active.boot_id || load_le(p + 8, 4) != active.revision ||
+            memcmp(p + 24, identity->Sha256, sizeof(identity->Sha256)) || memcmp(p + 56, active.digest, sizeof(active.digest)) ||
+            !adapter::stage_selection(load_le(p + 16, 4), load_le(p + 20, 4), load_le(p + 12, 4)))
+            return ABORTIDX_VALUE_EXCEEDED;
+        profile_update::discard();
+        return 0;
+    }
     if (index == raw_switch_index) {
         const auto *wire = reinterpret_cast<const uint8_t *>(data);
         if (sub == 5) {
@@ -251,6 +275,7 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
             ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     }
     if (index == profile_update_index) {
+        if (topology_pending()) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
         if (sub == 1)
             return stage_profile_candidate(data, bytes) ? 0 : ABORTIDX_VALUE_EXCEEDED;
         uint32_t revision = 0;

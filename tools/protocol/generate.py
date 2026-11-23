@@ -527,6 +527,10 @@ def rk_header(contract):
              'namespace dcu_profile_pdo {',
              f"inline constexpr uint32_t interface_version = {contract['version']};",
              f"inline constexpr uint32_t profile_id = {contract['profile_id']}u, profile_revision = {contract['profile_revision']}u;",
+             f"inline constexpr uint32_t channel_mask = {sum(1 << c for c in contract['channels'])}u, axis_mask = {sum(1 << a['slot'] for a in contract['axes'])}u;",
+             'struct Unit { const char *name; unsigned slot; };',
+             'inline constexpr Unit units[] = {' +
+             ''.join('{' + json.dumps(a['id']) + ',' + str(a['slot']) + '},' for a in contract['axes']) + '{nullptr,0}};',
              'struct Block { uint16_t mapping, object, offset, bytes, fields; };',
              'struct Image { const Block *blocks; const uint32_t *entries; unsigned count, bytes; };',
              'struct Mode { Image rx, tx; };',

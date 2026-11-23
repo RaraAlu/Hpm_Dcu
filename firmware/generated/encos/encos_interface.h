@@ -12,6 +12,21 @@
 #define MC_STATUS_QUERY_SOURCE 0x1000u
 #define MC_STATUS_ARMED_QUERY_ONLY 0x2000u
 typedef struct __attribute__((packed)) {
+    uint8_t Selection[88];
+    uint32_t Generation;
+    uint32_t Channels;
+    uint32_t Axes;
+    uint8_t BootId[8];
+    uint32_t CommitGeneration;
+} mc_topology_t;
+DCU_STATIC_ASSERT(sizeof(mc_topology_t)==112, "topology size");
+DCU_STATIC_ASSERT(offsetof(mc_topology_t,Selection)==0, "topology.Selection");
+DCU_STATIC_ASSERT(offsetof(mc_topology_t,Generation)==88, "topology.Generation");
+DCU_STATIC_ASSERT(offsetof(mc_topology_t,Channels)==92, "topology.Channels");
+DCU_STATIC_ASSERT(offsetof(mc_topology_t,Axes)==96, "topology.Axes");
+DCU_STATIC_ASSERT(offsetof(mc_topology_t,BootId)==100, "topology.BootId");
+DCU_STATIC_ASSERT(offsetof(mc_topology_t,CommitGeneration)==108, "topology.CommitGeneration");
+typedef struct __attribute__((packed)) {
     uint8_t Sha256[32];
 } mc_layout_identity_t;
 DCU_STATIC_ASSERT(sizeof(mc_layout_identity_t)==32, "layout_identity size");

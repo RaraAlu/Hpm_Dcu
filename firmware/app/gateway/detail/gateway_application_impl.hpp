@@ -35,6 +35,9 @@ public:
                         const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES]);
     bool map_layout(OperatingMode mode);
     bool reset_layout();
+    bool request_topology();
+    bool topology_pending() const { return layout_.topology; }
+    bool commit_topology(const dcu_production_profile_t &, uint32_t buses, uint32_t devices);
     void layout_fault();
     uint32_t raw_drops() const;
     uint32_t pure_raw_limits() const;
@@ -60,6 +63,9 @@ public:
 
 private:
     bool drain_raw();
+    bool drain_layout();
+    bool begin_layout(OperatingMode, uint32_t, uint32_t, const uint8_t (&)[DCU_GATEWAY_DIGEST_BYTES], bool);
+    bool finish_layout(OperatingMode, bool topology);
     bool raw_channel(unsigned bus) const;
     bool raw_motor_bus_idle(uint8_t buses) const;
     void checkpoint_raw_losses();
@@ -71,7 +77,7 @@ private:
     struct RawLayout {
         RawState state{};
         OperatingMode target{};
-        bool selected{}, started{}, reset{}, switching{}, running{};
+        bool selected{}, started{}, reset{}, switching{}, running{}, topology{};
         uint32_t drain_ms{}, drops{}, baseline{}, revision{};
         uint64_t session{};
         uint8_t limits[DCU_DEVICE_CAN_BUS_COUNT]{};
@@ -102,6 +108,7 @@ private:
     unsigned device_count_{};
     uint8_t devices_on_bus_[DCU_DEVICE_CAN_BUS_COUNT][DCU_MOTOR_DEVICES_PER_BUS]{};
     uint8_t bus_device_count_[DCU_DEVICE_CAN_BUS_COUNT]{};
+    ChannelConfiguration catalogue_channels_[DCU_DEVICE_CAN_BUS_COUNT]{};
     RawCanGateway raw_{};
     BusScheduler schedule_[DCU_DEVICE_CAN_BUS_COUNT]{};
     CanTransactions transactions_{};

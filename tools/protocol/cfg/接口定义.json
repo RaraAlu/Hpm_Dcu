@@ -10,6 +10,14 @@
     "MC_STATUS_ARMED_QUERY_ONLY": "0x2000u"
   },
   "types": {
+    "mc_topology_t": [
+      {"name":"Selection","type":"uint8_t","count":88,"label":"Stage profile selection","access":"wo","default":0},
+      {"name":"Generation","type":"uint32_t","label":"Applied topology generation","access":"ro","default":0},
+      {"name":"Channels","type":"uint32_t","label":"Active channel mask","access":"ro","default":0},
+      {"name":"Axes","type":"uint32_t","label":"Active physical slot mask","access":"ro","default":0},
+      {"name":"BootId","type":"uint8_t","count":8,"label":"Boot ID little endian","access":"ro","default":0},
+      {"name":"CommitGeneration","type":"uint32_t","label":"Commit verified assignments","access":"wo","default":0}
+    ],
     "mc_layout_identity_t": [
       {"name": "Sha256", "type": "uint8_t", "count": 32, "label": "Cyclic layout SHA-256", "access": "ro", "default": 0}
     ],
@@ -2922,6 +2930,13 @@
       "index": "0x2102",
       "type": "mc_layout_identity_t",
       "name": "Gateway.CyclicLayout",
+      "count": 1,
+      "stride": 0
+    },
+    {
+      "index": "0x2103",
+      "type": "mc_topology_t",
+      "name": "Gateway.CyclicSelection",
       "count": 1,
       "stride": 0
     },

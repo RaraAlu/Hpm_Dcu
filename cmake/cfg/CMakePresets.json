@@ -41,6 +41,12 @@
       "cacheVariables": {"CMAKE_BUILD_TYPE": "release"}
     },
     {
+      "name": "hpm-release-five-axis",
+      "inherits": "hpm-release",
+      "displayName": "HPM5E31 CAN2+CAN3 five-axis production bench",
+      "cacheVariables": {"DCU_CAN_PROFILE_FILE": "${sourceDir}/firmware/app/profile/cfg/五轴台架配置.yaml"}
+    },
+    {
       "name": "hpm-can-loopback",
       "inherits": "hpm-base",
       "displayName": "HPM5E31 Isolated MCAN0 Internal Loopback",
@@ -92,6 +98,7 @@
   "buildPresets": [
     {"name": "hpm-debug", "configurePreset": "hpm-debug", "jobs": 4},
     {"name": "hpm-release", "configurePreset": "hpm-release", "jobs": 4},
+    {"name": "hpm-release-five-axis", "configurePreset": "hpm-release-five-axis", "jobs": 4},
     {"name": "hpm-can-loopback", "configurePreset": "hpm-can-loopback", "jobs": 4},
     {"name": "hpm-ethercat-scan", "configurePreset": "hpm-ethercat-scan", "jobs": 4},
     {"name": "hpm-ethercat-data", "configurePreset": "hpm-ethercat-data", "jobs": 4},

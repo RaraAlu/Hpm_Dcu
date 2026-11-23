@@ -285,6 +285,12 @@ class MotorApplicationTest(unittest.TestCase):
     def test_four_encos_axes_exchange_zero_impedance_on_the_normal_production_pdo(self):
         self.run_command([str(self.executable), "encos_four_axis_production_pdo"])
 
+    def test_hot_selection_rebinds_driver_set_and_requires_both_exact_assignments(self):
+        self.run_command([str(self.executable), "hot_select"])
+
+    def test_hot_selection_waits_for_all_tx_and_faults_closed_until_reset(self):
+        self.run_command([str(self.executable), "hot_timeout"])
+
     def test_hardware_retry_respects_the_same_neutral_mit_deadline(self):
         for scenario in ("recovers", "expires"):
             with self.subTest(scenario=scenario):

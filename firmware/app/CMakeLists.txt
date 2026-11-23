@@ -7,7 +7,7 @@ set(_contract_files
     firmware/generated/encos/encos_interface.h firmware/generated/encos/encos_storage.inc
     firmware/generated/ethercat/digital_ioObjects.h firmware/generated/ethercat/gatewayObjects.h
     firmware/generated/ethercat/eeprom.h protocol/ethercat/dcu_profile_pdo.hpp protocol/ethercat/dcu_igh_layout.hpp
-    protocol/ethercat/周期布局.json
+    protocol/ethercat/dcu_igh_selection.hpp protocol/ethercat/周期布局.json
     protocol/ethercat/HPM_ENCOS_4CAN_28AXIS_IMU.xml protocol/ethercat/HPM_ENCOS_4CAN_28AXIS_IMU.bin)
 list(TRANSFORM _contract_files PREPEND "${DCU_PROTOCOL_ROOT}/")
 add_custom_command(OUTPUT "${_can_profile_header}" ${_contract_files}
@@ -17,8 +17,11 @@ add_custom_command(OUTPUT "${_can_profile_header}" ${_contract_files}
         --profile "${DCU_CAN_PROFILE_FILE}" --output-root "${DCU_PROTOCOL_ROOT}"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_layout.hpp"
         "${DCU_PROTOCOL_ROOT}/protocol/ethercat/dcu_igh_layout.hpp"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_selection.hpp"
+        "${DCU_PROTOCOL_ROOT}/protocol/ethercat/dcu_igh_selection.hpp"
     DEPENDS "${DCU_CAN_PROFILE_FILE}" "${_tools}/generate_can_profile.py"
         "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_layout.hpp"
+        "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_selection.hpp"
         "${_tools}/check_gateway_contract.py" "${_tools}/generate.py"
         "${_tools}/cfg/接口定义.json" "${_tools}/cfg/设备模板.xml"
     COMMENT "Generating CAN configuration and the HPM/RK cyclic contract from one Profile"

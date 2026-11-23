@@ -5,6 +5,9 @@
 namespace dcu_profile_pdo {
 inline constexpr uint32_t interface_version = 0x00010003u;
 inline constexpr uint32_t profile_id = 1u, profile_revision = 8u;
+inline constexpr uint32_t channel_mask = 12u, axis_mask = 2097152u;
+struct Unit { const char *name; unsigned slot; };
+inline constexpr Unit units[] = {{"hra55h100_can3",21},{nullptr,0}};
 struct Block { uint16_t mapping, object, offset, bytes, fields; };
 struct Image { const Block *blocks; const uint32_t *entries; unsigned count, bytes; };
 struct Mode { Image rx, tx; };

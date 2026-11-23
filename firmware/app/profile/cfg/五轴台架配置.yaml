@@ -1,0 +1,61 @@
+schema_version: 3
+startup:
+  profile_id: 1
+  revision: 9
+  readiness_ttl_ms: 1000
+  activation_wait_s: 5
+safety:
+  max_command_lease_ms: 10
+  feedback_timeout_ms: 20
+channels:
+  - {bus: 3, mode: fd, nominal_bitrate_kbps: 1000, data_bitrate_kbps: 5000, timestamp_eof: true}
+  - {bus: 2, mode: fd, nominal_bitrate_kbps: 1000, data_bitrate_kbps: 5000, timestamp_eof: true}
+devices:
+  - id: hra55h100_can3
+    protocol: bjcx
+    type: HRA55H-100
+    bus: 3
+    can_id: 0x02
+    neutral_mit_only: true
+    neutral_mit_frame_limit: 30000
+  - id: encos_can2_1
+    protocol: encos
+    type: EC-A7216-P2-22H
+    bus: 2
+    can_id: 1
+    power_query_period_ms: 0
+    # Narrow acceptance for a bench zero command, not a mechanical travel specification.
+    limits:
+      position_mrad: [-1, 1]
+      velocity_mrad_s: 1
+      torque_mNm: 1
+      current_dA: 1
+    encoding:
+      kp: [0, 500]
+      kd: [0, 50]
+      position_mrad: [-12500, 12500]
+      can_timeout_ms: 500
+  - id: encos_can2_2
+    protocol: encos
+    type: EC-A7216-P2-22H
+    bus: 2
+    can_id: 2
+    power_query_period_ms: 0
+    limits: {position_mrad: [-1, 1], velocity_mrad_s: 1, torque_mNm: 1, current_dA: 1}
+    encoding: {kp: [0, 500], kd: [0, 50], position_mrad: [-12500, 12500], can_timeout_ms: 500}
+  - id: encos_can2_3
+    protocol: encos
+    type: EC-A7216-P2-22H
+    bus: 2
+    can_id: 3
+    power_query_period_ms: 0
+    limits: {position_mrad: [-1, 1], velocity_mrad_s: 1, torque_mNm: 1, current_dA: 1}
+    encoding: {kp: [0, 500], kd: [0, 50], position_mrad: [-12500, 12500], can_timeout_ms: 500}
+  - id: encos_can2_4
+    protocol: encos
+    type: EC-A7216-P2-22H
+    bus: 2
+    can_id: 4
+    power_query_period_ms: 0
+    limits: {position_mrad: [-1, 1], velocity_mrad_s: 1, torque_mNm: 1, current_dA: 1}
+    encoding: {kp: [0, 500], kd: [0, 50], position_mrad: [-12500, 12500], can_timeout_ms: 500}

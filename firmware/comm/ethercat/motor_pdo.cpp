@@ -123,8 +123,7 @@ bool bind_publication(const dcu_production_profile_t &profile)
     publication.raw = object<mc_sideband_t>(0x6400);
     publication.single_fd = object<mc_raw_t>(0x6401);
     if (!publication.board || !publication.raw || !publication.single_fd) return false;
-    auto &wire = publication.wire;
-    wire = {};
+    layout::Layout wire{};
     for (size_t i = 0; i < profile.channel_count; ++i) {
         if (profile.channels[i].bus >= ENCOS_CHANNEL_COUNT) return false;
         wire.buses |= 1U << profile.channels[i].bus;
@@ -138,6 +137,19 @@ bool bind_publication(const dcu_production_profile_t &profile)
         if (device.protocol == DCU_MOTOR_PROTOCOL_ENCOS || device.neutral_mit_only)
             wire.command_axes |= bit;
     }
+    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
+        if (!object<mc_channel_tx_t>(0x6100 + c) || !object<canfd_bus_pdo_t>(0x6500 + c * 16)) return false;
+    for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
+        if (!axis_feedback(a) || !axis_diagnostics(a)) return false;
+    select_publication(wire);
+    return true;
+}
+
+void select_publication(const layout::Layout &wire)
+{
+    publication.wire = wire;
+    std::memset(publication.image, 0, pdo_layout::max_input_bytes);
+    *publication.board = {};
     publication.raw_tx = publication.image + wire.sideband(true);
     publication.slot_count = 0;
     publication.layout = pdo_layout::profile_count;
@@ -147,12 +159,14 @@ bool bind_publication(const dcu_production_profile_t &profile)
         slot = {object<mc_channel_tx_t>(0x6100 + c), object<canfd_bus_pdo_t>(0x6500 + c * 16),
                 (wire.buses & (1U << c)) ? publication.image + wire.channel(true, c) : nullptr,
                 (wire.buses & (1U << c)) ? publication.image + wire.raw_bus(true, c) : nullptr};
-        if (!slot.feedback || !slot.raw) return false;
+        *slot.feedback = {};
+        *slot.raw = {};
     }
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a) {
         auto *feedback = axis_feedback(a);
         auto *diagnostics = axis_diagnostics(a);
-        if (!feedback || !diagnostics) return false;
+        *diagnostics = {};
+        *feedback = empty_feedback();
         diagnostics->PositionQueryAgeUs = diagnostics->VelocityQueryAgeUs = UINT32_MAX;
         const auto device = motor_adapter::device_for_slot(a);
         if (device >= DCU_MOTOR_DEVICE_CAPACITY) {
@@ -164,7 +178,6 @@ bool bind_publication(const dcu_production_profile_t &profile)
             feedback, diagnostics, publication.image + wire.axis(true, a), wire.axis(false, a),
             static_cast<uint8_t>(a), static_cast<uint8_t>(device)};
     }
-    return true;
 }
 
 void decode_cycle(const void *image, app::gateway_application::OperatingMode mode,
@@ -265,7 +278,7 @@ void decode_raw_bus(const canfd_bus_pdo_t &raw, unsigned bus, app::RawCanBatch &
     }
 }
 
-unsigned mapping_indices(unsigned profile, bool tx, uint16_t *indices)
+static unsigned indices_for(const layout::Layout &wire, unsigned profile, bool tx, uint16_t *indices)
 {
     if (profile == 3) {
         indices[0] = tx ? 0x1A42 : 0x1641;
@@ -275,19 +288,22 @@ unsigned mapping_indices(unsigned profile, bool tx, uint16_t *indices)
     indices[n++] = tx ? 0x1A00 : 0x1600;
     if (profile == 2) {
         for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++)
-            if (publication.wire.buses & (1U << c)) indices[n++] = (tx ? 0x1A50 : 0x1650) + c;
+            if (wire.buses & (1U << c)) indices[n++] = (tx ? 0x1A50 : 0x1650) + c;
         return n;
     }
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++)
-        if (publication.wire.buses & (1U << c)) indices[n++] = (tx ? 0x1A01 : 0x1601) + c;
+        if (wire.buses & (1U << c)) indices[n++] = (tx ? 0x1A01 : 0x1601) + c;
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; a++)
-        if ((tx ? publication.wire.feedback_axes : publication.wire.command_axes) & (1U << a))
+        if ((tx ? wire.feedback_axes : wire.command_axes) & (1U << a))
             indices[n++] = (tx ? 0x1A20 : 0x1620) + a;
     if (profile == 1) {
         indices[n++] = tx ? 0x1A41 : 0x1640;
     }
     return n;
 }
+
+unsigned mapping_indices(unsigned profile, bool tx, uint16_t *indices)
+{ return indices_for(publication.wire, profile, tx, indices); }
 }
 
 using motor_pdo::mapping_indices;
@@ -323,15 +339,21 @@ uint16_t motor_control_command_offset(unsigned slot)
     return publication.motor_layout && slot < ENCOS_AXIS_COUNT ? publication.wire.axis(false, slot) : pdo_layout::absent;
 }
 #endif
-uint16_t motor_control_mapping(uint16_t *in, uint16_t *out)
+static uint16_t checked_mapping(uint16_t *in, uint16_t *out, bool commit)
 {
     *in = *out = 0;
     if ((nAlStatus & STATE_MASK) != STATE_PREOP) return ALSTATUSCODE_INVALIDOUTPUTMAPPING;
+    namespace gateway = dcu::app::gateway_application;
+    namespace adapter = dcu::ethercat::motor_adapter;
+    const bool hot = gateway::topology_pending();
+    if (hot != commit) return ALSTATUSCODE_INVALIDOUTPUTMAPPING;
     for (unsigned p = 0; p < pdo_layout::profile_count; p++) {
+        if (hot && p != static_cast<unsigned>(gateway::OperatingMode::MotorWithRaw)) continue;
         uint16_t rx[pdo_layout::assignment_capacity], tx[pdo_layout::assignment_capacity];
-        unsigned nr = mapping_indices(p, false, rx), nt = mapping_indices(p, true, tx);
+        unsigned nr = motor_pdo::indices_for(adapter::requested_layout(), p, false, rx);
+        unsigned nt = motor_pdo::indices_for(adapter::requested_layout(), p, true, tx);
         if (gRxAssign.u16SubIndex0 == nr && gTxAssign.u16SubIndex0 == nt && !memcmp(rx, gRxAssign.aEntries, nr * 2) && !memcmp(tx, gTxAssign.aEntries, nt * 2)) {
-            if (!dcu::app::gateway_application::map_layout(static_cast<dcu::app::gateway_application::OperatingMode>(p)))
+            if (hot ? !adapter::commit_selection() : !gateway::map_layout(static_cast<gateway::OperatingMode>(p)))
                 return ALSTATUSCODE_INVALIDOUTPUTMAPPING;
             latch_layout(p);
             if (p == 3) publication.slave_match = static_cast<uint8_t>(dcu_ssc_station_address());
@@ -342,6 +364,15 @@ uint16_t motor_control_mapping(uint16_t *in, uint16_t *out)
         }
     }
     return ALSTATUSCODE_INVALIDOUTPUTMAPPING;
+}
+uint16_t motor_control_mapping(uint16_t *in, uint16_t *out)
+{ return checked_mapping(in, out, false); }
+
+bool motor_control_commit_topology(uint32_t generation)
+{
+    uint16_t in, out;
+    return generation && generation - 1 == dcu::ethercat::motor_adapter::topology_generation() &&
+        checked_mapping(&in, &out, true) == 0;
 }
 bool motor_control_neutral_feedback_pending(void)
 {

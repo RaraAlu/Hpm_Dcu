@@ -26,7 +26,7 @@ uint32_t GatewayApplication::pure_raw_limits() const
 
 bool GatewayApplication::set_pure_raw_limits(uint32_t packed)
 {
-    if (!state_.config_ready || !preop_access_allowed()) return false;
+    if (!state_.config_ready || layout_.topology || !preop_access_allowed()) return false;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
         const auto limit = static_cast<uint8_t>(packed >> (8 * c));
         if (limit > 8 || (limit && !state_.channels[c].enabled) ||
@@ -84,10 +84,40 @@ bool GatewayApplication::drain_raw()
 bool GatewayApplication::request_layout(OperatingMode target, uint32_t profile, uint32_t revision,
                                        const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES])
 {
+    return begin_layout(target, profile, revision, digest, false);
+}
+
+bool GatewayApplication::request_topology()
+{
+    if (!preop_access_allowed()) return false;
+    const auto active = readiness();
+    return begin_layout(OperatingMode::MotorWithRaw, active.profile_id, active.revision, active.digest, true);
+}
+
+bool GatewayApplication::drain_layout()
+{
+    if (!layout_.topology) return drain_raw();
+    bool idle = true;
+    for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
+        if (!catalogue_channels_[c].enabled) continue;
+        collect_tx_events(c);
+        idle &= !dcu_can_pending(c, DCU_CAN_DEVICE_ANY);
+        dcu_can_frame_t frame;
+        dcu_can_rx_stamp_t stamp;
+        for (unsigned i = 0; dcu_can_receive(c, &frame, &stamp); ++i)
+            if (i == 31) { idle = false; break; }
+    }
+    return idle;
+}
+
+bool GatewayApplication::begin_layout(OperatingMode target, uint32_t profile, uint32_t revision,
+                                      const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES], bool topology)
+{
     const auto active = readiness();
     const bool recovering = layout_.state == RawState::Faulted;
     if (target > OperatingMode::SingleFd || (raw_only(target) && device_count_ && state_.operational) ||
-        layout_.switching || (recovering && (!layout_.reset || state_.operational)) || !active.boot_id ||
+        layout_.switching || (layout_.topology && !topology) ||
+        (recovering && (!layout_.reset || state_.operational)) || !active.boot_id ||
         !profile || profile != active.profile_id || revision != active.revision ||
         std::memcmp(active.digest, digest, sizeof(digest))) return false;
     layout_.target = target;
@@ -99,14 +129,16 @@ bool GatewayApplication::request_layout(OperatingMode target, uint32_t profile, 
     layout_.drain_ms = dcu_time_now_ms();
     layout_.baseline = raw_drops();
     raw_.discard_frames();
-    layout_.state = drain_raw() ? RawState::Requested : RawState::Draining;
+    layout_.topology = topology;
+    if (topology) clear_layout_business();
+    layout_.state = drain_layout() ? RawState::Requested : RawState::Draining;
     return true;
 }
 
 bool GatewayApplication::reset_layout()
 {
     if (state_.operational || (layout_.state != RawState::Requested && layout_.state != RawState::Faulted) ||
-        !drain_raw()) return false;
+        !drain_layout()) return false;
     if (layout_.state == RawState::Faulted) {
         // 复位不恢复旧授权；主站还要提交当前 Profile 的摘要及目标布局。
         layout_.reset = true;
@@ -120,11 +152,16 @@ bool GatewayApplication::reset_layout()
 
 bool GatewayApplication::map_layout(OperatingMode mode)
 {
-    if (state_.operational || mode > OperatingMode::SingleFd)
+    return finish_layout(mode, false);
+}
+
+bool GatewayApplication::finish_layout(OperatingMode mode, bool topology)
+{
+    if (state_.operational || mode > OperatingMode::SingleFd || topology != layout_.topology)
         return false;
     if (layout_.switching) {
         if (layout_.state != RawState::Requested || !layout_.reset || mode != layout_.target ||
-            readiness().revision != layout_.revision || !drain_raw() ||
+            readiness().revision != layout_.revision || !drain_layout() ||
             !raw_motor_bus_idle(layout_.pending_motor_owner)) return false;
     } else {
         if (mode != state_.mode) return false;
@@ -140,6 +177,7 @@ bool GatewayApplication::map_layout(OperatingMode mode)
     layout_.pending_motor_owner = 0;
     layout_.selected = true;
     layout_.switching = false;
+    layout_.topology = false;
     layout_.state = mode == OperatingMode::Motor ? RawState::Disabled : RawState::Armed;
     return true;
 }
@@ -189,8 +227,10 @@ void GatewayApplication::advance_layout(uint32_t now)
 {
     if (layout_.state == RawState::Draining) {
         if (now - layout_.drain_ms >= state_.config.feedback_timeout_ms) layout_fault();
-        else if (drain_raw()) layout_.state = RawState::Requested;
+        else if (drain_layout()) layout_.state = RawState::Requested;
     }
+    if (layout_.topology && layout_.state == RawState::Requested && now - layout_.drain_ms >= 60000U)
+        layout_fault();
     if ((layout_.state == RawState::Active || layout_.switching) &&
         raw_drops() - layout_.baseline > config::raw_can::drop_limit)
         layout_fault();

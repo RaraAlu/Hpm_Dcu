@@ -23,6 +23,8 @@ const dcu_production_profile_t *bound_profile;
 uint8_t device_slots[DCU_MOTOR_DEVICE_CAPACITY];
 unsigned device_count;
 uint32_t configured_slots;
+layout::Layout catalogue_wire, requested_wire;
+uint32_t generation;
 uint8_t configured_motors[ENCOS_CHANNEL_COUNT];
 adapter::detail::InputState input;
 bool bind_slots(const dcu_production_profile_t &profile)
@@ -80,6 +82,7 @@ void publish_owner()
 bool adapter::initialize(const dcu_production_profile_t &profile)
 {
     if (!bind_slots(profile) || !pdo::bind_publication(profile)) return false;
+    catalogue_wire = layout::active();
     dcu::ethercat::motor_services::initialize();
     publish_profile();
     object<mc_board_info_t>(0x2000)->Capabilities = 7;
@@ -176,6 +179,47 @@ void motor_control_raw_link_lost(void)
 
 namespace dcu::ethercat::motor_adapter {
 
+uint32_t topology_generation() { return generation; }
+
+const layout::Layout &requested_layout()
+{ return application::topology_pending() ? requested_wire : layout::active(); }
+
+bool stage_selection(uint32_t buses, uint32_t axes, uint32_t base)
+{
+    if (!bound_profile || !buses || base != generation || base == UINT32_MAX ||
+        (buses & ~catalogue_wire.buses) || (axes & ~catalogue_wire.feedback_axes)) return false;
+    for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
+        if ((axes & (1U << a)) && !(buses & (1U << (a / ENCOS_MOTORS_PER_CHANNEL)))) return false;
+    if (!application::request_topology()) return false;
+    requested_wire = {buses, axes & catalogue_wire.command_axes, axes};
+    clear_layout_commands();
+    return true;
+}
+
+bool commit_selection()
+{
+    uint32_t devices = 0;
+    for (unsigned i = 0; i < device_count; ++i)
+        if (requested_wire.feedback_axes & (1U << device_slots[i])) devices |= 1U << i;
+    if (!application::commit_topology(*bound_profile, requested_wire.buses, devices)) return false;
+    configured_slots = requested_wire.feedback_axes;
+    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
+        configured_motors[c] = (configured_slots >> (ENCOS_MOTORS_PER_CHANNEL * c)) & 0x7f;
+    clear_layout_commands();
+    for (unsigned i = 0; i < device_count; ++i) {
+        const unsigned a = device_slots[i];
+        *object<mc_sdo_command_t>(0x2200 + 16 * a) = {};
+        *object<mc_query_t>(axis_object_base(a) + 5) = {};
+        *object<mc_identity_t>(axis_object_base(a) + 6) = {};
+        *object<mc_transaction_t>(axis_object_base(a) + 7) = {};
+    }
+    pdo::select_publication(requested_wire);
+    publish_profile();
+    publish_owner();
+    ++generation;
+    return true;
+}
+
 void clear_layout_commands()
 {
     new (&input) detail::InputState{};
@@ -192,7 +236,7 @@ void clear_layout_commands()
 
 const dcu_motor_device_profile_t *configured_device(unsigned slot)
 {
-    return slot < ENCOS_AXIS_COUNT ? slot_profiles[slot] : nullptr;
+    return slot < ENCOS_AXIS_COUNT && (configured_slots & (1U << slot)) ? slot_profiles[slot] : nullptr;
 }
 
 unsigned device_for_slot(unsigned slot)
@@ -203,7 +247,8 @@ unsigned device_for_slot(unsigned slot)
 
 unsigned slot_for_device(unsigned device)
 {
-    return device < device_count ? device_slots[device] : ENCOS_AXIS_COUNT;
+    return device < device_count && (configured_slots & (1U << device_slots[device])) ?
+        device_slots[device] : static_cast<unsigned>(ENCOS_AXIS_COUNT);
 }
 
 uint32_t slots_for_devices(uint32_t mask)
@@ -211,7 +256,7 @@ uint32_t slots_for_devices(uint32_t mask)
     uint32_t result = 0;
     for (unsigned i = 0; i < device_count; ++i)
         if (mask & (1U << i)) result |= 1U << device_slots[i];
-    return result;
+    return result & configured_slots;
 }
 
 void refresh_axis_feedback(unsigned axis)

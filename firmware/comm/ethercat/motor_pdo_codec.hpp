@@ -63,6 +63,7 @@ inline void write_raw_bus(void *image, unsigned bus, const canfd_bus_pdo_t &valu
 
 unsigned mapping_indices(unsigned profile, bool input, uint16_t *indices);
 bool bind_publication(const dcu_production_profile_t &profile);
+void select_publication(const layout::Layout &wire);
 void decode_raw_sideband(const mc_sideband_t &raw, app::RawCanBatch &batch);
 void decode_raw_bus(const canfd_bus_pdo_t &raw, unsigned bus, app::RawCanBatch &batch);
 void decode_cycle(const void *image, app::gateway_application::OperatingMode mode,

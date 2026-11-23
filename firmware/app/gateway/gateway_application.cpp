@@ -180,7 +180,7 @@ profile_update::Policy GatewayApplication::profile_policy() const
 bool GatewayApplication::apply_profile_policy(uint32_t profile, uint32_t base, uint32_t revision,
                                                const profile_update::Policy &policy)
 {
-    if (!state_.config_ready || !preop_access_allowed() || !profile_update::valid(policy) ||
+    if (!state_.config_ready || layout_.topology || !preop_access_allowed() || !profile_update::valid(policy) ||
         !startup_.apply_policy(profile, base, revision, policy.readiness_ttl_ms, dcu_time_now_ms()))
         return false;
     revoke_business();
@@ -454,7 +454,7 @@ bool GatewayApplication::initialize(const Configuration &configuration)
     state_.last_process_us = UINT32_MAX;
     state_.config = *b;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
-        state_.channels[c] = configuration.channels[c];
+        state_.channels[c] = catalogue_channels_[c] = configuration.channels[c];
         layout_.limits[c] = configuration.channels[c].raw_rate_limit;
         schedule_[c].reset_budget(dcu_time_now_ms());
     }
@@ -477,6 +477,47 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         ++device_count_;
     }
     state_.config_ready = true;
+    return true;
+}
+
+bool GatewayApplication::commit_topology(const dcu_production_profile_t &catalogue, uint32_t buses, uint32_t enabled)
+{
+    if (!layout_.topology || !layout_.switching || device_count_ != catalogue.device_count ||
+        (buses >> DCU_DEVICE_CAN_BUS_COUNT) || (enabled >> device_count_)) return false;
+    for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c)
+        if ((buses & (1U << c)) && !catalogue_channels_[c].enabled) return false;
+    for (unsigned a = 0; a < device_count_; ++a)
+        if ((enabled & (1U << a)) && !(buses & (1U << catalogue.devices[a].bus))) return false;
+    if (!finish_layout(OperatingMode::MotorWithRaw, true)) return false;
+    // Only this task can submit CAN. Rebind the approved drivers before releasing it;
+    // the neutral command budget/closed bits belong to the boot, not to the selection.
+    readiness_devices_ = timestamped_encos_ = 0;
+    for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
+        auto &channel = state_.channels[c];
+        channel = (buses & (1U << c)) ? catalogue_channels_[c] : ChannelConfiguration{};
+        if (channel.role == 1) channel.role = 0;
+        layout_.limits[c] = channel.raw_rate_limit;
+        bus_device_count_[c] = state_.query_cursor[c] = 0;
+        schedule_[c].reset_budget(dcu_time_now_ms());
+    }
+    for (unsigned a = 0; a < device_count_; ++a) {
+        state_.sdo_accepted_sequence[a] = 0;
+        if (!(enabled & (1U << a))) { devices_[a].disable(); continue; }
+        const auto &d = catalogue.devices[a];
+        auto &channel = state_.channels[d.bus];
+        channel.role = catalogue_channels_[d.bus].role;
+        if (!devices_[a].bind(a, motor_configuration(d), channel.frame_format)) {
+            layout_.topology = true;
+            layout_fault();
+            return false;
+        }
+        transactions_.bind_slot(a, bus_device_count_[d.bus]);
+        devices_on_bus_[d.bus][bus_device_count_[d.bus]++] = a;
+        if (!d.neutral_mit_only) readiness_devices_ |= 1U << a;
+        if (d.protocol == DCU_MOTOR_PROTOCOL_ENCOS && dcu_can_channel_config(d.bus)->timestamp_eof)
+            timestamped_encos_ |= 1U << a;
+    }
+    startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, dcu_time_now_ms());
     return true;
 }
 DCU_FAST_CODE bool GatewayApplication::consume_feedback(unsigned c, const dcu_can_frame_t &frame,
@@ -626,6 +667,11 @@ DCU_FAST_CODE void GatewayApplication::service_cyclic_feedback(uint32_t now, uin
 ProcessResult GatewayApplication::process(const CycleCommand *candidate)
 {
     ProcessResult result{};
+    if (layout_.topology) {
+        advance_layout(dcu_time_now_ms());
+        result.consumed = candidate != nullptr;
+        return result;
+    }
     uint32_t now_us = dcu_time_now_us();
     if (!candidate && cyclic_feedback_missing()) {
         service_cyclic_feedback(dcu_time_now_ms(), now_us);
@@ -843,7 +889,7 @@ bool GatewayApplication::owner_change_allowed() const
 }
 bool GatewayApplication::read_device(unsigned device, motor::MotorFeedback &feedback, motor::MotorDiagnostics &diagnostics) const
 {
-    if (device >= device_count_) return false;
+    if (device >= device_count_ || !devices_[device].configured()) return false;
     devices_[device].read_feedback(dcu_time_now_ms(), state_.config.feedback_timeout_ms, feedback, diagnostics);
     return true;
 }
@@ -982,6 +1028,10 @@ bool request_layout(OperatingMode target, uint32_t profile, uint32_t revision,
 { return application.request_layout(target, profile, revision, digest); }
 bool map_layout(OperatingMode mode) { return application.map_layout(mode); }
 bool reset_layout() { return application.reset_layout(); }
+bool request_topology() { return application.request_topology(); }
+bool topology_pending() { return application.topology_pending(); }
+bool commit_topology(const dcu_production_profile_t &catalogue, uint32_t buses, uint32_t devices)
+{ return application.commit_topology(catalogue, buses, devices); }
 void layout_fault() { application.layout_fault(); }
 OperatingMode mode() { return application.mode(); }
 bool set_owner(Owner owner) { return application.set_owner(owner); }

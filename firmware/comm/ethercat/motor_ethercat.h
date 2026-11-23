@@ -20,6 +20,7 @@ bool motor_control_event_pdo(void);
 uint32_t motor_control_event_lease_us(void);
 
 uint16_t motor_control_mapping(uint16_t *input_size, uint16_t *output_size);
+bool motor_control_commit_topology(uint32_t generation);
 bool motor_control_verify_contract(void);
 #if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
 uint16_t motor_control_command_offset(unsigned slot);

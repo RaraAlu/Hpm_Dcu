@@ -52,6 +52,7 @@ class ProtocolGenerationTest(unittest.TestCase):
         cls.xml = ET.fromstring(cls.generated[ESI])
         cls.objects, cls.pdos = generator.expand(cls.schema)
         cls.legacy_schema = copy.deepcopy(cls.schema)
+        del cls.legacy_schema['types']['mc_topology_t']
         del cls.legacy_schema['types']['mc_layout_identity_t']
         cls.legacy_schema['constants']['MC_INTERFACE_VERSION'] = '0x00010002u'
         del cls.legacy_schema['types']['mc_profile_update_t']
@@ -126,7 +127,10 @@ class ProtocolGenerationTest(unittest.TestCase):
             self.assertEqual(digest(json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()), checksum)
 
     def test_profile_update_adds_only_an_unmapped_mailbox_object(self):
-        self.assertEqual({k: v for k, v in self.objects.items() if k not in (0x2100, 0x2101, 0x2102, 0x6401, 0x7301)}, self.legacy_objects)
+        self.assertEqual({k: v for k, v in self.objects.items() if k not in (0x2100, 0x2101, 0x2102, 0x2103, 0x6401, 0x7301)}, self.legacy_objects)
+        selection = self.objects[0x2103]['fields']
+        self.assertEqual([generator.field_size(f) for f in selection], [88, 4, 4, 4, 8, 4])
+        self.assertEqual([f['access'] for f in selection], ['wo', 'ro', 'ro', 'ro', 'ro', 'wo'])
         switch = self.objects[0x2101]['fields']
         self.assertEqual([generator.field_size(f) for f in switch], [41, 1, 1, 4, 4, 1, 4, 4])
         self.assertEqual([f['access'] for f in switch], ['wo', 'wo', 'ro', 'ro', 'rw', 'rw', 'ro', 'ro'])
@@ -143,7 +147,7 @@ class ProtocolGenerationTest(unittest.TestCase):
                     self.assertEqual((field['access'], field['default']), ('ro', 0))
 
     def test_supported_object_catalog_retains_capacity_and_order(self):
-        self.assertEqual(len(self.objects), 399)
+        self.assertEqual(len(self.objects), 400)
         self.assertEqual(len(self.pdos), 79)
         self.assertEqual(len(self.schema['profiles']), 4)
         for profile, expected in zip(self.schema['profiles'], ((736, 1024), (784, 1072), (544, 544), (88, 88))):
@@ -290,6 +294,37 @@ class ProtocolGenerationTest(unittest.TestCase):
                             str(target / 'test_profile_layout.cpp'), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
 
+    def test_hot_rk_selection_uses_catalogue_slots_and_validates_live_fields_before_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            bench = ROOT / 'firmware/app/profile/cfg/五轴台架配置.yaml'
+            header = 'protocol/ethercat/dcu_profile_pdo.hpp'
+            (work / 'dcu_profile_pdo.hpp').write_bytes(generator.outputs(profile_path=bench)[header])
+            target = ROOT / 'tests/host/ethercat_data'
+            exe = work / 'hot-selection'
+            subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-I', str(work),
+                            '-I', str(target / 'layout_stubs'), '-I', str(ROOT / 'protocol/ethercat'),
+                            str(target / 'test_hot_selection.cpp'), '-o', str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
+    def test_yaml_hot_selection_accepts_subsets_not_route_or_safety_changes(self):
+        from apply_cyclic_profile import selection
+        base = generator.DEFAULT_CAN_PROFILE.with_name('五轴台架配置.yaml')
+        from generate_can_profile import load_yaml
+        catalogue = load_yaml(base)
+        desired = copy.deepcopy(catalogue)
+        desired['devices'].pop(2)
+        expected = ['0xc', 'hra55h100_can3', 'encos_can2_1', 'encos_can2_3', 'encos_can2_4']
+        self.assertEqual(selection(catalogue, desired), expected)
+        for change in (lambda p: p['devices'][1].update(can_id=2),
+                       lambda p: p['devices'][1]['limits'].update(current_dA=2),
+                       lambda p: p['devices'].reverse(),
+                       lambda p: p['startup'].update(revision=10)):
+            modified = copy.deepcopy(desired)
+            change(modified)
+            with self.assertRaises(ValueError):
+                selection(catalogue, modified)
+
     def test_bad_schema_is_rejected(self):
         for mutate in (
             lambda s: s['families'].append(copy.deepcopy(s['families'][0])),
@@ -345,7 +380,7 @@ class ProtocolGenerationTest(unittest.TestCase):
             subprocess.run(['cc', '-std=c11', '-Wall', '-Werror', *includes, '-c',
                             str(ROOT / 'firmware/comm/ethercat/encos_storage.c'), '-o', str(storage)], check=True, capture_output=True)
             cpp = work / 'main.cpp'
-            cpp.write_text('#include "encos_interface.h"\nint main() { return mc_object_count != 399 || !mc_objects[0].data; }\n')
+            cpp.write_text('#include "encos_interface.h"\nint main() { return mc_object_count != 400 || !mc_objects[0].data; }\n')
             subprocess.run(['c++', '-std=c++17', '-pedantic-errors', *includes, str(cpp), str(storage),
                             '-o', str(work / 'contract')], check=True, capture_output=True)
             subprocess.run([str(work / 'contract')], check=True)
