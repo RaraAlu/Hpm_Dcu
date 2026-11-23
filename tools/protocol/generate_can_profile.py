@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 
-from check_gateway_contract import identifier, keys, load_yaml, require, uint
+from profile_yaml import identifier, keys, load_yaml, require, uint
 
 
 def profile_digest(profile):

@@ -25,7 +25,7 @@ add_custom_command(OUTPUT "${_can_profile_header}" ${_contract_files}
         "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_layout.hpp"
         "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_selection.hpp"
         "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_loopback_evidence.hpp"
-        "${_tools}/check_gateway_contract.py" "${_tools}/generate.py"
+        "${_tools}/profile_yaml.py" "${_tools}/generate.py"
         "${_tools}/cfg/接口定义.json" "${_tools}/cfg/设备模板.xml"
     COMMENT "Generating CAN configuration and the HPM/RK cyclic contract from one Profile"
     VERBATIM)

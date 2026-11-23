@@ -6,7 +6,7 @@ from pathlib import Path
 import struct
 import zlib
 
-from check_gateway_contract import keys, load_yaml, require
+from profile_yaml import keys, load_yaml, require
 from generate_can_profile import bounded
 
 
