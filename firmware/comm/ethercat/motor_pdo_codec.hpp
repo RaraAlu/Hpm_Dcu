@@ -41,12 +41,12 @@ inline mc_board_rx_t board(const void *image) { return load<mc_board_rx_t>(image
 inline RawSlot raw_slot(const mc_raw_t &wire) { return load<RawSlot>(&wire, offsetof(mc_raw_t, CanId)); }
 inline void write_raw_slot(mc_raw_t &wire, const RawSlot &value) { store(&wire, offsetof(mc_raw_t, CanId), value); }
 inline mc_channel_rx_t channel(const void *image, unsigned bus)
-{ return load<mc_channel_rx_t>(image, layout::output_channels_offset + bus * sizeof(mc_channel_rx_t)); }
+{ return load<mc_channel_rx_t>(image, layout::active().channel(false, bus)); }
 inline mc_axis_rx_t axis(const void *image, unsigned index)
-{ return load<mc_axis_rx_t>(image, layout::output_axes_offset + index * sizeof(mc_axis_rx_t)); }
-inline mc_sideband_t raw(const void *image) { return load<mc_sideband_t>(image, layout::motor_output_bytes); }
+{ return load<mc_axis_rx_t>(image, layout::active().axis(false, index)); }
+inline mc_sideband_t raw(const void *image) { return load<mc_sideband_t>(image, layout::active().sideband(false)); }
 inline canfd_bus_pdo_t raw_bus(const void *image, unsigned bus)
-{ return load<canfd_bus_pdo_t>(image, sizeof(mc_board_rx_t) + bus * sizeof(canfd_bus_pdo_t)); }
+{ return load<canfd_bus_pdo_t>(image, layout::active().raw_bus(false, bus)); }
 inline SidebandSlot sideband_slot(const mc_sideband_t &raw, unsigned slot)
 { return load<SidebandSlot>(&raw, offsetof(mc_sideband_t, CanId0) + slot * sizeof(SidebandSlot)); }
 inline void write_sideband_slot(mc_sideband_t &raw, unsigned slot, const SidebandSlot &value)
@@ -54,16 +54,15 @@ inline void write_sideband_slot(mc_sideband_t &raw, unsigned slot, const Sideban
 
 inline void write_board(void *image, const mc_board_tx_t &value) { store(image, 0, value); }
 inline void write_channel(void *image, unsigned bus, const mc_channel_tx_t &value)
-{ store(image, layout::input_channels_offset + bus * sizeof(value), value); }
+{ store(image, layout::active().channel(true, bus), value); }
 inline void write_axis(void *image, unsigned index, const mc_axis_tx_t &value)
-{ store(image, layout::input_axes_offset + index * sizeof(value), value); }
-inline void write_imu(void *image, const mc_imu_t &value) { store(image, layout::input_imu_offset, value); }
-inline void write_raw(void *image, const mc_sideband_t &value) { store(image, layout::motor_input_bytes, value); }
+{ store(image, layout::active().axis(true, index), value); }
+inline void write_raw(void *image, const mc_sideband_t &value) { store(image, layout::active().sideband(true), value); }
 inline void write_raw_bus(void *image, unsigned bus, const canfd_bus_pdo_t &value)
-{ store(image, sizeof(mc_board_tx_t) + bus * sizeof(value), value); }
+{ store(image, layout::active().raw_bus(true, bus), value); }
 
 unsigned mapping_indices(unsigned profile, bool input, uint16_t *indices);
-bool bind_publication();
+bool bind_publication(const dcu_production_profile_t &profile);
 void decode_raw_sideband(const mc_sideband_t &raw, app::RawCanBatch &batch);
 void decode_raw_bus(const canfd_bus_pdo_t &raw, unsigned bus, app::RawCanBatch &batch);
 void decode_cycle(const void *image, app::gateway_application::OperatingMode mode,

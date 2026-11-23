@@ -1,4 +1,5 @@
 #include <ecrt.h>
+#include "dcu_igh_layout.hpp"
 #include "encos_interface.h"
 #include "igh_probe_frame_stats.hpp"
 #include "probe_dc_clock.hpp"
@@ -15,15 +16,26 @@
 
 namespace {
 #if defined(DCU_PROBE_CAN2_ENCOS)
-constexpr unsigned bus = 2, first_slot = 14, axes = 4, first_can_id = 1, profile_revision = 9;
+constexpr unsigned bus = 2, first_slot = 14, axes = 4, first_can_id = 1;
 constexpr bool encos_axes = true;
 #else
-constexpr unsigned bus = 3, first_slot = 21, axes = 1, first_can_id = 2, profile_revision = 6;
+constexpr unsigned bus = 3, first_slot = 21, axes = 1, first_can_id = 2;
 constexpr bool encos_axes = false;
 #endif
-constexpr unsigned rx_size = 784, tx_size = 1072;
-constexpr unsigned axis_rx_offset = 64 + first_slot * sizeof(mc_axis_rx_t);
-constexpr unsigned axis_tx_offset = 64 + first_slot * sizeof(mc_axis_tx_t);
+constexpr auto &wire = dcu_profile_pdo::modes[1];
+constexpr unsigned rx_size = wire.rx.bytes, tx_size = wire.tx.bytes;
+constexpr int channel_offset = offset(wire.rx, 0x7100 + bus);
+constexpr int axis_rx_offset = offset(wire.rx, 0x7200 + first_slot);
+constexpr int axis_tx_offset = offset(wire.tx, 0x6200 + first_slot);
+constexpr bool target_mapped()
+{
+    if (channel_offset < 0 || axis_tx_offset < 0 || axis_rx_offset < 0) return false;
+    for (unsigned i = 0; i < axes; ++i)
+        if (offset(wire.rx, 0x7200 + first_slot + i) != axis_rx_offset + int(i * sizeof(mc_axis_rx_t)) ||
+            offset(wire.tx, 0x6200 + first_slot + i) != axis_tx_offset + int(i * sizeof(mc_axis_tx_t))) return false;
+    return true;
+}
+static_assert(target_mapped(), "probe targets are absent from the selected Profile contract");
 constexpr unsigned local_mask = (1U << axes) - 1, axis_mask = local_mask << first_slot;
 constexpr uint32_t configured_mask = axis_mask | (1U << 21);
 constexpr unsigned period_us = 2000, period_ns = period_us * 1000;
@@ -103,7 +115,7 @@ struct Session {
             mc_axis_rx_t axis{};
             axis.Mode = 4;
             axis.ControlWord = op;
-            std::memcpy(pdo + 32 + bus * sizeof(channel), &channel, sizeof(channel));
+            std::memcpy(pdo + channel_offset, &channel, sizeof(channel));
             for (unsigned n = 0; n < axes; ++n)
                 std::memcpy(pdo + axis_rx_offset + n * sizeof(axis), &axis, sizeof(axis));
         }
@@ -136,7 +148,7 @@ struct Session {
         result.grid = uint32_t(dc);
         const auto phase = int32_t(result.sof - result.grid);
         const bool in_phase = std::abs(int64_t(phase) - Follower::target_sof_ns) <= 10000;
-        result.ok = result.frames == 1 && result.bytes >= 1100 && result.bytes <= 1514 && ref && in_phase &&
+        result.ok = result.frames == 1 && result.bytes >= std::max(rx_size, tx_size) + 28 && result.bytes <= 1514 && ref && in_phase &&
             ds.wc_state == EC_WC_COMPLETE && result.wkc == 3 && sc.operational &&
             result.sent < due + 45000 && result.received < due + period_ns;
         std::memcpy(&result.board, pdo, sizeof(result.board));
@@ -228,19 +240,21 @@ try {
     need(!ecrt_master(m.get(), &mi) && mi.link_up && !mi.scan_busy && mi.slave_count == 1, "not one isolated slave");
     need(!ecrt_master_get_slave(m.get(), 0, &si) && si.vendor_id == 0x10000 && si.product_code == 2 &&
          si.revision_number == 2 && si.al_state == 2, "production HPM in PREOP was not identified");
-    need(upload(m.get(), 0x2100, 4, 4) == 1 && upload(m.get(), 0x2100, 5, 4) == profile_revision &&
+    need(upload(m.get(), 0x2100, 4, 4) == dcu_profile_pdo::profile_id &&
+         upload(m.get(), 0x2100, 5, 4) == dcu_profile_pdo::profile_revision &&
          upload(m.get(), 0x2001, 1, 4) == configured_mask, "unexpected production Profile or axis mask");
+    need(dcu_profile_pdo::verify(m.get(), 0, 1), "Profile layout digest, assignments or IgH entries differ");
     for (unsigned i = 0; i < axes; ++i)
-        need(upload(m.get(), 0x3000 + 16 * (first_slot + i), 1, 2) == first_can_id + i,
+        need(upload(m.get(), 0x3000 + 16 * (first_slot + i), 1, 2) == first_can_id + i &&
+             upload(m.get(), 0x3000 + 16 * (first_slot + i), 2, 2) == (encos_axes ? 0x8000U : 0U),
              "unexpected production CAN route");
     auto *s = ecrt_master_slave_config(m.get(), 0, 0, 0x10000, 2);
     auto *d = ecrt_master_create_domain(m.get());
     need(s && d, "cannot create slave configuration and domain");
     ecrt_slave_config_overlapping_pdos(s, 1);
-    unsigned out_bit = 255, in_bit = 255;
-    auto out = ecrt_slave_config_reg_pdo_entry_pos(s, 2, 0, 0, d, &out_bit);
-    auto in = ecrt_slave_config_reg_pdo_entry_pos(s, 3, 0, 0, d, &in_bit);
-    need(out == 0 && in == 0 && !out_bit && !in_bit && ecrt_domain_size(d) == tx_size, "unexpected fixed PDO layout");
+    auto out = dcu_profile_pdo::register_image(s, d, 2, wire.rx);
+    auto in = dcu_profile_pdo::register_image(s, d, 3, wire.tx);
+    need(out == 0 && in == 0 && ecrt_domain_size(d) == std::max(rx_size, tx_size), "unexpected Profile domain offsets");
     ecrt_slave_config_dc(s, 0x300, period_ns, sync0_ns, 0, 0);
     need(!ecrt_master_select_reference_clock(m.get(), s), "cannot select DC reference");
     const auto origin = now();

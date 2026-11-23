@@ -1,4 +1,5 @@
 #include "igh_cycle.hpp"
+#include "dcu_igh_layout.hpp"
 #include "one_cycle_pdo.hpp"
 #ifdef DCU_ONE_CYCLE_SOF_TRACE
 #include "igh_probe_frame_stats.hpp"
@@ -25,14 +26,16 @@ using namespace std::chrono_literals;
 using Clock = std::chrono::steady_clock;
 
 namespace {
-constexpr uint32_t vendor = 0x10000, product = 2, revision = 2, interface_version = 0x10002;
+constexpr uint32_t vendor = 0x10000, product = 2, revision = 2, interface_version = dcu_profile_pdo::interface_version;
 constexpr auto default_period = 4ms;
-constexpr unsigned rx_lengths[] = {736, 784, 544}, tx_lengths[] = {1024, 1072, 544};
+constexpr auto &layouts = dcu_profile_pdo::modes;
+constexpr unsigned rx_lengths[] = {layouts[0].rx.bytes, layouts[1].rx.bytes, layouts[2].rx.bytes};
+constexpr unsigned tx_lengths[] = {layouts[0].tx.bytes, layouts[1].tx.bytes, layouts[2].tx.bytes};
 constexpr unsigned timing_drain_cycles = 24;
 constexpr unsigned max_timing_cycles = 30 * 60 * 1000;
 constexpr auto max_spin = 50us;
 constexpr uint64_t slow_receive_ns = 8000;
-using Image = std::array<uint8_t, 784>;
+using Image = std::array<uint8_t, std::max({rx_lengths[0], rx_lengths[1], rx_lengths[2]})>;
 
 struct Ticket {
     uint32_t epoch, generation, sequence;
@@ -359,8 +362,8 @@ void run_one_cycle(ec_master_t *master, ec_slave_config_t *slave, unsigned mode,
     auto *output = ecrt_master_create_domain(master);
     auto *input = ecrt_master_create_domain(master);
     require(output && input, "could not create separate write and read domains");
-    require(ecrt_slave_config_reg_pdo_entry_pos(slave, 2, 0, 0, output, nullptr) == 0 &&
-            ecrt_slave_config_reg_pdo_entry_pos(slave, 3, 0, 0, input, nullptr) == 0 &&
+    require(dcu_profile_pdo::register_image(slave, output, 2, layouts[mode].rx) == 0 &&
+            dcu_profile_pdo::register_image(slave, input, 3, layouts[mode].tx) == 0 &&
             ecrt_domain_size(output) == rx_bytes && ecrt_domain_size(input) == tx_bytes,
             "split domains do not match the existing SM2/SM3 PDO layout");
     check_igh("IgH send interval", ecrt_master_set_send_interval, master,
@@ -503,6 +506,7 @@ void run(Ticket old, unsigned hold_cycles, std::chrono::microseconds period,
     require(lease >= 2 && lease <= 10, "unexpected active Profile command lease");
     const auto pdo = [lease](uint32_t seq, bool enabled = false) { return ordinary(seq, lease, enabled); };
     require(mode < std::size(rx_lengths), "unexpected PDO mapping mode");
+    require(dcu_profile_pdo::verify(master.get(), 0, mode), "Profile layout digest, assignments or IgH entries differ");
     Ticket ticket{upload(master.get(), 0x2002, 1, 4), upload(master.get(), 0x2002, 2, 4), 0};
     const auto state = upload(master.get(), 0x2002, 3, 2);
     require(ticket.epoch && ticket.generation && state == 2 && upload(master.get(), 0x2002, 4, 4) == 0,
@@ -522,8 +526,8 @@ void run(Ticket old, unsigned hold_cycles, std::chrono::microseconds period,
     require(domain, "could not bind SM domain");
     auto *al_request = ecrt_slave_config_create_reg_request(sc, 6);
     require(al_request, "could not allocate AL diagnostic request");
-    const int rx = ecrt_slave_config_reg_pdo_entry_pos(sc, 2, 0, 0, domain, nullptr);
-    const int tx = ecrt_slave_config_reg_pdo_entry_pos(sc, 3, 0, 0, domain, nullptr);
+    const int rx = dcu_profile_pdo::register_image(sc, domain, 2, layouts[mode].rx);
+    const int tx = dcu_profile_pdo::register_image(sc, domain, 3, layouts[mode].tx);
     const auto bytes = ecrt_domain_size(domain);
     require(rx >= 0 && tx >= 0 && unsigned(rx) + rx_lengths[mode] <= bytes &&
             unsigned(tx) + tx_lengths[mode] <= bytes && bytes == rx_lengths[mode] + tx_lengths[mode] &&

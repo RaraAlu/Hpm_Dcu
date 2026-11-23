@@ -2,6 +2,7 @@
 """Generate the DCU wire contract, SSC dictionary, ESI and SII without SDK tools."""
 import argparse
 import copy
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -12,6 +13,7 @@ import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+DEFAULT_CAN_PROFILE = ROOT / 'firmware/app/profile/cfg/生产CAN配置.yaml'
 TYPES = {
     'uint8_t': (1, 'USINT', 'UNSIGNED8'), 'uint16_t': (2, 'UINT', 'UNSIGNED16'),
     'uint32_t': (4, 'UDINT', 'UNSIGNED32'), 'uint64_t': (8, 'ULINT', 'UNSIGNED64'),
@@ -142,10 +144,12 @@ def header(schema):
     return '\n'.join(lines) + '\n'
 
 
-def storage(objects):
+def storage(objects, layout_digest=None):
     lines = [BANNER, '/* Private storage instantiated by comm/ethercat/encos_storage.c. */']
     for index, obj in objects.items():
         values = ','.join(f'.{f["name"]} = ' + ('{0}' if f.get('count', 1) != 1 else str(f['default'])) for f in obj['fields'])
+        if index == 0x2102 and layout_digest is not None:
+            values = '.Sha256 = {' + ','.join(str(v) for v in bytes.fromhex(layout_digest)) + '}'
         lines.append(f'static {obj["type"]} od_{index:04X} = {{{values}}};')
     lines.append('mc_object_t mc_objects[] = {')
     for index, obj in objects.items():
@@ -166,7 +170,7 @@ def c_names(name, fields):
     return ' "\\000" '.join(json.dumps(s, ensure_ascii=True) for s in [name, *fields]) + ' "\\000" "\\377"'
 
 
-def gateway(schema, objects, pdos):
+def gateway(schema, objects, pdos, assignments=None):
     capacity = max(sum(pdo['direction'] == direction for pdo in pdos.values()) for direction in ('rx', 'tx'))
     lines = [BANNER, '#ifndef ENCOS_OBJECT_TYPES', '#define ENCOS_OBJECT_TYPES',
              f'typedef struct OBJ_STRUCT_PACKED_START {{ UINT16 u16SubIndex0; UINT16 aEntries[{capacity}]; }} OBJ_STRUCT_PACKED_END TMC_ASSIGN;',
@@ -174,7 +178,8 @@ def gateway(schema, objects, pdos):
              'UINT8 MC_OD_Write(UINT16,UINT8,UINT32,UINT16 *,UINT8);',
              'UINT8 MC_AssignWrite(UINT16,UINT8,UINT32,UINT16 *,UINT8);', '#endif']
     for direction, name in (('rx', 'gRxAssign'), ('tx', 'gTxAssign')):
-        indices = profile_indices(schema['profiles'][schema['default_profile']], direction)
+        indices = (assignments[direction] if assignments is not None else
+                   profile_indices(schema['profiles'][schema['default_profile']], direction))
         lines += [f'PROTO TMC_ASSIGN {name}', '#if defined(_DIGITAL_IO_) && (_DIGITAL_IO_ == 1)',
                   '={' + str(len(indices)) + ',{' + ','.join(f'0x{i:04X}' for i in indices) + '}}', '#endif', ';']
     lines += ['#ifdef _OBJD_', 'OBJCONST TSDOINFOENTRYDESC OBJMEM mcAssignDesc[]={{DEFTYPE_UNSIGNED8,8,ACCESS_READWRITE},{DEFTYPE_UNSIGNED16,16,ACCESS_READWRITE}};',
@@ -431,19 +436,26 @@ def sii(xml, settings):
 
     def pdo_data(tag):
         encoded = bytearray()
+        sm = 2 if tag == 'RxPdo' else 3
+        assigned_bits = 0
         codes = {'INT': 3, 'DINT': 4, 'USINT': 5, 'UINT': 6, 'UDINT': 7, 'REAL': 8, 'ULINT': 27}
         for pdo in device.findall(tag):
             # Like the original SSC image, SII carries only the default profile.
             # Alternate assignments remain discoverable through ESI and CoE.
             if 'Sm' not in pdo.attrib:
                 continue
+            if number(pdo.get('Sm')) != sm:
+                raise ValueError('PDO assigned to the wrong SyncManager')
             entries = pdo.findall('Entry')
+            assigned_bits += sum(number(e.findtext('BitLen')) for e in entries)
             encoded += struct.pack('<HBBBBH', number(pdo.findtext('Index')), len(entries),
                                    number(pdo.get('Sm', '255')), 0, 0, 0)
             for entry in entries:
                 encoded += struct.pack('<HBBBBH', number(entry.findtext('Index')),
                                        number(entry.findtext('SubIndex')), 0,
                                        codes[entry.findtext('DataType')], number(entry.findtext('BitLen')), 0)
+        if assigned_bits != 8 * number(sms[sm].get('DefaultSize')):
+            raise ValueError('PDO entries disagree with the default SyncManager length')
         return encoded
 
     dc = struct.pack('<IIIhHhBB4x', 0, number(mode.findtext('ShiftTimeSync0', '0')),
@@ -463,28 +475,118 @@ def eeprom_header(data):
     return BANNER + '\r\nunsigned char aEepromData[] = {\r\n' + '\r\n'.join(rows) + '\r\n};\r\n'
 
 
-def outputs(schema_path=HERE / 'cfg/接口定义.json', template_path=HERE / 'cfg/设备模板.xml'):
+def cyclic_contract(schema, pdos, profile):
+    from generate_can_profile import profile_digest
+    buses = sorted(c['bus'] for c in profile['channels'])
+    counts = [0] * 4
+    axes = {}
+    for d in profile['devices']:
+        bus = d['bus']
+        slot = bus * 7 + counts[bus]
+        counts[bus] += 1
+        axes[slot] = {k: d[k] for k in ('id', 'protocol', 'type', 'model_profile_id', 'bus', 'can_id',
+                                          'neutral_mit_only') if k in d}
+    modes = []
+    for mode, family in enumerate(schema['profiles']):
+        image = {}
+        for direction in ('rx', 'tx'):
+            tx = direction == 'tx'
+            refs, entries, length = [], [], 0
+            for index in profile_indices(family, direction):
+                p = pdos[index]
+                base = 0x1A00 if tx else 0x1600
+                ordinal = index - base
+                if 1 <= ordinal <= 4 and ordinal - 1 not in buses: continue
+                if 0x50 <= ordinal <= 0x53 and ordinal - 0x50 not in buses: continue
+                if 0x20 <= ordinal < 0x3C:
+                    device = axes.get(ordinal - 0x20)
+                    if not device or (not tx and device['protocol'] == 'bjcx' and
+                                      not device.get('neutral_mit_only')): continue
+                if tx and ordinal == 0x40: continue  # No production IMU driver or Profile binding.
+                offset = length
+                for sub, field in enumerate(p['fields'], 1):
+                    width = field_size(field)
+                    entries.append(dict(index=p['index'], sub=sub, bits=width * 8, offset=length,
+                                        type=field_type(field)[0], name=field['name'], meaning=field['label']))
+                    length += width
+                refs.append(dict(mapping=index, object=p['index'], offset=offset, bytes=length-offset,
+                                 fields=len(p['fields'])))
+            image[direction] = dict(bytes=length, blocks=refs, entries=entries)
+        modes.append(image)
+    result = dict(version=schema['constants']['MC_INTERFACE_VERSION'], channels=buses,
+                  axes=[dict(slot=k, **axes[k]) for k in sorted(axes)], modes=modes)
+    result['sha256'] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    result['profile_id'] = profile['startup']['profile_id']
+    result['profile_revision'] = profile['startup']['revision']
+    result['profile_sha256'] = profile_digest(profile).hex()
+    return result
+
+
+def rk_header(contract):
+    lines = [BANNER, '#ifndef DCU_PROFILE_PDO_HPP', '#define DCU_PROFILE_PDO_HPP', '#include <cstdint>',
+             'namespace dcu_profile_pdo {',
+             f"inline constexpr uint32_t interface_version = {contract['version']};",
+             f"inline constexpr uint32_t profile_id = {contract['profile_id']}u, profile_revision = {contract['profile_revision']}u;",
+             'struct Block { uint16_t mapping, object, offset, bytes, fields; };',
+             'struct Image { const Block *blocks; const uint32_t *entries; unsigned count, bytes; };',
+             'struct Mode { Image rx, tx; };',
+             'inline constexpr uint8_t profile_digest[] = {' +
+             ','.join(str(v) for v in bytes.fromhex(contract['profile_sha256'])) + '};',
+             'inline constexpr uint8_t digest[] = {' +
+             ','.join(str(v) for v in bytes.fromhex(contract['sha256'])) + '};']
+    rows = []
+    for n, mode in enumerate(contract['modes']):
+        images = []
+        for direction, image in mode.items():
+            prefix = f'{direction}{n}'
+            blocks = ','.join('{0x%(mapping)04x,0x%(object)04x,%(offset)d,%(bytes)d,%(fields)d}' % b for b in image['blocks'])
+            words = ','.join(f"0x{e['index']:04x}{e['sub']:02x}{e['bits']:02x}u" for e in image['entries'])
+            lines += [f'inline constexpr Block {prefix}_blocks[] = {{{blocks}}};',
+                      f'inline constexpr uint32_t {prefix}_entries[] = {{{words}}};']
+            images.append(f"{{{prefix}_blocks,{prefix}_entries,{len(image['blocks'])},{image['bytes']}}}")
+        rows.append('{' + ','.join(images) + '}')
+    lines.extend(['inline constexpr Mode modes[] = {' + ','.join(rows) + '};',
+                  'constexpr int offset(const Image &im, unsigned object) {',
+                  '    for (unsigned i = 0; i < im.count; ++i) if (im.blocks[i].object == object) return im.blocks[i].offset;',
+                  '    return -1;', '}', '}', '#endif', ''])
+    return '\n'.join(lines)
+
+
+def outputs(schema_path=HERE / 'cfg/接口定义.json', template_path=HERE / 'cfg/设备模板.xml',
+            profile_path=DEFAULT_CAN_PROFILE, allow_encos_fixture=False):
+    from generate_can_profile import header as validate_profile, load_yaml
     schema = json.loads(schema_path.read_text(encoding='utf-8'))
+    profile = load_yaml(profile_path)
+    validate_profile(profile, allow_encos_fixture=allow_encos_fixture)
     objects, pdos = expand(schema)
+    contract = cyclic_contract(schema, pdos, profile)
+    default = contract['modes'][schema['default_profile']]
+    assignments = {d: [b['mapping'] for b in image['blocks']] for d, image in default.items()}
+    for i, p in pdos.items():
+        p['default'] = i in assignments[p['direction']]
     xml = esi(template_path.read_bytes(), objects, pdos)
     binary = sii(xml, schema['sii'])
     return {
         'firmware/generated/encos/encos_interface.h': header(schema).encode(),
-        'firmware/generated/encos/encos_storage.inc': storage(objects).encode(),
-        'firmware/generated/ethercat/gatewayObjects.h': gateway(schema, objects, pdos).encode(),
+        'firmware/generated/encos/encos_storage.inc': storage(objects, contract['sha256']).encode(),
+        'firmware/generated/ethercat/gatewayObjects.h': gateway(schema, objects, pdos, assignments).encode(),
         'firmware/generated/ethercat/digital_ioObjects.h': ssc_wrapper(schema).encode(),
         'protocol/ethercat/HPM_ENCOS_4CAN_28AXIS_IMU.xml': xml,
         'protocol/ethercat/HPM_ENCOS_4CAN_28AXIS_IMU.bin': binary,
         'firmware/generated/ethercat/eeprom.h': eeprom_header(binary).encode(),
+        'protocol/ethercat/dcu_profile_pdo.hpp': rk_header(contract).encode(),
+        'protocol/ethercat/周期布局.json': (json.dumps(contract, ensure_ascii=False, indent=2) + '\n').encode(),
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-root', type=Path, help='Generate into this directory; default is read-only check')
+    parser.add_argument('--profile', type=Path, default=DEFAULT_CAN_PROFILE)
+    parser.add_argument('--allow-encos-fixture', action='store_true')
     arguments = parser.parse_args()
     mismatches = []
-    for relative, content in outputs().items():
+    for relative, content in outputs(profile_path=arguments.profile, allow_encos_fixture=arguments.allow_encos_fixture).items():
         target = (arguments.output_root or ROOT) / relative
         if arguments.output_root:
             target.parent.mkdir(parents=True, exist_ok=True)

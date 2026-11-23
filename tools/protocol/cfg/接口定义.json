@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "constants": {
-    "MC_INTERFACE_VERSION": "0x00010002u",
+    "MC_INTERFACE_VERSION": "0x00010003u",
     "MC_AXIS_ARM": "0x0001u",
     "MC_AXIS_STOP": "0x0002u",
     "MC_AXIS_RESET": "0x0004u",
@@ -10,6 +10,9 @@
     "MC_STATUS_ARMED_QUERY_ONLY": "0x2000u"
   },
   "types": {
+    "mc_layout_identity_t": [
+      {"name": "Sha256", "type": "uint8_t", "count": 32, "label": "Cyclic layout SHA-256", "access": "ro", "default": 0}
+    ],
     "mc_raw_switch_t": [
       {"name": "LayoutRequest", "type": "uint8_t", "count": 41, "label": "LayoutRequest", "access": "wo", "default": 0},
       {"name": "Action", "type": "uint8_t", "label": "Action", "access": "wo", "default": 0},
@@ -2912,6 +2915,13 @@
       "index": "0x2101",
       "type": "mc_raw_switch_t",
       "name": "Gateway.RawSwitch",
+      "count": 1,
+      "stride": 0
+    },
+    {
+      "index": "0x2102",
+      "type": "mc_layout_identity_t",
+      "name": "Gateway.CyclicLayout",
       "count": 1,
       "stride": 0
     },

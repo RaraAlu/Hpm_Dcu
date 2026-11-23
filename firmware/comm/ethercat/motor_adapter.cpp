@@ -79,7 +79,7 @@ void publish_owner()
 
 bool adapter::initialize(const dcu_production_profile_t &profile)
 {
-    if (!bind_slots(profile) || !pdo::bind_publication()) return false;
+    if (!bind_slots(profile) || !pdo::bind_publication(profile)) return false;
     dcu::ethercat::motor_services::initialize();
     publish_profile();
     object<mc_board_info_t>(0x2000)->Capabilities = 7;
@@ -98,7 +98,7 @@ uint32_t motor_control_event_lease_us(void)
 void motor_control_output(const void *data)
 {
     input.mode = application::mode();
-    const size_t bytes = layout::profiles[static_cast<unsigned>(input.mode)].output;
+    const size_t bytes = layout::active().bytes(static_cast<unsigned>(input.mode), false);
     std::memcpy(input.wire, data, bytes);
     pdo::decode_cycle(input.wire, input.mode, input.command);
     input.pending = true;
@@ -126,14 +126,16 @@ DCU_FAST_CODE bool motor_control_process(void)
     if (input.mode == application::OperatingMode::Raw) {
         if (result.raw_mirrored)
             for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
-                *object<canfd_bus_pdo_t>(0x7400 + 16 * c) = pdo::raw_bus(input.wire, c);
+                if (layout::active().buses & (1U << c))
+                    *object<canfd_bus_pdo_t>(0x7400 + 16 * c) = pdo::raw_bus(input.wire, c);
         return true;
     }
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
-        *object<mc_channel_rx_t>(0x7100 + c) = pdo::channel(input.wire, c);
+        if (layout::active().buses & (1U << c))
+            *object<mc_channel_rx_t>(0x7100 + c) = pdo::channel(input.wire, c);
     const uint32_t mirror = adapter::slots_for_devices(result.mirrored_devices);
     for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
-        if (mirror & (1u << a))
+        if (mirror & layout::active().command_axes & (1u << a))
             *object<mc_axis_rx_t>(0x7200 + a) = pdo::axis(input.wire, a);
     if (input.mode == application::OperatingMode::MotorWithRaw && result.raw_mirrored)
         *object<mc_sideband_t>(0x7300) = pdo::raw(input.wire);

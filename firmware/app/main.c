@@ -17,6 +17,7 @@
 #include "production_profile.h"
 #include "gateway_identity.h"
 #include "production_init.h"
+#include "motor_ethercat.h"
 #include "ethercat_cycle.h"
 #include "ethercat_can_task.h"
 #include "cycle_timers.h"
@@ -43,7 +44,7 @@ int main(void)
         printf("Init cycle timebase failed!\n");
         return 0;
     }
-    /* 1 ms 非阻塞节拍同时服务 CAN 活动灯；回调内部每 1000 次翻转原心跳灯。 */
+
     board_timer_create(1, dcu_mcan_led_tick);
     const dcu_production_profile_t *profile = dcu_production_profile();
     stat = dcu_mcan_init(profile->channels, profile->channel_count);
@@ -64,7 +65,7 @@ int main(void)
     /* Keep 0x1018:04 aligned with the per-board serial retained in SII. */
     sIdentity.u32Serialnumber = ecat_flash_eeprom_serial();
 
-    if (!motor_control_init()) {
+    if (!motor_control_init() || !motor_control_verify_contract()) {
         printf("Init device Profile failed!\n");
         return 0;
     }

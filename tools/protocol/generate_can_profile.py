@@ -10,6 +10,10 @@ from pathlib import Path
 from check_gateway_contract import identifier, keys, load_yaml, require, uint
 
 
+def profile_digest(profile):
+    return hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).digest()
+
+
 def bounded(value, low, high, name):
     require(type(value) is int and low <= value <= high, f"{name}: expected integer in [{low}, {high}]")
     return value
@@ -142,7 +146,7 @@ def header(profile, *, allow_encos_fixture=False):
     revision = bounded(startup["revision"], 1, 0xFFFFFFFF, "revision")
     ttl = bounded(startup["readiness_ttl_ms"], 100, 10000, "readiness_ttl_ms")
     wait = bounded(startup["activation_wait_s"], 1, 60, "activation_wait_s")
-    digest = hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).digest()
+    digest = profile_digest(profile)
     digest_bytes = ", ".join(f"0x{byte:02x}" for byte in digest)
     safety = profile["safety"]
     keys(safety, {"max_command_lease_ms", "feedback_timeout_ms"}, "safety")

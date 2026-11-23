@@ -208,13 +208,14 @@ static void request_test_layout(unsigned profile)
 static void copy_txpdo(void *data)
 {
     const auto profile = static_cast<unsigned>(mode());
-    std::memcpy(data, ssc_txpdo, dcu::ethercat::pdo_layout::profiles[profile].input);
+    std::memcpy(data, ssc_txpdo, motor_pdo::layout::active().bytes(profile, true));
 }
 
 static void check_txpdo_bytes()
 {
     const auto profile = static_cast<unsigned>(mode());
-    const size_t size = dcu::ethercat::pdo_layout::profiles[profile].input;
+    const auto &layout = motor_pdo::layout::active();
+    const size_t size = layout.bytes(profile, true);
     const auto *wire = ssc_txpdo;
     size_t offset = 0;
     const auto check = [&](const auto *mirror) {
@@ -227,13 +228,12 @@ static void check_txpdo_bytes()
         check(object<mc_raw_t>(0x6401));
     } else if (profile == 2) {
         for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
-            check(object<canfd_bus_pdo_t>(0x6500 + 16 * c));
+            if (layout.buses & (1U << c)) check(object<canfd_bus_pdo_t>(0x6500 + 16 * c));
     } else {
         for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
-            check(object<mc_channel_tx_t>(0x6100 + c));
+            if (layout.buses & (1U << c)) check(object<mc_channel_tx_t>(0x6100 + c));
         for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
-            check(axis_feedback(a));
-        check(object<mc_imu_t>(0x6300));
+            if (layout.feedback_axes & (1U << a)) check(axis_feedback(a));
         if (profile == 1) check(object<mc_sideband_t>(0x6400));
     }
     CHECK(offset == size);
@@ -390,11 +390,14 @@ struct RawPdoFixture {
                 channel.ChannelControl = 1;
                 channel.ExpectedRole = object<mc_channel_config_t>(0x2010 + c)->Role;
                 channel.Reserved = 2000;
-                std::memcpy(data + 32 + 8 * c, &channel, sizeof(channel));
+                if (motor_pdo::layout::active().buses & (1U << c))
+                    motor_pdo::store(data, motor_pdo::layout::active().channel(false, c), channel);
             }
-            std::memcpy(data + 736, &sideband, sizeof(sideband));
+            motor_pdo::store(data, motor_pdo::layout::active().sideband(false), sideband);
         } else {
-            std::memcpy(data + 32, full, sizeof(full));
+            for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
+                if (motor_pdo::layout::active().buses & (1U << c))
+                    motor_pdo::store(data, motor_pdo::layout::active().raw_bus(false, c), full[c]);
         }
         motor_control_output(data);
         run_cycle();
@@ -499,7 +502,7 @@ static void test_raw_switch(bool timeout, bool overflow)
     CHECK(motor_control_mapping(&in, &out) != 0 && !in && !out); // 旧分配仍不匹配。
     select_wire_profile(0);
     check_raw_state(RawState::Disabled);
-    CHECK(test_input_size == 1024 && read_sdo<uint32_t>(0x2100, 5) == 7);
+    CHECK(test_input_size == 64 && read_sdo<uint32_t>(0x2100, 5) == 7);
     CHECK(switch_request(2) == 0 && switch_action(1) == 0);
     select_wire_profile(2);
     RawPdoFixture full(2);
@@ -554,12 +557,13 @@ static void startup_business(uint32_t seq, uint16_t control, bool enabled = true
     channel.ActiveMask = 1;
     channel.ExpectedRole = 1;
     channel.Reserved = 2000;
-    std::memcpy(wire + 32 + 8 * 2, &channel, sizeof(channel));
+    motor_pdo::store(wire, motor_pdo::layout::active().channel(false, 2), channel);
     mc_axis_rx_t axis{};
     axis.ControlWord = control;
     axis.Mode = 1;
     axis.CurrentLimit = 50;
-    std::memcpy(wire + 64 + 24 * 14, &axis, sizeof(axis));
+    const auto offset = motor_pdo::layout::active().axis(false, 14);
+    if (offset != motor_pdo::layout::absent) motor_pdo::store(wire, offset, axis);
     motor_control_output(wire);
     run_cycle();
     motor_control_prepare_input();
@@ -795,6 +799,15 @@ static void test_production_raw(bool authorize)
     fixture_profile = host_hra55h100_profile();
     CHECK(motor_control_init() && motor_control_boot_startup(17));
     select_wire_profile(1);
+    CHECK(motor_control_verify_contract());
+    auto wrong_profile = *fixture_profile;
+    wrong_profile.readiness.digest[0] ^= 1;
+    fixture_profile = &wrong_profile;
+    CHECK(!motor_control_verify_contract());
+    fixture_profile = host_hra55h100_profile();
+    ++gTxAssign.aEntries[1];
+    CHECK(!motor_control_verify_contract());
+    --gTxAssign.aEntries[1];
     CHECK(adapter::configured_device(21)->can_id == 2);
     CHECK(read_sdo<uint32_t>(0x2101, 5) == 0);
     motor_control_operational(true);
@@ -861,7 +874,7 @@ static void test_production_raw(bool authorize)
     }
     CHECK(!write_limits(0) && !switch_action(1));
     select_wire_profile(1);
-    CHECK(test_input_size == 1072 && gRxAssign.u16SubIndex0 == 34 && gTxAssign.u16SubIndex0 == 35);
+    CHECK(test_input_size == 128 && gRxAssign.u16SubIndex0 == 5 && gTxAssign.u16SubIndex0 == 5);
     CHECK(object<mc_board_config_t>(0x2001)->AxisConfiguredMask == (1U << 21));
     CHECK(object<mc_channel_config_t>(0x2013)->Role == 1);
     ++test_ms;
@@ -884,8 +897,8 @@ static void test_production_raw(bool authorize)
         axis.Mode = 4;
         axis.ControlWord = control;
         motor_pdo::store(motor_wire, 0, b);
-        motor_pdo::store(motor_wire, 32 + 3 * 8, mc_channel_rx_t{1, 1, 1, 2000});
-        motor_pdo::store(motor_wire, 64 + 21 * 24, axis);
+        motor_pdo::store(motor_wire, 40, mc_channel_rx_t{1, 1, 1, 2000});
+        motor_pdo::store(motor_wire, 48, axis);
         motor_control_output(motor_wire);
         run_cycle();
         motor_control_prepare_input();
@@ -987,6 +1000,14 @@ static void test_encos_four_axis_production_pdo()
     CHECK(motor_control_init() && motor_control_boot_startup(uint64_t{startup_epoch} << 32));
     select_wire_profile(1);
     CHECK(object<mc_board_config_t>(0x2001)->AxisConfiguredMask == ((15U << 14) | (1U << 21)));
+    CHECK(test_input_size == 256 && motor_pdo::layout::active().bytes(1, false) == 216);
+    CHECK(gRxAssign.aEntries[3] == 0x162E && gTxAssign.aEntries[7] == 0x1A35);
+    const uint16_t saved = gRxAssign.aEntries[3];
+    gRxAssign.aEntries[3] = gRxAssign.aEntries[4];
+    gRxAssign.aEntries[4] = saved;
+    uint16_t in = 1, out = 1;
+    CHECK(motor_control_mapping(&in, &out) != 0 && !in && !out);
+    select_wire_profile(1);
     constexpr uint8_t mit_zero[]{0, 0, 0, 0x7f, 0xff, 0x7f, 0xf7, 0xff};
     unsigned transmitted[4]{}, sequence = 0;
     size_t read = 0;
@@ -1023,11 +1044,11 @@ static void test_encos_four_axis_production_pdo()
         board.ChannelEnableMask = enabled ? 1U << 2 : 0;
         board.AxisEnableMask = enabled ? 15U << 14 : 0;
         motor_pdo::store(wire, 0, board);
-        motor_pdo::store(wire, 32 + 2 * 8, mc_channel_rx_t{1, 15, 1, 2000});
+        motor_pdo::store(wire, 32, mc_channel_rx_t{1, 15, 1, 2000});
         mc_axis_rx_t axis{};
         axis.ControlWord = control;
         axis.Mode = 4;
-        for (unsigned n = 0; n < 4; ++n) motor_pdo::store(wire, 64 + (14 + n) * 24, axis);
+        for (unsigned n = 0; n < 4; ++n) motor_pdo::store(wire, 48 + n * 24, axis);
         motor_control_output(wire);
         for (unsigned us = 0; us < 2000; us += DCU_WORKER_PERIOD_US) worker();
         motor_control_prepare_input();
@@ -1283,7 +1304,7 @@ int main(int argc, char **argv)
         CHECK(sent.empty());
 
         select_wire_profile(1);
-        CHECK(test_input_size == 1072);
+        CHECK(test_input_size == (pipeline ? 160 : 128));
         CHECK(motor_control_boot_startup(uint64_t{startup_epoch} << 32));
         if (!std::strcmp(scenario, "_quota_equivalence")) CHECK(!write_limits(1U << 24));
         test_tx_eof = {UINT32_MAX - 2, true};
@@ -1304,13 +1325,13 @@ int main(int argc, char **argv)
             board.CommandLeaseMs = 10;
             motor_pdo::store(wire, 0, board);
             const mc_channel_rx_t channel{1, members, 1, 2000};
-            motor_pdo::store(wire, motor_pdo::layout::output_channels_offset + bus * sizeof(channel), channel);
+            motor_pdo::store(wire, 40, channel);
             mc_axis_rx_t axis{};
             axis.Mode = 4;
             axis.ControlWord = controls;
             axis.TargetPosition = position;
-            motor_pdo::store(wire, motor_pdo::layout::output_axes_offset + slot * sizeof(axis), axis);
-            if (pipeline) motor_pdo::store(wire, motor_pdo::layout::output_axes_offset + (slot + 1) * sizeof(axis), axis);
+            motor_pdo::store(wire, 48, axis);
+            if (pipeline) motor_pdo::store(wire, 72, axis);
             motor_control_output(wire);
             run_cycle();
         };
@@ -1352,7 +1373,7 @@ int main(int argc, char **argv)
             deliver(bus, reply, {1, true});
             motor_control_prepare_input();
             CHECK(axis_feedback(slot)->ValidFlags == 0x37);
-            std::fwrite(wire, 1, sizeof(wire), stdout);
+            std::fwrite(wire, 1, motor_pdo::layout::active().bytes(1, false), stdout);
             std::fwrite(ssc_txpdo, 1, test_input_size, stdout);
             std::fwrite(request.data, 1, sizeof(mit), stdout);
             return 0;
@@ -1552,8 +1573,9 @@ int main(int argc, char **argv)
         uint8_t active_mask = 2;
         const auto submit = [&](unsigned slot, const mc_axis_rx_t &command) {
             const mc_channel_rx_t channel{1, active_mask, 1, 2000};
-            motor_pdo::store(wire, motor_pdo::layout::output_channels_offset + 2 * sizeof(channel), channel);
-            motor_pdo::store(wire, motor_pdo::layout::output_axes_offset + slot * sizeof(command), command);
+            motor_pdo::store(wire, motor_pdo::layout::active().channel(false, 2), channel);
+            const auto offset = motor_pdo::layout::active().axis(false, slot);
+            if (offset != motor_pdo::layout::absent) motor_pdo::store(wire, offset, command);
             ++board.CycleSeq;
             motor_pdo::store(wire, 0, board);
             motor_control_output(wire);
@@ -1561,7 +1583,8 @@ int main(int argc, char **argv)
         };
         for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
             const mc_channel_rx_t channel{1, 0, 0, 2000};
-            motor_pdo::store(wire, motor_pdo::layout::output_channels_offset + c * sizeof(channel), channel);
+            if (motor_pdo::layout::active().buses & (1U << c))
+                motor_pdo::store(wire, motor_pdo::layout::active().channel(false, c), channel);
         }
         mc_axis_rx_t command{};
         command.Mode = 1;
@@ -1752,7 +1775,8 @@ int main(int argc, char **argv)
         parameters::initialize({});
         CHECK(dcu::app::gateway_application::detail::initialize_fixture(config));
         CHECK(select_mode(full_fixture ? OperatingMode::Raw : OperatingMode::MotorWithRaw));
-        CHECK(motor_pdo::bind_publication());
+        test_profile.device_count = 0;
+        CHECK(motor_pdo::bind_publication(test_profile));
     } else {
         if (!std::strcmp(argv[1], "profiles") || !std::strcmp(argv[1], "latched_layouts") ||
             !std::strncmp(argv[1], "raw_", 4))
@@ -2021,12 +2045,12 @@ int main(int argc, char **argv)
             CHECK(!std::memcmp(&channel, output + 32 + 8 * c, sizeof(channel)));
             CHECK(!std::memcmp(&bus, output + 32 + 128 * c, sizeof(bus)));
         }
-        for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a) {
+        for (unsigned a = 0; a < 1; ++a) {
             auto axis = motor_pdo::axis(output, a);
             CHECK(!std::memcmp(&axis, output + 64 + 24 * a, sizeof(axis)));
         }
         auto raw = motor_pdo::raw(output);
-        CHECK(!std::memcmp(&raw, output + 736, sizeof(raw)));
+        CHECK(!std::memcmp(&raw, output + 88, sizeof(raw)));
         std::memset(first, 0xA5, sizeof(first));
         std::memset(second, 0xA5, sizeof(second));
         mc_board_tx_t b{};
@@ -2041,16 +2065,12 @@ int main(int argc, char **argv)
         }
         mc_axis_tx_t axis{};
         std::memset(&axis, 0x33, sizeof(axis));
-        for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a) {
+        for (unsigned a = 0; a < 1; ++a) {
             motor_pdo::write_axis(first, a, axis);
             std::memcpy(second + 64 + 32 * a, &axis, sizeof(axis));
         }
-        mc_imu_t imu{};
-        std::memset(&imu, 0x44, sizeof(imu));
-        motor_pdo::write_imu(first, imu);
-        std::memcpy(second + 960, &imu, sizeof(imu));
         motor_pdo::write_raw(first, raw);
-        std::memcpy(second + 1024, &raw, sizeof(raw));
+        std::memcpy(second + 96, &raw, sizeof(raw));
         CHECK(!std::memcmp(first, second, sizeof(first)));
         for (unsigned i = 0; i < 2; ++i) {
             auto slot = motor_pdo::sideband_slot(raw, i);
@@ -2295,11 +2315,9 @@ int main(int argc, char **argv)
     if (!std::strcmp(argv[1], "latched_layouts")) {
         CHECK(boot_startup({1, 1, {}, 1000, 5}, 1));
         motor_control_operational(true);
-        const auto axis_offset = dcu::ethercat::pdo_layout::input_axes_offset;
-        const auto raw_offset = dcu::ethercat::pdo_layout::motor_input_bytes;
+        const auto raw_offset = motor_pdo::layout::active().sideband(true);
         motor_control_prepare_input();
         check_txpdo_bytes();
-        std::memcpy(first, ssc_txpdo + axis_offset, sizeof(mc_axis_tx_t));
         CHECK(!std::memcmp(ssc_txpdo + raw_offset, "T1R2", 4));
         const auto first_page = ssc_txpdo[raw_offset + 4];
         motor_control_prepare_input();
@@ -2311,10 +2329,9 @@ int main(int argc, char **argv)
         select_wire_profile(2);
         motor_control_prepare_input();
         check_txpdo_bytes();
-        CHECK(std::memcmp(first, ssc_txpdo + axis_offset, sizeof(mc_axis_tx_t)));
         request_test_layout(1);
-        // The motor template is already restored when the SSC accepts the mapping.
-        CHECK(!std::memcmp(first, ssc_txpdo + axis_offset, sizeof(mc_axis_tx_t)));
+        const mc_sideband_t cleared{};
+        CHECK(!std::memcmp(ssc_txpdo + raw_offset, &cleared, sizeof(cleared)));
         motor_control_operational(true);
         motor_control_prepare_input();
         check_txpdo_bytes();

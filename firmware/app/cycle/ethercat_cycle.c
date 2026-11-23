@@ -56,15 +56,18 @@ void dcu_first_pdo_trace_at(uint32_t time_us, uint32_t event, uint32_t a, uint32
 
 static void trace_first_sm2(const void *data, uint32_t stage_done_us, uint32_t read_end_us)
 {
-    if (nPdOutputSize != 784U) return;
+    if (nPdOutputSize < sizeof(mc_board_rx_t)) return;
     mc_board_rx_t board;
     memcpy(&board, data, sizeof(board));
     if (!__atomic_load_n(&can2_first_pdo_trace.sequence, __ATOMIC_ACQUIRE)) {
         if (!board.CycleSeq || board.InterfaceVersion != MC_INTERFACE_VERSION || board.BoardControl != 1U ||
             board.ChannelEnableMask != 4U || board.AxisEnableMask != (15U << 14)) return;
         const mc_axis_rx_t zero = {.ControlWord = MC_AXIS_ARM | MC_AXIS_START_MOTION, .Mode = 4};
-        for (unsigned i = 0; i < 4; ++i)
-            if (memcmp((const uint8_t *)data + 64U + (14U + i) * sizeof(zero), &zero, sizeof(zero))) return;
+        for (unsigned i = 0; i < 4; ++i) {
+            const unsigned offset = motor_control_command_offset(14U + i);
+            if (offset + sizeof(zero) > nPdOutputSize ||
+                memcmp((const uint8_t *)data + offset, &zero, sizeof(zero))) return;
+        }
         can2_first_pdo_trace.armed_us = stage_done_us;
         __atomic_store_n(&can2_first_pdo_trace.sequence, board.CycleSeq, __ATOMIC_RELEASE);
     }
@@ -133,7 +136,7 @@ static void phase_record_publish(volatile dcu_pdo_phase_sample_t *sample, uint32
     uint16_t capacity;
     const uint8_t *wire = dcu_ssc_txpdo_buffer(&capacity);
     // 单帧档没有 AcceptedCycleSeq，偏移 4 是 ValidMask。
-    if (wire && capacity >= 8U && nPdOutputSize != sizeof(mc_raw_t))
+    if (wire && capacity >= 8U && !motor_control_event_pdo())
         sample->accepted = phase_le32(wire + 4);
     sample->published_us = end_us;
     sample->retx_count = dcu_can_observed_retx_count() - sample_retx_baseline;

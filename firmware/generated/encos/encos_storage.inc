@@ -11,6 +11,7 @@ static mc_channel_config_t od_2012 = {.Role = 0,.FrameFormat = 0,.NominalBitrate
 static mc_channel_config_t od_2013 = {.Role = 0,.FrameFormat = 0,.NominalBitrate = 0,.DataBitrate = 0,.ScheduleUs = 0,.RawRateLimit = 0,.MotorConfiguredMask = 0};
 static mc_profile_update_t od_2100 = {.Candidate = {0},.CommitRevision = 0,.Result = 0,.ProfileId = 0,.ActiveRevision = 0,.StagedRevision = 0,.ReadinessTtlMs = 0};
 static mc_raw_switch_t od_2101 = {.LayoutRequest = {0},.Action = 0,.State = 0,.Drops = 0,.PureRawLimits = 0,.MotorBusOwner = 0,.BusTxCompleted = 0,.RawTxCancelled = 0};
+static mc_layout_identity_t od_2102 = {.Sha256 = {250,4,34,28,100,165,119,123,198,14,146,80,177,114,24,253,234,74,107,112,238,113,85,0,133,98,214,238,65,143,74,174}};
 static mc_sdo_command_t od_2200 = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0,.CommitSeq = 0,.LeaseMs = 0,.AcceptedSeq = 0,.CommandResult = 0};
 static mc_sdo_command_t od_2210 = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0,.CommitSeq = 0,.LeaseMs = 0,.AcceptedSeq = 0,.CommandResult = 0};
 static mc_sdo_command_t od_2220 = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0,.CommitSeq = 0,.LeaseMs = 0,.AcceptedSeq = 0,.CommandResult = 0};
@@ -410,6 +411,7 @@ mc_object_t mc_objects[] = {
 {0x2013,17,7,(uint8_t *)&od_2013},
 {0x2100,58,7,(uint8_t *)&od_2100},
 {0x2101,60,8,(uint8_t *)&od_2101},
+{0x2102,32,1,(uint8_t *)&od_2102},
 {0x2200,36,14,(uint8_t *)&od_2200},
 {0x2210,36,14,(uint8_t *)&od_2210},
 {0x2220,36,14,(uint8_t *)&od_2220},
@@ -861,6 +863,7 @@ const mc_field_t mc_fields[] = {
 {0x2101,6,1,3,51},
 {0x2101,7,4,1,52},
 {0x2101,8,4,1,56},
+{0x2102,1,32,1,0},
 {0x2200,1,2,3,0},
 {0x2200,2,1,3,2},
 {0x2200,3,1,3,3},

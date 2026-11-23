@@ -23,15 +23,14 @@ struct ChannelSlot {
 
 struct PublicationState {
     uint8_t *image;
-    uint8_t *imu_tx, *raw_tx;
+    uint8_t *raw_tx;
+    pdo_layout::Layout wire;
     uint32_t raw_batch;
-    uint32_t configured_slots;
     uint8_t round_robin, diagnostic_page, slot_count, layout;
     bool motor_layout, diagnostic_layout;
     mc_board_tx_t *board;
     ChannelSlot channels[ENCOS_CHANNEL_COUNT];
     MotorSlot slots[ENCOS_AXIS_COUNT];
-    mc_imu_t *imu;
     mc_sideband_t *raw;
     mc_raw_t *single_fd;
     uint8_t slave_match;

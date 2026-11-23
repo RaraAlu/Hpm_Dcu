@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / 'tools/protocol'
+sys.path.insert(0, str(SOURCE))
 INPUTS = SOURCE / 'cfg'
 spec = importlib.util.spec_from_file_location('dcu_protocol_generator', SOURCE / 'generate.py')
 generator = importlib.util.module_from_spec(spec)
@@ -51,6 +52,8 @@ class ProtocolGenerationTest(unittest.TestCase):
         cls.xml = ET.fromstring(cls.generated[ESI])
         cls.objects, cls.pdos = generator.expand(cls.schema)
         cls.legacy_schema = copy.deepcopy(cls.schema)
+        del cls.legacy_schema['types']['mc_layout_identity_t']
+        cls.legacy_schema['constants']['MC_INTERFACE_VERSION'] = '0x00010002u'
         del cls.legacy_schema['types']['mc_profile_update_t']
         del cls.legacy_schema['types']['mc_raw_switch_t']
         del cls.legacy_schema['types']['mc_raw_t']
@@ -66,9 +69,10 @@ class ProtocolGenerationTest(unittest.TestCase):
             root = Path(directory)
             source = root / 'tools/protocol'
             (source / 'cfg').mkdir(parents=True)
-            for name in ('generate.py', 'cfg/接口定义.json', 'cfg/设备模板.xml'):
+            for name in ('generate.py', 'generate_can_profile.py', 'check_gateway_contract.py',
+                         'cfg/接口定义.json', 'cfg/设备模板.xml'):
                 shutil.copy2(SOURCE / name, source / name)
-            command = [sys.executable, str(source / 'generate.py')]
+            command = [sys.executable, str(source / 'generate.py'), '--profile', str(generator.DEFAULT_CAN_PROFILE)]
             for _ in range(2):
                 subprocess.run([*command, '--output-root', str(root)], check=True, capture_output=True)
                 for name, content in self.generated.items():
@@ -104,7 +108,7 @@ class ProtocolGenerationTest(unittest.TestCase):
             tokens = ' '.join(re.findall(r'\w+|[^\w\s]', text))
             self.assertEqual(digest(tokens.encode()), checksum, name)
         self.assertEqual(self.schema['constants'], {
-            'MC_INTERFACE_VERSION': '0x00010002u', 'MC_AXIS_ARM': '0x0001u',
+            'MC_INTERFACE_VERSION': '0x00010003u', 'MC_AXIS_ARM': '0x0001u',
             'MC_AXIS_STOP': '0x0002u', 'MC_AXIS_RESET': '0x0004u',
             'MC_AXIS_START_MOTION': '0x0008u', 'MC_STATUS_QUERY_SOURCE': '0x1000u',
             'MC_STATUS_ARMED_QUERY_ONLY': '0x2000u',
@@ -122,12 +126,12 @@ class ProtocolGenerationTest(unittest.TestCase):
             self.assertEqual(digest(json.dumps(payload, ensure_ascii=True, separators=(',', ':')).encode()), checksum)
 
     def test_profile_update_adds_only_an_unmapped_mailbox_object(self):
-        self.assertEqual({k: v for k, v in self.objects.items() if k not in (0x2100, 0x2101, 0x6401, 0x7301)}, self.legacy_objects)
+        self.assertEqual({k: v for k, v in self.objects.items() if k not in (0x2100, 0x2101, 0x2102, 0x6401, 0x7301)}, self.legacy_objects)
         switch = self.objects[0x2101]['fields']
         self.assertEqual([generator.field_size(f) for f in switch], [41, 1, 1, 4, 4, 1, 4, 4])
         self.assertEqual([f['access'] for f in switch], ['wo', 'wo', 'ro', 'ro', 'rw', 'rw', 'ro', 'ro'])
         self.assertEqual({k: v for k, v in self.pdos.items() if k not in (0x1641, 0x1A42)}, self.legacy_pdos)
-        self.assertEqual(self.generated[SII], generator.sii(ET.tostring(self.legacy_xml), self.schema['sii']))
+        self.assertNotEqual(self.generated[SII], generator.sii(ET.tostring(self.legacy_xml), self.schema['sii']))
         fields = self.objects[0x2100]['fields']
         self.assertEqual([generator.field_size(field) for field in fields], [36, 4, 2, 4, 4, 4, 4])
         self.assertEqual([field['access'] for field in fields], ['wo', 'wo', 'ro', 'ro', 'ro', 'ro', 'ro'])
@@ -138,8 +142,8 @@ class ProtocolGenerationTest(unittest.TestCase):
                 with self.subTest(type=name, field=field['name']):
                     self.assertEqual((field['access'], field['default']), ('ro', 0))
 
-    def test_all_four_assignments_retain_their_sizes_and_order(self):
-        self.assertEqual(len(self.objects), 398)
+    def test_supported_object_catalog_retains_capacity_and_order(self):
+        self.assertEqual(len(self.objects), 399)
         self.assertEqual(len(self.pdos), 79)
         self.assertEqual(len(self.schema['profiles']), 4)
         for profile, expected in zip(self.schema['profiles'], ((736, 1024), (784, 1072), (544, 544), (88, 88))):
@@ -161,11 +165,9 @@ class ProtocolGenerationTest(unittest.TestCase):
         for kind, checksum in {
             30: '0ddd184b8212f57ed6226ee820083b3b878e075fa1b2d9886b557f007d097808',
             40: '3e6f9aae16382bf563d8991b6da1b92213911f0dd5deea3ecaccf2f35a56794a',
-            41: '13e44b7d3d505092b6bf44df869c75adff118400ed25a9f3f607c09a1e84f8b6',
-            50: '14ace2e41f96a3394da90ce45ed9fb1d1fbbaadc6ae72ebc878f7927ce65fed3',
-            51: 'd3636c6e35a47598e393cddf2dd6dc9af0638babf37ff0477be7ef4d4fb4f934',
         }.items():
             self.assertEqual(digest(cats[kind]), checksum, kind)
+        self.assertEqual(tuple(struct.unpack_from('<H', cats[41], sm*8+2)[0] for sm in (2, 3)), (120, 128))
         image = self.generated['firmware/generated/ethercat/eeprom.h'].decode()
         self.assertEqual(bytes(int(x, 16) for x in re.findall(r'0x([0-9A-F]{2})', image)), binary)
 
@@ -210,6 +212,62 @@ class ProtocolGenerationTest(unittest.TestCase):
                 for e in p.findall('Entry')]) for p in self.xml.findall('.//' + tag) if 'Sm' in p.attrib]
             self.assertEqual(parsed, expected)
 
+    def test_profile_compacts_independent_directions_without_reassigning_slots(self):
+        fixture = ROOT / 'tests/host/motor/cfg/混挂电机验证配置.yaml'
+        result = generator.outputs(profile_path=fixture, allow_encos_fixture=True)
+        manifest = json.loads(result['protocol/ethercat/周期布局.json'])
+        motor, mixed, raw, single = manifest['modes']
+        self.assertEqual([(m['rx']['bytes'], m['tx']['bytes']) for m in (motor, mixed, raw, single)],
+                         [(72, 144), (120, 192), (288, 288), (88, 88)])
+        self.assertEqual([b['mapping'] for b in mixed['rx']['blocks']],
+                         [0x1600, 0x1601, 0x1603, 0x162e, 0x1640])
+        self.assertEqual([(b['mapping'], b['offset']) for b in mixed['tx']['blocks']],
+                         [(0x1a00, 0), (0x1a01, 32), (0x1a03, 40), (0x1a20, 48),
+                          (0x1a2e, 80), (0x1a2f, 112), (0x1a41, 144)])
+        for d, tag in [('rx', 'RxPdo'), ('tx', 'TxPdo')]:
+            xml = ET.fromstring(result[ESI])
+            self.assertEqual([generator.number(p.findtext('Index')) for p in xml.findall('.//' + tag + '[@Sm]')],
+                             [b['mapping'] for b in mixed[d]['blocks']])
+        self.assertEqual(bytes.fromhex(manifest['sha256']), bytes(map(int, re.search(
+            rb'od_2102 = \{\.Sha256 = \{([\d,]+)', result['firmware/generated/encos/encos_storage.inc'])[1].split(b','))))
+
+    def test_route_and_equal_width_semantics_change_identity_even_at_identical_lengths(self):
+        from generate_can_profile import load_yaml
+        p = load_yaml(generator.DEFAULT_CAN_PROFILE)
+        base = generator.cyclic_contract(self.schema, self.pdos, p)
+        changed = copy.deepcopy(p)
+        changed['devices'][0]['can_id'] += 1
+        other = generator.cyclic_contract(self.schema, self.pdos, changed)
+        self.assertEqual(base['modes'], other['modes'])
+        self.assertNotEqual(base['sha256'], other['sha256'])
+        changed = copy.deepcopy(p)
+        changed['startup']['readiness_ttl_ms'] += 1
+        other = generator.cyclic_contract(self.schema, self.pdos, changed)
+        self.assertEqual(base['sha256'], other['sha256'])
+        self.assertNotEqual(base['profile_sha256'], other['profile_sha256'])
+        changed = copy.deepcopy(self.schema)
+        fields = changed['types']['mc_axis_tx_t']
+        a, b = (next(i for i, f in enumerate(fields) if f['name'] == name)
+                for name in ('ActualPosition', 'ActualVelocity'))
+        fields[a], fields[b] = fields[b], fields[a]
+        other = generator.cyclic_contract(changed, generator.expand(changed)[1], p)
+        self.assertEqual(base['modes'][1]['tx']['bytes'], other['modes'][1]['tx']['bytes'])
+        self.assertNotEqual(base['sha256'], other['sha256'])
+
+    def test_empty_and_full_motor_profiles_never_map_an_inactive_imu(self):
+        from generate_can_profile import load_yaml
+        p = load_yaml(generator.DEFAULT_CAN_PROFILE)
+        p['devices'] = []
+        p['channels'] = [dict(p['channels'][0], bus=n) for n in range(4)]
+        def sizes():
+            image = generator.cyclic_contract(self.schema, self.pdos, p)['modes'][1]
+            self.assertNotIn(0x1a40, [b['mapping'] for b in image['tx']['blocks']])
+            return image['rx']['bytes'], image['tx']['bytes']
+        self.assertEqual(sizes(), (112, 112))
+        p['devices'] = [dict(id=f'axis_{bus}_{n}', protocol='encos', type='7216', bus=bus, can_id=n+1)
+                        for bus in range(4) for n in range(7)]
+        self.assertEqual(sizes(), (784, 1008))
+
     def test_source_edits_affect_all_relevant_outputs(self):
         changed = copy.deepcopy(self.schema)
         changed['types']['mc_board_rx_t'][0]['default'] = 123
@@ -222,6 +280,15 @@ class ProtocolGenerationTest(unittest.TestCase):
         self.assertIn('0x20F0', generator.gateway(changed, objects, pdos))
         xml = generator.esi((INPUTS / '设备模板.xml').read_bytes(), objects, pdos)
         self.assertIn(b'#x20F0', xml)
+
+    def test_rk_rejects_wrong_digest_entries_direction_and_registered_offsets(self):
+        with tempfile.TemporaryDirectory() as work:
+            exe = Path(work) / 'verify-layout'
+            target = ROOT / 'tests/host/ethercat_data'
+            subprocess.run(['c++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                            '-I', str(target / 'layout_stubs'), '-I', str(ROOT / 'protocol/ethercat'),
+                            str(target / 'test_profile_layout.cpp'), '-o', str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
 
     def test_bad_schema_is_rejected(self):
         for mutate in (
@@ -278,7 +345,7 @@ class ProtocolGenerationTest(unittest.TestCase):
             subprocess.run(['cc', '-std=c11', '-Wall', '-Werror', *includes, '-c',
                             str(ROOT / 'firmware/comm/ethercat/encos_storage.c'), '-o', str(storage)], check=True, capture_output=True)
             cpp = work / 'main.cpp'
-            cpp.write_text('#include "encos_interface.h"\nint main() { return mc_object_count != 398 || !mc_objects[0].data; }\n')
+            cpp.write_text('#include "encos_interface.h"\nint main() { return mc_object_count != 399 || !mc_objects[0].data; }\n')
             subprocess.run(['c++', '-std=c++17', '-pedantic-errors', *includes, str(cpp), str(storage),
                             '-o', str(work / 'contract')], check=True, capture_output=True)
             subprocess.run([str(work / 'contract')], check=True)

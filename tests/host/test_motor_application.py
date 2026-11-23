@@ -19,10 +19,14 @@ class MotorApplicationTest(unittest.TestCase):
         cls.addClassCleanup(directory.cleanup)
         work = Path(directory.name)
         flags = ["-I", str(work), "-DDCU_HOST_ENGINE_TEST", "-O0", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
+        table_flags = []
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             flags.extend(("-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"))
+            # GCC 13 UBSan rejects valid constexpr pointers into the model table.
+            # Keep ASan on these immutable tables and both checks on all runtime code.
+            table_flags.append("-fno-sanitize=undefined")
         for include in (
-            "tests/host/motor/stubs", "firmware/cfg", "firmware/ports",
+            "tests/host/motor/stubs", "firmware/cfg", "firmware/ports", "protocol/ethercat",
             "firmware/generated/encos", "firmware/generated/ethercat",
             "firmware/app", "firmware/app/gateway", "firmware/app/profile", "firmware/app/cycle",
             "firmware/protocols/encos", "firmware/protocols/bjcx", "firmware/comm/canfd",
@@ -49,7 +53,7 @@ class MotorApplicationTest(unittest.TestCase):
             ])
             obj = work / f"{name}.o"
             cls.run_command([
-                cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", "-I", str(work / name), *flags,
+                cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", "-I", str(work / name), *flags, *table_flags,
                 f"-Ddcu_production_profile=host_{name}_profile",
                 "-c", str(ROOT / "firmware/app/profile/production_profile.cpp"), "-o", str(obj),
             ])
@@ -140,7 +144,7 @@ class MotorApplicationTest(unittest.TestCase):
         def capture(case):
             return subprocess.check_output([str(self.executable), "hra55h100_profile_" + case], timeout=30)
         baseline = capture("baseline_equivalence")
-        self.assertEqual(len(baseline), 784 + 1072 + 16)
+        self.assertEqual(len(baseline), 120 + 128 + 16)
         self.assertEqual(capture("quota_equivalence"), baseline)
 
     def test_pure_modes_cancel_inflight_motor_probes_and_restore_readiness_gate(self):

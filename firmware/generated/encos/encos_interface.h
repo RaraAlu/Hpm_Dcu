@@ -4,13 +4,18 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "dcu_compiler.h"
-#define MC_INTERFACE_VERSION 0x00010002u
+#define MC_INTERFACE_VERSION 0x00010003u
 #define MC_AXIS_ARM 0x0001u
 #define MC_AXIS_STOP 0x0002u
 #define MC_AXIS_RESET 0x0004u
 #define MC_AXIS_START_MOTION 0x0008u
 #define MC_STATUS_QUERY_SOURCE 0x1000u
 #define MC_STATUS_ARMED_QUERY_ONLY 0x2000u
+typedef struct __attribute__((packed)) {
+    uint8_t Sha256[32];
+} mc_layout_identity_t;
+DCU_STATIC_ASSERT(sizeof(mc_layout_identity_t)==32, "layout_identity size");
+DCU_STATIC_ASSERT(offsetof(mc_layout_identity_t,Sha256)==0, "layout_identity.Sha256");
 typedef struct __attribute__((packed)) {
     uint8_t LayoutRequest[41];
     uint8_t Action;
