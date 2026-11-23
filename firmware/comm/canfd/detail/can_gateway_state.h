@@ -26,6 +26,12 @@ typedef struct {
     dcu_can_eof_t eof;
 } tx_slot_t;
 
+typedef struct {
+    dcu_can_eof_t eof;
+    uint32_t observed_us;
+    bool seen;
+} tx_retirement_t;
+
 typedef enum {
     CANFD_FAULT_FROM_IRQ = 1,
     CANFD_FAULT_FROM_STATE_READ,

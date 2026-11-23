@@ -1,4 +1,5 @@
 #include "can_bus_scheduler.hpp"
+#include "can_transport.h"
 #include "cfg/gateway_schedule_policy.hpp"
 #include <climits>
 
@@ -24,10 +25,6 @@ void BusScheduler::refill(uint32_t now)
         credit_us_ + elapsed * cfg::can_budget_us_per_ms;
     credit_us_ = credit > cfg::can_budget_cap_us ? cfg::can_budget_cap_us : credit;
 }
-bool BusScheduler::guard_elapsed(uint32_t now) const
-{
-    return uint32_t(now - last_tx_us_) >= cfg::control_response_guard_us;
-}
 bool BusScheduler::query_window(ControlSet controls, uint32_t now,
                                 unsigned query_cost, unsigned control_cost) const
 {
@@ -45,14 +42,12 @@ bool BusScheduler::query_window(ControlSet controls, uint32_t now,
     }
     if (uint64_t(active) * control_cost * 1000u > uint64_t(cfg::can_budget_us_per_ms) * controls.period_us)
         return false;
-    uint32_t since_tx = now - last_tx_us_;
-    uint32_t wait = since_tx >= cfg::control_response_guard_us ? 0 : cfg::control_response_guard_us - since_tx;
-    return slack >= wait + cfg::process_period_us + query_cost &&
+    return slack >= DCU_CAN_TX_EOF_GAP_US + cfg::process_period_us + query_cost &&
            credit_us_ >= query_cost + active * control_cost;
 }
 int BusScheduler::next_control(ControlSet controls, uint32_t now, unsigned cost, bool ready) const
 {
-    if (!ready || !can_afford(cost) || !guard_elapsed(now)) return -1;
+    if (!ready || !can_afford(cost)) return -1;
     for (unsigned n = 0; n < DCU_MOTOR_DEVICES_PER_BUS; ++n) {
         unsigned slot = (control_slot_ + n) % DCU_MOTOR_DEVICES_PER_BUS;
         if (!(controls.active_mask & (1u << slot))) continue;
@@ -61,14 +56,9 @@ int BusScheduler::next_control(ControlSet controls, uint32_t now, unsigned cost,
     }
     return -1;
 }
-void BusScheduler::submitted(uint32_t now, unsigned cost)
-{
-    charge(cost);
-    last_tx_us_ = now;
-}
 void BusScheduler::control_submitted(unsigned slot, uint32_t now, uint32_t period, bool first, unsigned cost)
 {
-    submitted(now, cost);
+    charge(cost);
     uint32_t elapsed = now - last_control_us_[slot];
     // Preserve the requested phase, but do not burst to catch up after a stall.
     if (first || elapsed >= 2u * period) last_control_us_[slot] = now;

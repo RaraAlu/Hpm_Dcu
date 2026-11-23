@@ -186,8 +186,8 @@ bool CanTransactions::submit_neutral(unsigned bus, unsigned device, motor::Motor
     if (!instance.take_neutral_mit(frame, counter)) return false;
     const auto *channel = dcu_can_channel_config(bus);
     const unsigned cost = 2U * BusScheduler::frame_cost(true, 16);
-    if (!drained || !channel || !channel->timestamp_eof || busy(bus, device) || dcu_can_pending(bus, slots_[device]) ||
-        !dcu_can_tx_free(bus) || !schedule.guard_elapsed(now_us) || !schedule.can_afford(cost))
+    if (!drained || !channel || !channel->timestamp_eof || busy(bus, device) ||
+        !dcu_can_tx_serial_ready(bus) || !schedule.can_afford(cost))
         return false;
     const auto id = dcu_can_submit(bus, slots_[device], &frame);
     if (!id) return false;
@@ -203,7 +203,7 @@ bool CanTransactions::submit_neutral(unsigned bus, unsigned device, motor::Motor
     trace.rx_eof_valid = 0;
     trace.outcome = NeutralMitTraceOutcome::Pending;
 #endif
-    schedule.submitted(now_us, cost);
+    schedule.charge(cost);
     polls_[bus][slots_[device]] = {id, now, 0, false, true, {}, true, now_us};
     return true;
 }
@@ -228,7 +228,7 @@ bool CanTransactions::submit_poll(unsigned bus, unsigned device, motor::MotorIns
                                   uint32_t now, uint32_t now_us)
 {
     const auto *channel = dcu_can_channel_config(bus);
-    if (!channel || dcu_can_pending(bus, slots_[device]) || !dcu_can_tx_free(bus) || !schedule.guard_elapsed(now_us)) return false;
+    if (!channel || !dcu_can_tx_serial_ready(bus)) return false;
     motor::StatusPoll request{};
     if (!instance.prepare_status_poll(now, request) || request.frame.id != instance.can_id() ||
         !dcu_can_frame_valid(&request.frame) || !request.timeout_ms || request.reply_bytes > DCU_CAN_MAX_PAYLOAD)
@@ -238,7 +238,7 @@ bool CanTransactions::submit_poll(unsigned bus, unsigned device, motor::MotorIns
     if (!schedule.query_window(controls, now_us, cost, 2u * BusScheduler::frame_cost(fd, 8))) return false;
     const auto id = dcu_can_submit(bus, slots_[device], &request.frame);
     if (!id) return false;
-    schedule.submitted(now_us, cost);
+    schedule.charge(cost);
     polls_[bus][slots_[device]] = {id, now, request.timeout_ms, false, channel->timestamp_eof, {}, false, 0};
     return true;
 }
@@ -261,14 +261,14 @@ void CanTransactions::submit_queued(unsigned bus, BusScheduler &schedule, Contro
     if (slot == DCU_CAN_DEVICE_ANY) {
         for (const auto &poll : polls_[bus]) if (poll.tx_id) return;
     } else if (polls_[bus][slot].tx_id) return;
-    if (dcu_can_pending(bus, slot) || !dcu_can_tx_free(bus) || !schedule.guard_elapsed(now_us)) return;
+    if (!dcu_can_tx_serial_ready(bus)) return;
     const unsigned reply_cost = BusScheduler::frame_cost(fd, 8);
     const unsigned cost = BusScheduler::frame_cost(fd, request->dlc) + reply_cost;
     if (legacy.internal && !schedule.query_window(controls, now_us, cost, 2u * reply_cost))
         return;
     if (!schedule.can_afford(cost)) return;
     if (const auto id = dcu_can_submit(bus, slot, request)) {
-        schedule.submitted(now_us, cost);
+        schedule.charge(cost);
         parameters::mark_submitted(bus, now, id);
     }
 }

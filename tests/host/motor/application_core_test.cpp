@@ -21,11 +21,14 @@ static uint32_t now_ms, now_us;
 static uint16_t bus_states[DCU_DEVICE_CAN_BUS_COUNT];
 static unsigned canceled;
 static std::deque<dcu_can_frame_t> received[ENCOS_CHANNEL_COUNT];
+static std::deque<dcu_can_eof_t> receive_eofs;
 static std::vector<std::pair<unsigned, dcu_can_frame_t>> sent;
 static std::deque<dcu_can_tx_event_t> tx_events[ENCOS_CHANNEL_COUNT];
+static uint32_t last_tx_eof_us[ENCOS_CHANNEL_COUNT];
+static bool tx_seen[ENCOS_CHANNEL_COUNT];
 static dcu_can_tx_id_t tx_serial;
 static std::vector<unsigned> sent_slots;
-static const dcu_can_channel_config_t applied_channels[] = {
+static dcu_can_channel_config_t applied_channels[] = {
     {2, 1000000, 5000000, true, false}, {0, 1000000, 0, false, false},
 };
 static const dcu_motor_device_profile_t classic_motor{
@@ -42,11 +45,16 @@ const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus)
 }
 uint32_t dcu_time_now_ms(void) { return now_ms; }
 uint32_t dcu_time_now_us(void) { return now_us; }
+bool dcu_tx_inhibited(void) { return false; }
 uint16_t dcu_can_bus_state(uint32_t bus) { return bus_states[bus]; }
 uint32_t dcu_can_rx_drops(unsigned) { return 0; }
 bool dcu_can_pending(unsigned, unsigned) { return false; }
 bool dcu_can_drain_raw(unsigned) { return true; }
 unsigned dcu_can_tx_free(unsigned) { return 8; }
+bool dcu_can_tx_serial_ready(unsigned bus)
+{
+    return tx_events[bus].empty() && (!tx_seen[bus] || now_us - last_tx_eof_us[bus] >= DCU_CAN_TX_EOF_GAP_US);
+}
 uint32_t dcu_can_tx_progress(unsigned) { return 0; }
 void dcu_can_cancel(unsigned) { ++canceled; }
 bool dcu_can_cancel_tx(unsigned, dcu_can_tx_id_t id) { CHECK(id); ++canceled; return true; }
@@ -54,7 +62,14 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned slot, const dcu_can_frame_
 {
     sent.emplace_back(bus, *frame);
     sent_slots.push_back(slot);
-    tx_events[bus].push_back({++tx_serial, DCU_CAN_TX_COMPLETED, {}});
+    last_tx_eof_us[bus] = now_us;
+    tx_seen[bus] = true;
+    dcu_can_tx_event_t event{++tx_serial, DCU_CAN_TX_COMPLETED, {}};
+    if (bus == 0 && applied_channels[1].timestamp_eof) {
+        event.eof.tick = now_us;
+        event.eof.valid = true;
+    }
+    tx_events[bus].push_back(event);
     return tx_serial;
 }
 bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
@@ -70,6 +85,10 @@ bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, dcu_can_rx_stamp_t *s
     *frame = received[bus].front();
     received[bus].pop_front();
     *stamp = {now_ms, {}};
+    if (!receive_eofs.empty()) {
+        stamp->eof = receive_eofs.front();
+        receive_eofs.pop_front();
+    }
     return true;
 }
 
@@ -169,6 +188,84 @@ static void start_axis(app::CycleCommand &command)
     tick(&command);
     CHECK(app::read_device(0, feedback, diagnostic));
     CHECK(feedback.status_word & 8U);
+}
+
+static void cyclic_mit_sweep(app::OperatingMode mode)
+{
+    dcu_motor_device_profile_t devices[] = {classic_motor, classic_motor, classic_motor, classic_motor};
+    for (unsigned a = 0; a < 4; ++a) devices[a].can_id = a + 1;
+    auto config = configuration();
+    config.devices = devices;
+    config.device_count = 4;
+    applied_channels[1].timestamp_eof = true;
+    initialize_core(config, mode);
+    auto command = cycle_command();
+    begin_session(command, app::OWNER_PDO);
+    command.active_devices = command.board.enabled_devices = 0xf;
+    CHECK(tick(&command).accepted); // Prepare all enabled axes before the ARM edge.
+    for (auto &axis : command.devices) {
+        axis.control_bits = motor::Arm;
+        axis.mode = motor::ControlMode::Impedance;
+        axis.current_limit_dA = 0;
+    }
+    CHECK(tick(&command).accepted);
+    size_t next = 0;
+    for (unsigned i = 0; i < 40; ++i) {
+        query_replies(next);
+        CHECK(tick(&command).accepted);
+    }
+    for (unsigned a = 0; a < 4; ++a) {
+        motor::MotorFeedback feedback{};
+        motor::MotorDiagnostics diagnostics{};
+        CHECK(app::read_device(a, feedback, diagnostics) && (feedback.status_word & 4U));
+        command.devices[a].control_bits |= motor::StartMotion;
+    }
+    const auto first = sent.size();
+    const uint32_t start = now_us + 1000;
+    const uint32_t deadline = start + 1600;
+    app::set_cyclic_feedback_window(2000, deadline);
+    const auto accepted = tick(&command);
+    CHECK(accepted.accepted && app::cyclic_feedback_missing() == 0xf);
+    CHECK(accepted.mirrored_devices == 0xf);
+    CHECK(sent.size() == first + 1);
+    now_us = start + 99;
+    app::process(nullptr);
+    CHECK(sent.size() == first + 1);
+    for (unsigned j = 1; j < 4; ++j) {
+        now_us = start + 100 * j;
+        app::process(nullptr);
+        CHECK(sent.size() == first + j + 1 && app::cyclic_feedback_missing() == 0xf);
+    }
+    const auto queue_reply = [&](unsigned sent_index, uint32_t eof, bool valid) {
+        dcu_can_frame_t frame{};
+        frame.id = sent[first + sent_index].second.id;
+        frame.dlc = 8;
+        frame.data[0] = 0x20;
+        frame.data[1] = 0x80;
+        frame.data[3] = 0x80;
+        frame.data[4] = 8;
+        received[0].push_back(frame);
+        dcu_can_eof_t stamp{};
+        stamp.tick = eof;
+        stamp.valid = valid;
+        receive_eofs.push_back(stamp);
+    };
+    queue_reply(0, start - 1, true);
+    queue_reply(1, start + 101, false);
+    now_us = start + 350;
+    app::process(nullptr);
+    CHECK(app::cyclic_feedback_missing() == 0xf);
+    for (unsigned j = 4; j-- > 0;) queue_reply(j, start + 100 * j + 1, true);
+    now_us = start + 450;
+    app::process(nullptr);
+    CHECK(app::cyclic_feedback_missing() == 0 && sent.size() == first + 4);
+    app::Publication snapshot{};
+    app::prepare_publication(snapshot);
+    for (unsigned a = 0; a < 4; ++a)
+        CHECK((snapshot.devices[a].feedback.status_word & 16U) && snapshot.devices[a].cyclic_feedback_count == 1);
+    now_us = start + 1000;
+    app::process(nullptr);
+    CHECK(sent.size() == first + 4);
 }
 
 static void configuration_values()
@@ -466,6 +563,8 @@ int main(int argc, char **argv)
     else if (!std::strcmp(argv[1], "interleaved_slots")) interleaved_slots();
     else if (!std::strcmp(argv[1], "query_before_sideband")) query_before_sideband();
     else if (!std::strcmp(argv[1], "stop")) stop_and_snapshots();
+    else if (!std::strcmp(argv[1], "cyclic_mit")) cyclic_mit_sweep(app::OperatingMode::Motor);
+    else if (!std::strcmp(argv[1], "cyclic_mit_with_raw")) cyclic_mit_sweep(app::OperatingMode::MotorWithRaw);
     else if (!std::strcmp(argv[1], "sdo")) sdo_sequence();
     else if (!std::strcmp(argv[1], "owner")) ownership();
     else if (!std::strcmp(argv[1], "raw")) full_raw();

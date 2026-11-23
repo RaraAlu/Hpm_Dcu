@@ -73,6 +73,11 @@ class EthercatCycleTest(unittest.TestCase):
     def test_already_late_packing_never_begins_an_esc_write(self):
         self.run_command([str(self.executable), "pack_already_late"])
 
+    def test_cyclic_feedback_is_complete_before_pack_and_write(self):
+        for scenario in ("cyclic_complete", "cyclic_missing", "cyclic_write_late"):
+            with self.subTest(scenario=scenario):
+                self.run_command([str(self.executable), scenario])
+
     def test_phase_trace_retains_failed_publish_stages_and_neutral_wait(self):
         for scenario in ("neutral_wait", "neutral_wait_late", "prepare_late", "pack_already_late", "sm2_exchange"):
             with self.subTest(scenario=scenario):

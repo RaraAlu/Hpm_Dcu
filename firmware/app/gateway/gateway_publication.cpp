@@ -1,4 +1,5 @@
 #include "detail/gateway_application_impl.hpp"
+#include "cycle_config.h"
 #include "realtime_port.h"
 
 namespace dcu::app::gateway_application::detail {
@@ -8,7 +9,7 @@ bool GatewayApplication::neutral_feedback_pending() const
     return neutral_run_.awaiting || (neutral_run_.active & ~neutral_run_.sent_this_cycle);
 }
 
-void GatewayApplication::prepare_publication(Publication &snapshot)
+DCU_FAST_CODE void GatewayApplication::prepare_publication(Publication &snapshot)
 {
     const uint32_t now = dcu_time_now_ms();
     snapshot.mode = state_.mode;

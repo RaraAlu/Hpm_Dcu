@@ -607,6 +607,25 @@ DCU_FAST_CODE void hw_esc_write_pdo(volatile uint32_t *dest, const void *src, ui
     dcu_esc_pdo_copy(dest, src, size);
 }
 
+DCU_FAST_CODE bool hw_esc_publish_pdo_before(uint16_t address, const void *src, uint16_t size, uint32_t deadline_us)
+{
+    if (!src || size < sizeof(uint32_t) || ((address | size) & 3U) ||
+        (int32_t)(deadline_us - dcu_time_now_us()) <= 0) return false;
+
+    volatile uint32_t *const dest = &((volatile uint32_t *)pEsc)[address >> 2];
+    const uint16_t prefix = size - sizeof(uint32_t);
+    uint32_t last;
+    memcpy(&last, (const uint8_t *)src + prefix, sizeof(last));
+    dcu_esc_pdo_copy(dest, src, prefix);
+
+    /* In the buffered SM, the last PDI word hands the image to EtherCAT. */
+    const uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    const bool timely = (int32_t)(deadline_us - dcu_time_now_us()) > 1;
+    if (timely) dest[prefix >> 2] = last;
+    restore_global_irq(irq & CSR_MSTATUS_MIE_MASK);
+    return timely;
+}
+
 /* actual EEPROM initialization */
 #if defined(ESC_EEPROM_EMULATION) && (!ESC_EEPROM_EMULATION)
 

@@ -104,7 +104,7 @@ void motor_control_output(const void *data)
     input.pending = true;
 }
 
-bool motor_control_process(void)
+DCU_FAST_CODE bool motor_control_process(void)
 {
     // A PREOP remapping must not reinterpret a pending image from the previous mode.
     if (input.pending && input.mode != application::mode()) input.pending = false;
@@ -139,6 +139,13 @@ bool motor_control_process(void)
         *object<mc_sideband_t>(0x7300) = pdo::raw(input.wire);
     return true;
 }
+
+void motor_control_set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us)
+{ application::set_cyclic_feedback_window(period_us, deadline_us); }
+
+uint32_t motor_control_cyclic_feedback_required(void) { return application::cyclic_feedback_required(); }
+uint32_t motor_control_cyclic_feedback_missing(void) { return application::cyclic_feedback_missing(); }
+void motor_control_fault_cyclic_feedback(uint32_t missing) { application::fault_cyclic_feedback(missing); }
 
 void motor_control_operational(bool operational)
 {

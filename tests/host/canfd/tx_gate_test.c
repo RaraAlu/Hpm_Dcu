@@ -61,6 +61,8 @@ void gpio_write_pin(GPIO_Type *base, unsigned index, unsigned pin, unsigned leve
 void board_init_can(MCAN_Type *base) { CHECK(base == &test_mcan[expected[configured].bus]); }
 uint32_t board_init_can_clock(MCAN_Type *base)
 { CHECK(base == &test_mcan[expected[configured].bus]); return 80000000U; }
+uint32_t clock_get_frequency(unsigned clock)
+{ CHECK(clock == 0); return 200000000U; }
 void board_can_transceiver_phy_set(MCAN_Type *base, bool enabled)
 { CHECK(enabled); enabled_phys |= 1U << (base - test_mcan); }
 void mcan_get_default_config(MCAN_Type *base, mcan_config_t *config)
@@ -429,7 +431,7 @@ int main(int argc, char **argv)
         CHECK(event.eof.valid && event.eof.tick == 0 && !HPM_MCAN1->TSS1);
 
 #if defined(CONFIG_PDO_PHASE_TRACE)
-        CHECK(event.eof.us == 490U); // 800 ticks at 80 MHz before observation.
+        CHECK(event.eof.us == 496U); // 800 ATB ticks at 200 MHz before observation.
 #endif
         pending_rx = staged;
         pending_rx.rx_timestamp_captured = true;
@@ -444,7 +446,7 @@ int main(int argc, char **argv)
         CHECK(dcu_can_receive(1, &received, &stamp));
         CHECK(stamp.observed_ms == 42 && stamp.eof.valid && stamp.eof.tick == UINT32_MAX - 79U && !HPM_MCAN1->TSS1);
 #if defined(CONFIG_PDO_PHASE_TRACE)
-        CHECK(stamp.eof.us == 498U); // Tick wrap before the RX ISR.
+        CHECK(stamp.eof.us == 500U); // 160 ticks, below one microsecond across wrap.
 #endif
         rx_fill = 1; // Capture bit with no valid TSU slot is not evidence.
         mcan1_isr();
@@ -465,6 +467,42 @@ int main(int argc, char **argv)
         finish_hardware(1, true, true);
         CHECK(dcu_can_take_tx_event(1, &event) && event.id == id &&
               event.status == DCU_CAN_TX_CANCELLED && !event.eof.valid && !HPM_MCAN1->TSS1);
+        return 0;
+    }
+    if (!strcmp(argv[1], "serial_eof_gap")) {
+        const dcu_can_channel_config_t channels[] = {fd_bus0, {1, 1000000, 5000000, true, true}};
+        expected = channels;
+        CHECK(dcu_mcan_init(channels, 2) == status_success);
+        test_mcan[0].TXFQS = test_mcan[1].TXFQS = 8;
+        CHECK(dcu_can_tx_serial_ready(1) && !dcu_can_tx_serial_ready(2));
+        CHECK(dcu_can_submit(1, 0, &frame));
+        observed_us = 1000;
+        CHECK(!dcu_can_tx_serial_ready(1) && dcu_can_tx_serial_ready(0));
+        pending_event = (mcan_tx_event_fifo_elem_t){1, staged.message_marker_l, 0, true};
+        event_ready = true;
+        test_mcan[1].TSS1 = 1;
+        const uint32_t eof = UINT32_MAX - 3999U;
+        tsu_ticks[1][0] = eof;
+        test_mcan[1].ATB = eof + 19999U;
+        finish_hardware(1, true, false);
+        CHECK(!dcu_can_tx_serial_ready(1)); // A completed but unretired request still owns the bus.
+        dcu_can_tx_event_t event;
+        CHECK(dcu_can_take_tx_event(1, &event) && event.eof.valid && event.eof.tick == eof);
+        CHECK(!dcu_can_tx_serial_ready(1));
+        test_mcan[1].ATB = eof + 20000U;
+        CHECK(!dcu_can_tx_serial_ready(1));
+        test_mcan[1].ATB = eof + 20001U;
+        CHECK(dcu_can_tx_serial_ready(1)); // No RX was observed.
+
+        const dcu_can_tx_id_t next = dcu_can_submit(1, 1, &frame);
+        CHECK(next && dcu_can_cancel_tx(1, next));
+        finish_hardware(1, true, true);
+        observed_us = UINT32_MAX - 49U;
+        CHECK(dcu_can_take_tx_event(1, &event) && event.status == DCU_CAN_TX_CANCELLED);
+        observed_us = 50;
+        CHECK(!dcu_can_tx_serial_ready(1));
+        observed_us = 51;
+        CHECK(dcu_can_tx_serial_ready(1));
         return 0;
     }
     if (!strcmp(argv[1], "partial_profile")) {

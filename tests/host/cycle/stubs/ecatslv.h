@@ -7,6 +7,7 @@ extern test_sync_parameters_t sSyncManOutPar, sSyncManInPar;
 extern bool bDcSyncActive;
 extern bool bEcatInputUpdateRunning;
 extern uint16_t nPdOutputSize;
+extern uint16_t nPdInputSize, nEscAddrInputData;
 extern uint16_t LatchInputSync0Value, LatchInputSync0Counter;
 extern uint8_t nAlStatus;
 extern uint8_t u8LocalErrorState;

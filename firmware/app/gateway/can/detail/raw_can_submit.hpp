@@ -10,7 +10,7 @@ namespace dcu::app::gateway_application::detail {
 static_assert(DCU_DEVICE_CAN_BUS_COUNT <= config::raw_can::bus_capacity);
 static_assert(DCU_MOTOR_DEVICES_PER_BUS + 1 <= config::raw_can::protected_id_capacity);
 
-template<bool full_payload = false>
+template<bool full_payload = false, bool paced = false>
 inline RawCanSubmit raw_submit(BusScheduler (&schedule)[DCU_DEVICE_CAN_BUS_COUNT])
 {
     return {schedule, [](void *context, unsigned bus, const dcu_can_frame_t &frame, bool fd_response) {
@@ -20,7 +20,8 @@ inline RawCanSubmit raw_submit(BusScheduler (&schedule)[DCU_DEVICE_CAN_BUS_COUNT
         auto &budget = static_cast<BusScheduler *>(context)[bus];
         const unsigned cost = BusScheduler::frame_cost(fd, dcu_can_dlc_to_bytes(frame.dlc, fd)) +
                               BusScheduler::frame_cost(fd_response, 8);
-        if (!budget.can_afford(cost) || !dcu_can_submit(bus, DCU_CAN_DEVICE_RAW, &frame)) return false;
+        if ((paced && !dcu_can_tx_serial_ready(bus)) || !budget.can_afford(cost) ||
+            !dcu_can_submit(bus, DCU_CAN_DEVICE_RAW, &frame)) return false;
         budget.charge(cost);
         return true;
     }};

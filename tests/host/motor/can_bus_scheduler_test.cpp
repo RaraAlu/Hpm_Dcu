@@ -24,7 +24,7 @@ int main(int argc, char **argv)
         CHECK(scheduler.next_control(controls, 100, 128, true) == 0);
         scheduler.control_submitted(0, 100, 1000, true, 128);
         controls.first_send_mask = 2;
-        CHECK(scheduler.next_control(controls, 199, 128, true) == -1);
+        CHECK(scheduler.next_control(controls, 199, 128, false) == -1);
         CHECK(scheduler.next_control(controls, 200, 128, true) == 1);
         scheduler.control_submitted(1, 200, 1000, true, 128);
         controls.first_send_mask = 0;
@@ -83,7 +83,7 @@ int main(int argc, char **argv)
         scheduler.reset_budget(0);
         other.reset_budget(0);
         scheduler.control_submitted(0, 100, 1000, true, 128);
-        CHECK(scheduler.next_control(controls, 150, 128, true) == -1);
+        CHECK(scheduler.next_control(controls, 150, 128, false) == -1);
         CHECK(other.next_control(controls, 150, 128, true) == 0);
         CHECK(!scheduler.can_afford(2400) && other.can_afford(2400));
     } else if (!std::strcmp(argv[1], "frame_cost")) {

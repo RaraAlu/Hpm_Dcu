@@ -7,6 +7,7 @@
 #include "motor_axis_codec.hpp"
 #include "pdo_pipeline.h"
 #include "can_transport.h"
+#include "cycle_config.h"
 extern "C" {
 #include "digital_io.h"
 #include "ecatslv.h"
@@ -329,7 +330,7 @@ void motor_control_clear_raw_input(void)
     }
 }
 
-void motor_control_prepare_input(void)
+DCU_FAST_CODE void motor_control_prepare_input(void)
 {
     namespace gateway = dcu::app::gateway_application;
     if (gateway::mode() == gateway::OperatingMode::SingleFd) {

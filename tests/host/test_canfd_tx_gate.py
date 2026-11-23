@@ -87,6 +87,9 @@ class CanFdTxGateTest(unittest.TestCase):
     def test_tx_rx_eof_metadata_uses_real_capture_slots(self):
         self.run_command([str(self.executable), "frame_eof"])
 
+    def test_serial_tx_waits_for_eof_and_gap_not_rx_or_other_buses(self):
+        self.run_command([str(self.executable), "serial_eof_gap"])
+
     def test_a_controller_not_in_eof_mode_cannot_activate(self):
         self.run_command([str(self.executable), "bad_eof_mode"])
 

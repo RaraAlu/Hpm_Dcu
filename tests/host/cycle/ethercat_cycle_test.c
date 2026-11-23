@@ -19,6 +19,7 @@ test_sync_parameters_t sSyncManInPar = {SYNCTYPE_DCSYNC0};
 bool bDcSyncActive = true;
 bool bEcatInputUpdateRunning = true;
 uint16_t nPdOutputSize = 784;
+uint16_t nPdInputSize = 1072, nEscAddrInputData = 0x1400;
 uint16_t LatchInputSync0Value = 1, LatchInputSync0Counter;
 uint8_t nAlStatus = 8;
 uint8_t u8LocalErrorState;
@@ -35,6 +36,7 @@ static uint8_t last_output[784];
 static uint8_t processed_output, published_output;
 static bool command_pending, defer_process;
 static bool neutral_feedback_pending;
+static uint32_t cyclic_required, cyclic_missing, cyclic_period_us, cyclic_deadline_us;
 #if defined(CONFIG_PDO_PHASE_TRACE)
 static uint32_t observed_retries;
 uint32_t dcu_can_observed_retx_count(void) { return observed_retries; }
@@ -86,13 +88,31 @@ void motor_control_neutral_feedback_deadline(void)
     ++neutral_deadline_calls;
     neutral_feedback_pending = false;
 }
-#if defined(CONFIG_PDO_PHASE_TRACE)
+void motor_control_set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us)
+{
+    cyclic_period_us = period_us;
+    cyclic_deadline_us = deadline_us;
+}
+uint32_t motor_control_cyclic_feedback_required(void) { return cyclic_required; }
+uint32_t motor_control_cyclic_feedback_missing(void) { return cyclic_missing; }
+void motor_control_fault_cyclic_feedback(uint32_t missing) { CHECK(missing == cyclic_missing); }
 void *dcu_ssc_txpdo_buffer(uint16_t *capacity)
 {
-    static uint8_t buffer[8];
+    static uint32_t buffer[1072 / 4];
     *capacity = sizeof(buffer);
     return buffer;
 }
+bool hw_esc_publish_pdo_before(uint16_t address, const void *src, uint16_t size, uint32_t deadline_us)
+{
+    CHECK(address == nEscAddrInputData && src && size == nPdInputSize);
+    if ((int32_t)(deadline_us - time_us) <= (int32_t)mapping_cost_us) {
+        time_us += mapping_cost_us;
+        return false;
+    }
+    PDO_InputMapping();
+    return true;
+}
+#if defined(CONFIG_PDO_PHASE_TRACE)
 void dcu_pdo_phase_record_rx(const void *data, uint32_t stage_start_us, uint32_t stage_commit_us,
                              uint32_t direct_to_slot, uint32_t direct_read_end_us)
 {
@@ -247,6 +267,40 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 2);
+    if (!strncmp(argv[1], "cyclic_", 7)) {
+        start();
+        const uint32_t required = 0xFU;
+        cyclic_required = cyclic_missing = required;
+        command_boundary(100);
+        const uint32_t prepares = prepare_calls;
+        dcu_cycle_step();
+        CHECK(cyclic_period_us == 2000 && cyclic_deadline_us == 1700);
+        time_us = 1300;
+        cyclic_missing = 0x8;
+        dcu_cycle_step();
+        CHECK(!mapping_calls && prepare_calls == prepares && !fault_calls);
+        if (!strcmp(argv[1], "cyclic_missing")) {
+            time_us = 1701;
+            dcu_cycle_watchdog_isr();
+            CHECK(dcu_tx_inhibited());
+            dcu_cycle_step();
+            check_stopped(PDO_PIPELINE_CAN_FEEDBACK_MISSING);
+            CHECK(cycle_diagnostics.missing_can_devices == 0x8 && !mapping_calls && prepare_calls == prepares);
+        } else {
+            cyclic_missing = 0;
+            prepare_cost_us = 100;
+            mapping_cost_us = !strcmp(argv[1], "cyclic_write_late") ? 301 : 200;
+            dcu_cycle_step();
+            if (mapping_cost_us == 301) {
+                check_stopped(PDO_PIPELINE_TX_LATE);
+                CHECK(!mapping_calls);
+            } else {
+                CHECK(mapping_calls == 1 && cycle_diagnostics.published_epoch == 1 && !fault_calls);
+                CHECK(prepare_calls == prepares + 1 && published_output == 0xA5 && time_us == 1600);
+            }
+        }
+        return 0;
+    }
 #if defined(CONFIG_PDO_PHASE_TRACE)
     if (!strcmp(argv[1], "neutral_wait") || !strcmp(argv[1], "neutral_wait_late")) {
         test_esc_period = 2000000U;

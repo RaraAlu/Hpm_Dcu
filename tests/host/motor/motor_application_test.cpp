@@ -70,6 +70,7 @@ static void select_owner(Owner owner)
 
 uint32_t dcu_time_now_ms(void) { return test_ms; }
 uint32_t dcu_time_now_us(void) { return test_us; }
+bool dcu_tx_inhibited(void) { return false; }
 uint32_t dcu_can_rx_drops(unsigned) { return 0; }
 uint16_t dcu_can_bus_state(uint32_t bus) { return bus_states[bus]; }
 bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, dcu_can_rx_stamp_t *stamp)
@@ -88,6 +89,12 @@ static dcu_can_tx_id_t test_tx_serial;
 static dcu_can_eof_t test_tx_eof;
 static std::deque<dcu_can_tx_event_t> tx_events[ENCOS_CHANNEL_COUNT];
 static std::vector<dcu_can_tx_id_t> raw_ids[ENCOS_CHANNEL_COUNT];
+static uint32_t last_tx_eof_us[ENCOS_CHANNEL_COUNT];
+static bool tx_seen[ENCOS_CHANNEL_COUNT];
+bool dcu_can_tx_serial_ready(unsigned bus)
+{
+    return tx_events[bus].empty() && (!tx_seen[bus] || test_us - last_tx_eof_us[bus] >= DCU_CAN_TX_EOF_GAP_US);
+}
 bool dcu_can_pending(unsigned bus, unsigned owner)
 {
     return owner == DCU_CAN_DEVICE_RAW && !raw_ids[bus].empty();
@@ -110,6 +117,8 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned owner, const dcu_can_frame
 {
     if (!allow_send) return 0;
     sent.emplace_back(bus, *frame);
+    last_tx_eof_us[bus] = test_us;
+    tx_seen[bus] = true;
     tx_events[bus].push_back({++test_tx_serial, DCU_CAN_TX_COMPLETED, test_tx_eof});
     if (owner == DCU_CAN_DEVICE_RAW) raw_ids[bus].push_back(test_tx_serial);
     return test_tx_serial;
@@ -1349,14 +1358,15 @@ int main(int argc, char **argv)
             return 0;
         }
         if (pipeline) {
-            // Both commands are submitted before either TX terminal event or motor reply.
+            // No sibling TX before the first retires, even if its submit-time gap elapsed.
             test_tx_eof = {20, true};
             run_cycle();
-            CHECK(sent.size() == 1); // The shared 100 us guard still applies.
             run_cycle();
-            CHECK(sent.size() == 2 && sent.back().second.id == 3 && tx_events[bus].size() == 2);
-            std::swap(tx_events[bus][0], tx_events[bus][1]);
+            CHECK(sent.size() == 1 && tx_events[bus].size() == 1);
             allow_tx_events = true;
+            run_cycle();
+            CHECK(sent.size() == 2 && sent.back().second.id == 3 && tx_events[bus].size() == 1);
+            // Replies may still arrive in reverse order; TX pacing never waits on RX.
             reply.id = 3;
             deliver(bus, reply, {21, true});
             motor_control_prepare_input();

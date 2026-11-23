@@ -19,6 +19,7 @@ class CanBusSchedulerTest(unittest.TestCase):
         cls.run_command([
             compiler, "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pedantic-errors",
             "-I", str(ROOT / "firmware/app/gateway"), "-I", str(ROOT / "firmware/cfg"),
+            "-I", str(ROOT / "firmware/comm/canfd"), "-I", str(ROOT / "firmware/ports"),
             str(ROOT / "tests/host/motor/can_bus_scheduler_test.cpp"),
             str(ROOT / "firmware/app/gateway/can/can_bus_scheduler.cpp"), "-o", str(cls.executable),
         ])

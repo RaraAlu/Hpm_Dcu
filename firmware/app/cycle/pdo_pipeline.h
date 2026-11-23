@@ -18,7 +18,8 @@ enum {
     PDO_PIPELINE_RX_OVERRUN = 2U,
     PDO_PIPELINE_TX_LATE = 4U,
     PDO_PIPELINE_SYNC_LOST = 8U,
-    PDO_PIPELINE_CONFIG_CHANGED = 16U
+    PDO_PIPELINE_CONFIG_CHANGED = 16U,
+    PDO_PIPELINE_CAN_FEEDBACK_MISSING = 32U
 };
 
 typedef struct {
@@ -41,6 +42,7 @@ typedef struct {
     uint32_t sync_us;
     uint32_t published_epoch;
     uint32_t published;
+    uint32_t cyclic_epoch, cyclic_missing, cyclic_active;
     uint32_t faults;
     uint32_t rx_drops;
     uint32_t period_ns;
@@ -74,6 +76,8 @@ bool pdo_pipeline_sync(pdo_pipeline_t *pipeline, uint32_t now_us);
 bool pdo_pipeline_acquire(pdo_pipeline_t *pipeline, pdo_pipeline_view_t *view);
 void pdo_pipeline_release(pdo_pipeline_t *pipeline, const pdo_pipeline_view_t *view);
 bool pdo_pipeline_publish_due(const pdo_pipeline_t *pipeline, uint32_t now_us);
+void pdo_pipeline_update_cyclic(pdo_pipeline_t *pipeline, uint32_t epoch, uint32_t missing);
+uint32_t pdo_pipeline_cyclic_deadline(const pdo_pipeline_t *pipeline, uint32_t sync_us);
 bool pdo_pipeline_mark_published(pdo_pipeline_t *pipeline, uint32_t epoch,
                                  uint32_t now_us);
 uint32_t pdo_pipeline_check(pdo_pipeline_t *pipeline, uint32_t now_us);

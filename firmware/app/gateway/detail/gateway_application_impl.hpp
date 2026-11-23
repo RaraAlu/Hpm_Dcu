@@ -52,6 +52,10 @@ public:
     void set_neutral_window(uint32_t period_ns, uint32_t cutoff_us);
     void neutral_feedback_deadline() { stop_neutral_run(true); }
     bool neutral_feedback_pending() const;
+    void set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us);
+    uint32_t cyclic_feedback_required() const { return cyclic_.required; }
+    uint32_t cyclic_feedback_missing() const { return cyclic_.required & ~cyclic_.matched; }
+    void fault_cyclic_feedback(uint32_t missing);
     bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame);
 
 private:
@@ -88,8 +92,9 @@ private:
     void step_startup(uint32_t now_ms);
     void revoke_business();
     bool accept_candidate(const CycleCommand &candidate, uint32_t now_ms, ProcessResult &result);
-    bool process_raw(const CycleCommand &candidate, uint32_t now_ms);
+    bool process_raw(const CycleCommand &candidate, uint32_t now_ms, uint8_t reserved_buses = 0);
     void collect_tx_events(unsigned bus);
+    void service_cyclic_feedback(uint32_t now_ms, uint32_t now_us);
     bool consume_feedback(unsigned bus, const dcu_can_frame_t &frame,
                           const dcu_can_rx_stamp_t &stamp, uint32_t now_ms, uint32_t now_us);
 
@@ -102,6 +107,12 @@ private:
     CanTransactions transactions_{};
     ProductionStartup startup_{};
     uint32_t readiness_devices_{};
+    uint32_t timestamped_encos_{};
+    struct CyclicFeedback {
+        uint32_t period_us{}, deadline_us{}, required{}, submitted{}, matched{};
+        uint8_t buses{};
+        dcu_can_eof_t tx_eof[DCU_MOTOR_DEVICE_CAPACITY]{};
+    } cyclic_{};
     struct NeutralRun {
         uint32_t limit[DCU_MOTOR_DEVICE_CAPACITY]{}, submitted[DCU_MOTOR_DEVICE_CAPACITY]{};
         uint32_t period_ns{}, cutoff_us{}, active{}, awaiting{}, closed{}, sent_this_cycle{};

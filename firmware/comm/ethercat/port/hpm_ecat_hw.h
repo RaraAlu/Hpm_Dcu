@@ -93,6 +93,7 @@ void hw_esc_read_4bytes(void *dest, const void *src, uint16_t size);
 void hw_esc_read_isr(void *dest, uint16_t address, uint16_t size);
 bool hw_esc_stage_outputs(uint16_t address, uint16_t size);
 void hw_esc_write_pdo(volatile uint32_t *dest, const void *src, uint16_t size);
+bool hw_esc_publish_pdo_before(uint16_t address, const void *src, uint16_t size, uint32_t deadline_us);
 
 #if defined(ESC_EEPROM_EMULATION) && ESC_EEPROM_EMULATION
 UINT16 HW_EepromReload(void);

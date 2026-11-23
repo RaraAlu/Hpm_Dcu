@@ -1,6 +1,10 @@
 #include "pdo_pipeline.h"
 #include "detail/pdo_pipeline_slots.h"
 #include "cycle_config.h"
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+#include "first_pdo_trace.h"
+#include "realtime_port.h"
+#endif
 #include <string.h>
 
 _Static_assert(__GCC_ATOMIC_INT_LOCK_FREE == 2 && sizeof(uint32_t) == sizeof(unsigned int),
@@ -31,7 +35,14 @@ static inline __attribute__((always_inline)) bool claim(uint32_t *state, uint32_
 
 DCU_FAST_CODE void pdo_pipeline_fault(pdo_pipeline_t *p, uint32_t fault)
 {
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+    const uint32_t before = __atomic_fetch_or(&p->faults, fault, __ATOMIC_RELEASE);
+    if (fault & ~before)
+        DCU_FIRST_TRACE(DCU_FIRST_FAULT_BIT, fault & ~before, load(&p->epoch),
+                        load(&p->published), load(&p->published_epoch));
+#else
     __atomic_fetch_or(&p->faults, fault, __ATOMIC_RELEASE);
+#endif
 }
 
 bool pdo_pipeline_configure(pdo_pipeline_t *p, uint32_t period_ns,
@@ -115,8 +126,11 @@ DCU_FAST_CODE bool pdo_pipeline_sync(pdo_pipeline_t *p, uint32_t now_us)
     bool first_missing = false;
     uint32_t epoch = load(&p->epoch) + 1U;
     if (load(&p->started) &&
-        (!load(&p->published) || load(&p->published_epoch) != load(&p->epoch)))
-        pdo_pipeline_fault(p, PDO_PIPELINE_TX_LATE);
+        (!load(&p->published) || load(&p->published_epoch) != load(&p->epoch))) {
+        const bool missing = load(&p->cyclic_active) && load(&p->cyclic_epoch) == load(&p->epoch) &&
+                             load(&p->cyclic_missing);
+        pdo_pipeline_fault(p, missing ? PDO_PIPELINE_CAN_FEEDBACK_MISSING : PDO_PIPELINE_TX_LATE);
+    }
     store(&p->sync_us, now_us);
     store(&p->published, 0U);
 
@@ -166,14 +180,37 @@ bool pdo_pipeline_publish_due(const pdo_pipeline_t *p, uint32_t now_us)
     if (!load(&p->enabled) || !load(&p->started) || epoch != load(&p->epoch) ||
         (int32_t)(now_us - sync_us) < 0 || already_published)
         return false;
+    if (load(&p->cyclic_active) && load(&p->cyclic_epoch) == epoch)
+        return load(&p->cyclic_missing) == 0;
     return (uint32_t)(now_us - sync_us) >=
            p->period_us - p->advance_us - DCU_TX_BUILD_BUDGET_US;
 }
 
+void pdo_pipeline_update_cyclic(pdo_pipeline_t *p, uint32_t epoch, uint32_t missing)
+{
+    if (epoch != load(&p->epoch)) return;
+    store(&p->cyclic_missing, missing);
+    store(&p->cyclic_epoch, epoch);
+    store(&p->cyclic_active, 1U);
+}
+
+uint32_t pdo_pipeline_cyclic_deadline(const pdo_pipeline_t *p, uint32_t sync_us)
+{
+    const uint32_t advance = p->advance_us > DCU_CYCLIC_SM3_ADVANCE_US ? p->advance_us : DCU_CYCLIC_SM3_ADVANCE_US;
+    return sync_us + p->period_us - advance;
+}
+
 bool pdo_pipeline_mark_published(pdo_pipeline_t *p, uint32_t epoch, uint32_t now_us)
 {
+    const bool cyclic = load(&p->cyclic_active) && load(&p->cyclic_epoch) == epoch;
+    const uint32_t sync_us = load(&p->sync_us);
+    const uint32_t deadline = cyclic ? pdo_pipeline_cyclic_deadline(p, sync_us) : sync_us + p->period_us - p->advance_us;
+    if (cyclic && load(&p->cyclic_missing)) {
+        pdo_pipeline_fault(p, PDO_PIPELINE_CAN_FEEDBACK_MISSING);
+        return false;
+    }
     if (!load(&p->enabled) || epoch != load(&p->epoch) ||
-        (uint32_t)(now_us - load(&p->sync_us)) > p->period_us - p->advance_us) {
+        (int32_t)(now_us - sync_us) < 0 || (int32_t)(now_us - deadline) > 0) {
         pdo_pipeline_fault(p, PDO_PIPELINE_TX_LATE);
         return false;
     }
@@ -190,15 +227,19 @@ uint32_t pdo_pipeline_check(pdo_pipeline_t *p, uint32_t now_us)
 {
     if (load(&p->enabled) && load(&p->started)) {
         uint32_t epoch = load(&p->epoch);
-        uint32_t elapsed = now_us - load(&p->sync_us);
+        const uint32_t sync_us = load(&p->sync_us);
+        uint32_t elapsed = now_us - sync_us;
+        const bool cyclic = load(&p->cyclic_active) && load(&p->cyclic_epoch) == epoch;
+        const uint32_t missing = cyclic ? load(&p->cyclic_missing) : 0U;
+        const uint32_t deadline = cyclic ? pdo_pipeline_cyclic_deadline(p, sync_us) : sync_us + p->period_us - p->advance_us;
         bool already_published = load(&p->published) && load(&p->published_epoch) == epoch;
         /* Sync0 can preempt this check and clear publication for the next epoch. */
         if (epoch != load(&p->epoch) || (int32_t)elapsed < 0)
             return load(&p->faults);
         if (elapsed > p->period_us * 2U)
             pdo_pipeline_fault(p, PDO_PIPELINE_SYNC_LOST);
-        if (!already_published && elapsed > p->period_us - p->advance_us)
-            pdo_pipeline_fault(p, PDO_PIPELINE_TX_LATE);
+        if (!already_published && (int32_t)(now_us - deadline) > 0)
+            pdo_pipeline_fault(p, missing ? PDO_PIPELINE_CAN_FEEDBACK_MISSING : PDO_PIPELINE_TX_LATE);
     }
     return load(&p->faults);
 }

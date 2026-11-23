@@ -2,6 +2,7 @@
 #include "can_transport.h"
 #include "cfg/can_bus_config.h"
 #include "detail/can_gateway_state.h"
+#include "first_pdo_trace.h"
 #include "realtime_port.h"
 #include "cycle_config.h"
 #include "FreeRTOS.h"
@@ -68,6 +69,8 @@ static rx_queue_t s_rx[DCU_CAN_BUS_COUNT];
 static volatile uint32_t s_rx_lost[DCU_CAN_BUS_COUNT];
 static uint32_t s_tx_progress[DCU_CAN_BUS_COUNT];
 static tx_slot_t s_tx[DCU_CAN_BUS_COUNT][CANFD_TX_FIFO_DEPTH];
+static tx_retirement_t s_tx_retirement[DCU_CAN_BUS_COUNT];
+static uint32_t s_tx_gap_ticks[DCU_CAN_BUS_COUNT];
 static uint32_t s_raw_tx_cancelled[DCU_CAN_BUS_COUNT];
 static dcu_can_tx_id_t s_tx_serial[DCU_CAN_BUS_COUNT];
 /* First observed protocol error per active bus/boot, read by JTAG with the target halted. */
@@ -78,6 +81,10 @@ static volatile uint8_t s_led_ticks[DCU_CAN_BUS_COUNT][CANFD_LED_KIND_COUNT];
 static uint16_t s_heartbeat_ticks;
 static dcu_can_channel_config_t s_channels[DCU_CAN_BUS_COUNT];
 static uint32_t s_active_mask;
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+static uint32_t s_can2_first_gate;
+uint32_t dcu_first_pdo_can_gate(void) { return s_can2_first_gate; }
+#endif
 
 const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus)
 {
@@ -262,6 +269,13 @@ static void receive_isr(uint32_t bus)
                    (f.canfd_frame ? DCU_CAN_FLAG_FD : 0) | (f.bitrate_switch ? DCU_CAN_FLAG_BRS : 0)};
         memcpy(item->frame.data, f.data_8, bytes);
         item->stamp = (dcu_can_rx_stamp_t){dcu_time_now_ms(), eof};
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+        if (bus == 2 && item->frame.id >= 1 && item->frame.id <= 4 && dcu_first_pdo_trace_active()) {
+            const uint32_t atb = base->ATB;
+            DCU_FIRST_TRACE(DCU_FIRST_RX_EOF, item->frame.id | (!eof.valid ? 0x100U : 0U),
+                            eof.tick, atb, (uint32_t)f.dlc << 8 | (bytes ? f.data_8[0] : 0U));
+        }
+#endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
         item->observed_us = dcu_time_now_us();
 #endif
@@ -401,9 +415,16 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
                                     MCAN_TSCFG_TBCS_MASK | MCAN_TSCFG_EN64_MASK)) != MCAN_TSCFG_TSUE_MASK)))
             return status_fail;
         mcan_interrupt_line_select(s_mcan[bus], config.interrupt_mask, 0U);
+        if (channel->timestamp_eof) {
+            /* HPM5E31 ATB uses the AHB timebase, not the CAN bit-timing clock. */
+            const uint32_t tsu_clock_hz = clock_get_frequency(clock_ahb0);
+            if (!tsu_clock_hz) return status_fail;
+            const uint64_t scale = (1U + MCAN_TSCFG_TBPRE_GET(s_mcan[bus]->TSCFG)) * UINT64_C(1000000);
+            s_tx_gap_ticks[bus] = (uint32_t)(((uint64_t)tsu_clock_hz * DCU_CAN_TX_EOF_GAP_US + scale - 1U) / scale);
 #if defined(CONFIG_PDO_PHASE_TRACE)
-        s_tsu_hz[bus] = clock_hz / (1U + MCAN_TSCFG_TBPRE_GET(s_mcan[bus]->TSCFG));
+            s_tsu_hz[bus] = tsu_clock_hz / (1U + MCAN_TSCFG_TBPRE_GET(s_mcan[bus]->TSCFG));
 #endif
+        }
         s_channels[bus] = *channel;
     }
     s_active_mask = requested;
@@ -417,7 +438,7 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
 
 
 uint32_t dcu_can_rx_drops(unsigned bus) { return dcu_can_channel_config(bus) ? s_rx_lost[bus] : 0; }
-bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, dcu_can_rx_stamp_t *stamp)
+DCU_FAST_CODE bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, dcu_can_rx_stamp_t *stamp)
 {
     if (!dcu_can_channel_config(bus) || !f || !stamp) return false;
     rx_queue_t *q=&s_rx[bus];intc_m_disable_irq(s_irq[bus]);
@@ -437,6 +458,35 @@ bool dcu_can_pending(unsigned bus, unsigned device)
 unsigned dcu_can_tx_free(unsigned bus)
 {
     return dcu_can_channel_config(bus) ? MCAN_TXFQS_TFFL_GET(s_mcan[bus]->TXFQS) : 0;
+}
+DCU_FAST_CODE bool dcu_can_tx_serial_ready(unsigned bus)
+{
+    if (!dcu_can_tx_free(bus)) {
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+        if (bus == 2) s_can2_first_gate = DCU_FIRST_CAN_FIFO_FULL;
+#endif
+        return false;
+    }
+    if (dcu_can_pending(bus, DCU_CAN_DEVICE_ANY)) {
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+        if (bus == 2) s_can2_first_gate = DCU_FIRST_CAN_PENDING;
+#endif
+        return false;
+    }
+    const tx_retirement_t *last = &s_tx_retirement[bus];
+    if (!last->seen || (uint32_t)(dcu_time_now_us() - last->observed_us) > DCU_CAN_TX_EOF_GAP_US) {
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+        if (bus == 2) s_can2_first_gate = DCU_FIRST_CAN_READY;
+#endif
+        return true;
+    }
+    // A strictly greater elapsed count is conservative at the timestamp quantum.
+    const bool ready = last->eof.valid && (int32_t)(s_mcan[bus]->ATB - last->eof.tick) > (int32_t)s_tx_gap_ticks[bus];
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+    if (bus == 2) s_can2_first_gate = ready ? DCU_FIRST_CAN_READY :
+        (last->eof.valid ? DCU_FIRST_CAN_EOF_GAP : DCU_FIRST_CAN_OBSERVED_GAP);
+#endif
+    return ready;
 }
 uint32_t dcu_can_tx_progress(unsigned bus)
 {
@@ -460,10 +510,10 @@ static void collect_tx_eofs(unsigned bus, MCAN_Type *base)
     }
 }
 
-bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
+DCU_FAST_CODE bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
 {
     const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
-    if (!channel || !event) return false;
+    if (!channel || !event || !dcu_can_pending(bus, DCU_CAN_DEVICE_ANY)) return false;
     MCAN_Type *base = s_mcan[bus];
     bool found = false;
     taskENTER_CRITICAL();
@@ -479,6 +529,19 @@ bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
         const bool sent = !slot->revoked && (completed & (1U << i));
         *event = (dcu_can_tx_event_t){.id = slot->id, .status = sent ? DCU_CAN_TX_COMPLETED : DCU_CAN_TX_CANCELLED};
         if (sent) event->eof = slot->eof;
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+        if (bus == 2 && dcu_first_pdo_trace_active()) {
+            const uint32_t atb = base->ATB;
+            DCU_FIRST_TRACE(DCU_FIRST_TX_EOF,
+                            (slot->in_flight_device & 0xffU) | (!event->eof.valid ? 0x100U : 0U) |
+                                (!sent ? 0x200U : 0U), (uint32_t)slot->id, event->eof.tick, atb);
+        }
+#endif
+        // Raw slots may retire out of order; observing the drain bounds all of them.
+        s_tx_retirement[bus] = (tx_retirement_t){
+            .eof = slot->in_flight_device != DCU_CAN_DEVICE_RAW ? event->eof : (dcu_can_eof_t){0},
+            .observed_us = dcu_time_now_us(), .seen = true,
+        };
         if (sent) ++s_tx_progress[bus];
         else if (slot->in_flight_device == DCU_CAN_DEVICE_RAW) ++s_raw_tx_cancelled[bus];
         *slot = (tx_slot_t){0};
@@ -549,7 +612,7 @@ bool dcu_can_drain_raw(unsigned bus)
     return empty;
 }
 
-dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_frame_t *f)
+DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_frame_t *f)
 {
     const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
     if (!channel || !f || (!channel->fd && (f->flags & DCU_CAN_FLAG_FD))) return 0;
@@ -581,6 +644,11 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_fram
             id = ++s_tx_serial[bus];
             s_tx[bus][index] = (tx_slot_t){.id = id, .in_flight_device = device};
             mcan_send_add_request(s_mcan[bus], index);
+#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
+            if (bus == 2 && dcu_first_pdo_trace_active())
+                DCU_FIRST_TRACE(DCU_FIRST_TX_REQUEST, f->id, (uint32_t)id, device,
+                                (uint32_t)f->dlc << 8 | f->data[0]);
+#endif
         }
         taskEXIT_CRITICAL();
     }

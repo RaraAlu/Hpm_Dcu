@@ -12,6 +12,7 @@ enum {
     DCU_CAN_BUS_ERROR_PASSIVE = 2,
     DCU_CAN_BUS_OFF = 3,
     DCU_CAN_BUS_DISABLED = 4,
+    DCU_CAN_TX_EOF_GAP_US = 100,
 };
 
 typedef struct {
@@ -73,6 +74,9 @@ bool dcu_can_pending(unsigned bus, unsigned device);
 uint32_t dcu_can_observed_retx_count(void);
 #endif
 unsigned dcu_can_tx_free(unsigned bus);
+/* Production admission: no outstanding TX and at least the configured gap
+ * after the last TX EOF. Without an EOF, wait from observed retirement. */
+bool dcu_can_tx_serial_ready(unsigned bus);
 uint32_t dcu_can_tx_progress(unsigned bus);
 /* Raw requests retired as cancelled by the controller. */
 uint32_t dcu_can_raw_tx_cancelled(unsigned bus);

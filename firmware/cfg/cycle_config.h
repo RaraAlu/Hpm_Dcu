@@ -14,6 +14,9 @@
 #endif
 /* Include worker dispatch and preemption before the unchanged publish deadline. */
 #define DCU_TX_BUILD_BUDGET_US 600U
+/* The DC motor master schedules LRW ahead of Sync0 (375 us phase contract).
+ * End the causal publish window before that wire read, not at Sync0. */
+#define DCU_CYCLIC_SM3_ADVANCE_US 400U
 
 #define DCU_IRQ_SYNC0_PRIORITY 5U
 #define DCU_IRQ_PDI_PRIORITY 4U

@@ -55,6 +55,11 @@ class ApplicationCoreTest(unittest.TestCase):
     def test_native_motion_and_publication_keep_stop_priority_and_private_state(self):
         self.run_command([str(self.executable), "stop"])
 
+    def test_four_mit_submissions_do_not_wait_for_replies_and_require_owned_eof(self):
+        for layout in ("cyclic_mit_with_raw", "cyclic_mit"):
+            with self.subTest(layout=layout):
+                self.run_command([str(self.executable), layout])
+
     def test_sdo_sequence_authority_and_duplicate_lease_are_private(self):
         self.run_command([str(self.executable), "sdo"])
 

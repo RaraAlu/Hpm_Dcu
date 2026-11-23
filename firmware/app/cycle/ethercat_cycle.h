@@ -23,6 +23,7 @@ typedef struct {
     uint32_t first_rx_miss_epoch, first_rx_miss_sync_us, first_rx_miss_last_stage_us;
     uint32_t first_rx_miss_stage_busy, first_rx_miss_stage_start_us, fault_last_stage_us;
     uint32_t local_sync_error_clears;
+    uint32_t missing_can_devices;
 } dcu_cycle_diagnostics_t;
 
 /* Copy on the sole SSC/worker task, not from an ISR or a concurrent task.
