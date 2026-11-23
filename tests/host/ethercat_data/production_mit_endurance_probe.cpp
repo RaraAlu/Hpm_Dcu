@@ -1,5 +1,6 @@
 #include <ecrt.h>
 #include "dcu_igh_layout.hpp"
+#include "dcu_loopback_evidence.hpp"
 #include "encos_interface.h"
 #include "igh_probe_frame_stats.hpp"
 #include "probe_dc_clock.hpp"
@@ -27,6 +28,8 @@ constexpr unsigned rx_size = wire.rx.bytes, tx_size = wire.tx.bytes;
 constexpr int channel_offset = offset(wire.rx, 0x7100 + bus);
 constexpr int axis_rx_offset = offset(wire.rx, 0x7200 + first_slot);
 constexpr int axis_tx_offset = offset(wire.tx, 0x6200 + first_slot);
+constexpr int evidence_offset = offset(wire.tx, 0x6400);
+static_assert(!encos_axes || (evidence_offset >= 0 && evidence_offset + sizeof(mc_sideband_t) <= tx_size));
 constexpr bool target_mapped()
 {
     if (channel_offset < 0 || axis_tx_offset < 0 || axis_rx_offset < 0) return false;
@@ -37,6 +40,8 @@ constexpr bool target_mapped()
 }
 static_assert(target_mapped(), "probe targets are absent from the selected Profile contract");
 constexpr unsigned local_mask = (1U << axes) - 1, axis_mask = local_mask << first_slot;
+static_assert(!encos_axes || (dcu_profile_pdo::zero_mit_loopback_mask & axis_mask) == axis_mask,
+              "CAN2 probe requires four registered zero MIT loopback axes");
 constexpr uint32_t configured_mask = axis_mask | (1U << 21);
 constexpr unsigned period_us = 2000, period_ns = period_us * 1000;
 constexpr unsigned planned_frames = 30000;
@@ -81,6 +86,7 @@ struct Sample {
     bool ok{};
     mc_board_tx_t board{};
     std::array<mc_axis_tx_t, axes> axis{};
+    dcu::loopback_evidence::Masks evidence{};
 };
 struct Session {
     ec_master_t *master;
@@ -153,6 +159,7 @@ struct Session {
             result.sent < due + 45000 && result.received < due + period_ns;
         std::memcpy(&result.board, pdo, sizeof(result.board));
         std::memcpy(result.axis.data(), pdo + axis_tx_offset, sizeof(mc_axis_tx_t) * axes);
+        if constexpr (encos_axes) result.evidence = dcu::loopback_evidence::read(pdo + evidence_offset);
         due = next;
         dc += period_ns;
         return result;
@@ -175,15 +182,50 @@ void show(const char *tag, const Sample &x)
         }
 }
 
+constexpr bool fresh_axis(const mc_axis_tx_t &a)
+{
+    return (a.StatusWord & fresh) && (a.ValidFlags & 7U) == 7U && !a.MotorFaultRaw &&
+           !a.BridgeFaultCode && a.FeedbackAgeMs <= period_us / 1000 &&
+           (!encos_axes || (a.ModeDisplay == 4 && (a.StatusWord & 8U)));
+}
+
+// -1 means that the N+1 image cannot establish this fact, not that no CAN TX occurred.
+constexpr int tx_complete(const Sample &s, uint32_t expected, unsigned i)
+{
+    const auto bit = 1U << (first_slot + i);
+    if (!encos_axes || !s.ok || s.board.AcceptedCycleSeq != expected || !(s.evidence.requested & bit)) return -1;
+    return (s.evidence.tx_complete & bit) != 0;
+}
+constexpr int next_fresh(const Sample &s, uint32_t expected, unsigned i)
+{
+    if (!s.ok) return -1;
+    if (s.board.AcceptedCycleSeq != expected) return 0;
+    const auto bit = 1U << (first_slot + i);
+    if (encos_axes && !(s.evidence.requested & bit)) return -1;
+    return fresh_axis(s.axis[i]) && (!encos_axes || (s.evidence.rx_matched & bit));
+}
+
+#if defined(DCU_PROBE_CAN2_ENCOS)
+static_assert([] {
+    Sample s{};
+    s.ok = true;
+    s.board.AcceptedCycleSeq = 42;
+    s.evidence = {axis_mask, axis_mask, axis_mask ^ (1U << (first_slot + 2))};
+    for (auto &a : s.axis) { a.StatusWord = fresh | 8U; a.ValidFlags = 7; a.ModeDisplay = 4; }
+    return tx_complete(s, 42, 2) == 1 && next_fresh(s, 42, 2) == 0 && next_fresh(s, 42, 3) == 1 &&
+           tx_complete(s, 43, 2) == -1 && next_fresh(s, 43, 2) == 0;
+}(), "score TX separately from feedback; a stale SM3 cannot confirm a current TX");
+#endif
+
 constexpr bool matches(const Sample &sample, uint32_t expected, bool expect_feedback)
 {
     if (!sample.ok || sample.board.AcceptedCycleSeq != expected || (sample.board.BoardStatus & board_faults))
         return false;
-    for (const auto &axis : sample.axis) {
+    for (unsigned i = 0; i < axes; ++i) {
+        const auto &axis = sample.axis[i];
         if (expect_feedback) {
-            if (!(axis.StatusWord & fresh) || (axis.ValidFlags & 7U) != 7U ||
-                axis.MotorFaultRaw || axis.BridgeFaultCode || axis.FeedbackAgeMs > period_us / 1000 ||
-                (encos_axes && (axis.ModeDisplay != 4 || !(axis.StatusWord & 8U)))) return false;
+            if (next_fresh(sample, expected, i) != 1 ||
+                (encos_axes && tx_complete(sample, expected, i) != 1)) return false;
         } else if (encos_axes ? (axis.MotorFaultRaw || axis.BridgeFaultCode || (axis.StatusWord & 8U)) :
                                (axis.ValidFlags || (axis.StatusWord & fresh))) return false;
     }
@@ -193,25 +235,27 @@ constexpr bool matches(const Sample &sample, uint32_t expected, bool expect_feed
 struct RunRow {
     Sample frame;
     uint32_t commanded{}, expected{};
-    bool verified{};
+    bool verified{}, expect_feedback{};
 };
 
 void write_run(FILE *file, const std::vector<RunRow> &rows)
 {
     fputs("seq,commanded,expected,accepted,publish,due_ns,send_ns,receive_ns,frames,bytes,wkc,al,"
-          "sof_ns,grid_ns,lrw_ok,next_lrw_ok,board,axis,valid,age_ms,position,velocity,current,motor_fault,bridge_fault,can_id,mode\n",
+          "sof_ns,grid_ns,lrw_ok,next_lrw_ok,board,axis,valid,age_ms,position,velocity,current,motor_fault,bridge_fault,can_id,mode,can_tx_complete,n1_fresh\n",
           file);
     for (const auto &row : rows) {
         const auto &r = row.frame;
         for (unsigned i = 0; i < axes; ++i) {
             const auto &a = r.axis[i];
-            fprintf(file, "%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%u,%u,%u,%u,%d,%d,%u,%u,%u,%u,%d,%d,%d,%u,%u,%u,%u\n",
+            fprintf(file, "%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%u,%u,%u,%u,%d,%d,%u,%u,%u,%u,%d,%d,%d,%u,%u,%u,%u,%d,%d\n",
                 r.seq, row.commanded, row.expected, r.board.AcceptedCycleSeq, r.board.PublishSeq,
                 (unsigned long long)r.due, (unsigned long long)r.sent, (unsigned long long)r.received,
                 (unsigned long long)r.frames, (unsigned long long)r.bytes, r.wkc, r.al, r.sof, r.grid,
                 r.ok, row.verified, r.board.BoardStatus, a.StatusWord, a.ValidFlags,
                 a.FeedbackAgeMs, a.ActualPosition, a.ActualVelocity, a.ActualCurrent,
-                a.MotorFaultRaw, a.BridgeFaultCode, first_can_id + i, a.ModeDisplay);
+                a.MotorFaultRaw, a.BridgeFaultCode, first_can_id + i, a.ModeDisplay,
+                row.expect_feedback ? tx_complete(r, row.expected, i) : -1,
+                row.expect_feedback ? next_fresh(r, row.expected, i) : -1);
         }
     }
     need(fflush(file) == 0 && !ferror(file), "could not write endurance evidence");
@@ -244,6 +288,21 @@ try {
          upload(m.get(), 0x2100, 5, 4) == dcu_profile_pdo::profile_revision &&
          upload(m.get(), 0x2001, 1, 4) == configured_mask, "unexpected production Profile or axis mask");
     need(dcu_profile_pdo::verify(m.get(), 0, 1), "Profile layout digest, assignments or IgH entries differ");
+    const auto counter_snapshot = [&] {
+        std::array<uint32_t, axes> result{};
+        for (unsigned i = 0; i < axes; ++i)
+            result[i] = upload(m.get(), 0x2400 + 16 * (first_slot + i), 2, 4);
+        return result;
+    };
+    std::array<uint8_t, 8> boot_before{}, boot_after{};
+    std::array<uint32_t, axes> tx_before{};
+    uint32_t topology_before{};
+    if (fire && encos_axes) {
+        need(dcu_profile_pdo::read_exact(m.get(), 0, 0x2103, 5, boot_before.data(), boot_before.size()),
+             "cannot identify TX counter epoch");
+        topology_before = upload(m.get(), 0x2103, 2, 4);
+        tx_before = counter_snapshot();
+    }
     for (unsigned i = 0; i < axes; ++i)
         need(upload(m.get(), 0x3000 + 16 * (first_slot + i), 1, 2) == first_can_id + i &&
              upload(m.get(), 0x3000 + 16 * (first_slot + i), 2, 2) == (encos_axes ? 0x8000U : 0U),
@@ -321,7 +380,7 @@ try {
         const auto frame = session.cycle(command ? start : 0, true);
         const bool matched = matches(frame, predecessor, i != 0);
         const uint32_t commanded = command && frame.sent ? frame.seq : 0U;
-        rows.push_back({frame, commanded, predecessor, i != 0 && matched});
+        rows.push_back({frame, commanded, predecessor, i != 0 && matched, i != 0});
         if (commanded) ++sent_count;
         if (i != 0 && frame.received) {
             if (matched) ++verified;
@@ -344,7 +403,19 @@ try {
            goal - sent_count, stop_reason);
     show("first_scored", rows.front().frame);
     show("last_scored", rows.back().frame);
-    return verified == goal ? 0 : 2;
+    bool tx_counts_ok = true;
+    if constexpr (encos_axes) {
+        const auto after = counter_snapshot();
+        need(dcu_profile_pdo::read_exact(m.get(), 0, 0x2103, 5, boot_after.data(), boot_after.size()) &&
+             boot_before == boot_after && topology_before == upload(m.get(), 0x2103, 2, 4),
+             "cannot compare TX counters across boot or topology changes");
+        for (unsigned i = 0; i < axes; ++i) {
+            const uint32_t completed = after[i] - tx_before[i];
+            printf("can%u ID=%u tx_completed=%u planned=%u\n", bus, first_can_id + i, completed, goal);
+            tx_counts_ok &= completed == goal;
+        }
+    }
+    return verified == goal && tx_counts_ok ? 0 : 2;
 } catch (const std::exception &e) {
     fprintf(stderr, "%s\n", e.what());
     return 1;
