@@ -4,7 +4,6 @@ import json
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -51,7 +50,7 @@ class ConfigurationLayoutTest(unittest.TestCase):
             "firmware/bsp/dcu_hpm5e31/dcu_hpm5e31.yaml",
             ".vscode/launch.json", ".vscode/tasks.json", ".vscode/settings.json",
             ".vscode/c_cpp_properties.json", ".vscode/extensions.json",
-            ".openidea/settings.toml", ".clangd",
+            ".clangd",
         ):
             with self.subTest(file=file):
                 self.assertTrue((ROOT / file).is_file())
@@ -68,26 +67,11 @@ class ConfigurationLayoutTest(unittest.TestCase):
         self.assertEqual(result.stdout.count('"hpm-debug"'), 3)
         self.assertEqual(result.stdout.count('"hpm-release"'), 2)
 
-    def test_openidea_profiles_forward_configure_and_build_to_hpm_presets(self):
-        settings = tomllib.loads((ROOT / ".openidea/settings.toml").read_text())
         presets = json.loads((ROOT / "cmake/cfg/CMakePresets.json").read_text())
-        configure = {
-            preset["name"]: preset for preset in presets["configurePresets"]
-            if not preset.get("hidden", False)
-        }
         builds = {preset["name"]: preset for preset in presets["buildPresets"]}
-        profiles = settings.get("cmake", {}).get("profiles", [])
-        self.assertEqual([profile["name"] for profile in profiles], list(dcu.PRESETS))
-        for profile in profiles:
-            name = profile["name"]
+        for name in dcu.PRESETS:
             with self.subTest(preset=name):
-                self.assertEqual(profile["cmakeArgs"], ["--preset", name])
-                self.assertEqual(profile["buildArgs"], ["--preset", name])
                 self.assertEqual(builds[name]["configurePreset"], name)
-                self.assertEqual(profile["buildDir"], f"build/{name}")
-                self.assertEqual(profile["buildType"], configure[name]["cacheVariables"]["CMAKE_BUILD_TYPE"])
-                self.assertFalse(profile.get("generator"))
-                self.assertFalse(profile.get("env"))
 
     def test_owned_settings_use_cfg_except_the_sdk_board_entry(self):
         extensions = {".json", ".yaml", ".yml", ".cfg", ".hpmpc", ".rules"}
@@ -99,17 +83,9 @@ class ConfigurationLayoutTest(unittest.TestCase):
                 with self.subTest(file=file.relative_to(ROOT)):
                     self.assertIn("cfg", file.relative_to(ROOT).parts[:-1])
 
-    def test_clangd_uses_debug_database_and_bundled_cross_compilers(self):
+    def test_clangd_uses_debug_database(self):
         config = yaml.safe_load((ROOT / ".clangd").read_text())
         self.assertEqual(config["CompileFlags"]["CompilationDatabase"], "build/hpm-debug")
-        settings = tomllib.loads((ROOT / ".openidea/settings.toml").read_text())
-        args = settings["languageServers"]["clangd"]["args"]
-        lock = json.loads((ROOT / "tools/cfg/toolchain.lock.json").read_text())
-        gcc = next(asset["destination"] for asset in lock["assets"] if asset["name"] == "gcc")
-        drivers = ",".join(f"**/.tools/{gcc}/bin/riscv32-unknown-elf-{name}" for name in ("gcc", "g++"))
-        self.assertIn("--background-index", args)
-        self.assertIn("--header-insertion=never", args)
-        self.assertEqual([arg for arg in args if arg.startswith("--query-driver=")], [f"--query-driver={drivers}"])
 
     def test_local_profiles_are_ignored_and_shared_configuration_is_visible(self):
         for file, ignored in (
@@ -119,7 +95,6 @@ class ConfigurationLayoutTest(unittest.TestCase):
             ("scripts/cfg/60-dcu-jlink.rules", False),
             ("tools/cfg/toolchain.lock.json", False),
             ("cmake/cfg/CMakePresets.json", False),
-            (".openidea/settings.toml", False),
             (".clangd", False),
         ):
             with self.subTest(file=file):
