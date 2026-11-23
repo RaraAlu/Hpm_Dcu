@@ -23,9 +23,7 @@
         "CONFIG_CAN_INTERNAL_LOOPBACK_TEST": false,
         "CONFIG_ETHERCAT_SCAN_TEST": false,
         "CONFIG_ETHERCAT_DATA_TEST": false,
-        "CONFIG_ETHERCAT_MCAN_ECHO": false,
-        "CONFIG_GATEWAY_STATIC_PROFILE": false,
-        "CONFIG_GATEWAY_SESSION_TEST": false
+        "CONFIG_ETHERCAT_MCAN_ECHO": false
       }
     },
     {
@@ -79,20 +77,6 @@
       "displayName": "HPM5E31 Isolated EtherCAT to MCAN0 Internal Echo",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {"CONFIG_ETHERCAT_MCAN_ECHO": true}
-    },
-    {
-      "name": "hpm-gateway-profile",
-      "inherits": "hpm-ethercat-mcan",
-      "displayName": "HPM5E31 Offline Single-CAN Profile Gateway",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {"CONFIG_GATEWAY_STATIC_PROFILE": true}
-    },
-    {
-      "name": "hpm-gateway-session",
-      "inherits": "hpm-gateway-profile",
-      "displayName": "HPM5E31 Offline Gateway Session Gate",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {"CONFIG_GATEWAY_SESSION_TEST": true}
     }
   ],
   "buildPresets": [
@@ -102,16 +86,6 @@
     {"name": "hpm-can-loopback", "configurePreset": "hpm-can-loopback", "jobs": 4},
     {"name": "hpm-ethercat-scan", "configurePreset": "hpm-ethercat-scan", "jobs": 4},
     {"name": "hpm-ethercat-data", "configurePreset": "hpm-ethercat-data", "jobs": 4},
-    {"name": "hpm-ethercat-mcan", "configurePreset": "hpm-ethercat-mcan", "jobs": 4},
-    {"name": "hpm-gateway-profile", "configurePreset": "hpm-gateway-profile", "jobs": 4},
-    {"name": "hpm-gateway-session", "configurePreset": "hpm-gateway-session", "jobs": 4}
-  ],
-  "testPresets": [
-    {
-      "name": "hpm-debug",
-      "configurePreset": "hpm-debug",
-      "output": {"outputOnFailure": true},
-      "execution": {"noTestsAction": "error"}
-    }
+    {"name": "hpm-ethercat-mcan", "configurePreset": "hpm-ethercat-mcan", "jobs": 4}
   ]
 }

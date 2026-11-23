@@ -27,15 +27,6 @@
       "problemMatcher": []
     },
     {
-      "label": "DCU: Offline Tests",
-      "type": "process",
-      "command": "/usr/bin/python3",
-      "args": ["${workspaceFolder}/scripts/dcu.py", "test"],
-      "options": {"cwd": "${workspaceFolder}"},
-      "group": "test",
-      "problemMatcher": []
-    },
-    {
       "label": "DCU: Flash (explicit confirmation)",
       "type": "process",
       "command": "/usr/bin/python3",

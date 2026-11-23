@@ -12,15 +12,6 @@
 #ifdef DCU_DATA_BACKEND_MCAN
 #include "mcan_echo.h"
 #endif
-#ifdef DCU_DATA_STATIC_PROFILE
-#include "static_profile.h"
-#endif
-#ifdef DCU_DATA_SESSION_GATE
-#include "session_bridge.h"
-#endif
-#ifdef DCU_DATA_BJCX_MIT_ONCE
-#include "mit_once.h"
-#endif
 
 #include <stdio.h>
 
@@ -44,16 +35,10 @@ static void data_poll(void)
     for (;;) {
         (void)dcu_bench_sii_service(dcu_data_sii_read);
         MainLoop();
-#ifdef DCU_DATA_SESSION_GATE
-        dcu_data_session_step(bEcatOutputUpdateRunning && (nAlStatus & (STATE_MASK | STATE_CHANGE)) == STATE_OP);
-#endif
         if (bEscIntEnabled && (SWAPWORD(HW_GetALEventRegister()) & PROCESS_OUTPUT_EVENT))
             PDI_Isr();
 #ifdef DCU_DATA_BACKEND_MCAN
         dcu_data_mcan_poll();
-#endif
-#ifdef DCU_DATA_BJCX_MIT_ONCE
-        mit_once_poll();
 #endif
         uint32_t now_ms = dcu_time_now_ms();
         if (now_ms != last_ms) {
@@ -68,14 +53,8 @@ int main(void)
     board_init();
     dcu_data_reset();
     bool ready = dcu_timebase_init();
-#ifdef DCU_DATA_BJCX_MIT_ONCE
-    ready = ready && mit_once_init();
-#endif
 #ifdef DCU_DATA_BACKEND_MCAN
     ready = ready && dcu_data_mcan_init();
-#endif
-#ifdef DCU_DATA_SESSION_GATE
-    ready = ready && dcu_data_session_boot();
 #endif
     hpm_stat_t status = ready ?
         dcu_bench_esc_start(dcu_data_sii_read, DCU_DATA_LOAD_TIMEOUT_MS) : status_fail;
@@ -96,10 +75,6 @@ int main(void)
     pAPPL_EEPROM_Write = sii_deny_write;
     pAPPL_EEPROM_Reload = HW_EepromReload;
 
-#ifdef DCU_DATA_STATIC_PROFILE
-    const dcu_static_profile_t *profile = dcu_static_profile();
-    printf("Static profile: MCAN%u internal, device %s\n", profile->bus, profile->device_id);
-#endif
     printf("EtherCAT data ready: read-only SDO, %u/%u byte PDO echo\n",
            DCU_DATA_RX_BYTES, DCU_DATA_TX_BYTES);
     data_poll();

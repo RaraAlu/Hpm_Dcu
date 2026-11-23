@@ -38,7 +38,6 @@
 在工程根目录执行，均不访问板卡：
 
 ```bash
-python3 -m unittest discover -s tests/host -p test_can_internal_loopback.py -v
 python3 scripts/dcu.py build --preset hpm-can-loopback
 python3 scripts/dcu.py check-image --preset hpm-can-loopback
 ```

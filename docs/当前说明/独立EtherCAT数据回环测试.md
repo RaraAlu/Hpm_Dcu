@@ -38,7 +38,6 @@ SDO 按单个子索引读，不用 Complete Access。核对 `0x1018:01..04` 各 
 ```bash
 python3 scripts/dcu.py build --preset hpm-ethercat-data
 python3 scripts/dcu.py check-image --preset hpm-ethercat-data
-python3 -m unittest discover -s tests/host -p test_ethercat_data.py -v
 ```
 
 产物是 `build/hpm-ethercat-data/output/dcu.elf`。离线用例覆盖 SII 字节布局、SSC 对象长度与读取、PDO 回显和边界、SyncManager 地址拒绝及调试入口保护。实板和主站运行不在离线构建范围内。

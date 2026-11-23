@@ -5,12 +5,6 @@
 #ifdef DCU_DATA_BACKEND_MCAN
 #include "mcan_echo.h"
 #endif
-#ifdef DCU_DATA_SESSION_GATE
-#include "session_bridge.h"
-#endif
-#ifdef DCU_DATA_BJCX_MIT_ONCE
-#include "mit_once.h"
-#endif
 
 static const TSDOINFOENTRYDESC s_rx_map_desc[] = {
     DCU_DATA_COUNT_DESC, DCU_DATA_RX_ENTRIES(DCU_DATA_MAP_DESC)
@@ -58,23 +52,6 @@ static UINT8 read_value(UINT16 index, UINT8 sub, UINT32 size, UINT16 MBXMEM *dat
         0 : ABORTIDX_PARAM_LENGTH_ERROR;
 }
 
-#ifdef DCU_DATA_SESSION_GATE
-static UINT16 s_status_placeholder, s_activate_placeholder, s_result_placeholder;
-static const UCHAR s_status_name[] = "Gateway status\x00\xff";
-static const UCHAR s_activate_name[] = "Gateway activation\x00\xff";
-static const UCHAR s_result_name[] = "Activation result\x00\xff";
-static const TSDOINFOENTRYDESC s_status_desc[] = {{DEFTYPE_OCTETSTRING, 8U * DCU_SESSION_STATUS_BYTES, ACCESS_READ}};
-static const TSDOINFOENTRYDESC s_activate_desc[] = {{DEFTYPE_OCTETSTRING, 8U * DCU_SESSION_ACTIVATE_BYTES, ACCESS_WRITE}};
-static const TSDOINFOENTRYDESC s_result_desc[] = {{DEFTYPE_OCTETSTRING, 8U * DCU_SESSION_RESULT_BYTES, ACCESS_READ}};
-
-static UINT8 read_session(UINT16 index, UINT8 sub, UINT32 size, UINT16 MBXMEM *data, UINT8 complete)
-{
-    if (complete) return ABORTIDX_UNSUPPORTED_ACCESS;
-    if (sub) return ABORTIDX_SUBINDEX_NOT_EXISTING;
-    return size && dcu_data_session_read(index, data, size) == size ? 0 : ABORTIDX_PARAM_LENGTH_ERROR;
-}
-#endif
-
 TOBJECT ApplicationObjDic[] = {
     DCU_DATA_OD(DCU_DATA_RX_MAP, DEFTYPE_PDOMAPPING, DCU_DATA_RX_WORDS, OBJCODE_REC,
                 s_rx_map_desc, s_rx_map_name, s_rx_map, NULL),
@@ -88,14 +65,6 @@ TOBJECT ApplicationObjDic[] = {
                 s_info_desc, s_info_name, &s_info_count, read_value),
     DCU_DATA_OD(DCU_DATA_VECTOR_OBJECT, DEFTYPE_OCTETSTRING, 0, OBJCODE_VAR,
                 s_vector_desc, s_vector_name, &s_vector_placeholder, read_value),
-#ifdef DCU_DATA_SESSION_GATE
-    DCU_DATA_OD(DCU_SESSION_STATUS_INDEX, DEFTYPE_OCTETSTRING, 0, OBJCODE_VAR,
-                s_status_desc, s_status_name, &s_status_placeholder, read_session),
-    DCU_DATA_OD(DCU_SESSION_ACTIVATE_INDEX, DEFTYPE_OCTETSTRING, 0, OBJCODE_VAR,
-                s_activate_desc, s_activate_name, &s_activate_placeholder, NULL),
-    DCU_DATA_OD(DCU_SESSION_RESULT_INDEX, DEFTYPE_OCTETSTRING, 0, OBJCODE_VAR,
-                s_result_desc, s_result_name, &s_result_placeholder, read_session),
-#endif
     DCU_DATA_OD(DCU_DATA_TX_OBJECT, 0, DCU_DATA_TX_WORDS, OBJCODE_REC,
                 s_tx_desc, s_tx_name, &s_tx_count, read_value),
     DCU_DATA_OD(DCU_DATA_RX_OBJECT, 0, DCU_DATA_RX_WORDS, OBJCODE_REC,
@@ -107,17 +76,6 @@ TOBJECT ApplicationObjDic[] = {
 UINT8 __wrap_OBJ_Write(UINT16 index, UINT8 sub, UINT32 size, OBJCONST TOBJECT OBJMEM *object,
                       UINT16 MBXMEM *data, UINT8 complete)
 {
-#ifdef DCU_DATA_SESSION_GATE
-    if (index == DCU_SESSION_ACTIVATE_INDEX) {
-        if (!object || object->Index != index) return ABORTIDX_OBJECT_NOT_EXISTING;
-        if (complete) return ABORTIDX_UNSUPPORTED_ACCESS;
-        if (sub) return ABORTIDX_SUBINDEX_NOT_EXISTING;
-        const UINT8 state = nAlStatus & (STATE_MASK | STATE_CHANGE);
-        if (state != STATE_PREOP && state != STATE_SAFEOP && state != STATE_OP)
-            return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
-        return dcu_data_session_activate(data, size) ? 0 : ABORTIDX_PARAM_LENGTH_ERROR;
-    }
-#endif
     (void)index;
     (void)sub;
     (void)size;
@@ -155,9 +113,7 @@ UINT16 APPL_StopInputHandler(void) { return ALSTATUSCODE_NOERROR; }
 UINT16 APPL_StartOutputHandler(void)
 {
     dcu_data_reset();
-#if defined(DCU_DATA_SESSION_GATE)
-    if (!dcu_data_mcan_healthy()) return ALSTATUSCODE_EXT_HARDWARE_NOT_READY;
-#elif defined(DCU_DATA_BACKEND_MCAN)
+#ifdef DCU_DATA_BACKEND_MCAN
     if (!dcu_data_mcan_enable()) return ALSTATUSCODE_EXT_HARDWARE_NOT_READY;
 #endif
     return ALSTATUSCODE_NOERROR;
@@ -165,12 +121,8 @@ UINT16 APPL_StartOutputHandler(void)
 
 UINT16 APPL_StopOutputHandler(void)
 {
-#if defined(DCU_DATA_SESSION_GATE)
-    dcu_data_session_step(false);
-#elif defined(DCU_DATA_BACKEND_MCAN)
+#ifdef DCU_DATA_BACKEND_MCAN
     dcu_data_mcan_disable();
-#elif defined(DCU_DATA_BJCX_MIT_ONCE)
-    mit_once_stop();
 #endif
     dcu_data_reset();
     return ALSTATUSCODE_NOERROR;
@@ -178,13 +130,8 @@ UINT16 APPL_StopOutputHandler(void)
 
 void APPL_OutputMapping(UINT16 *data)
 {
-#if defined(DCU_DATA_SESSION_GATE)
-    if (bEcatOutputUpdateRunning && (nAlStatus & (STATE_MASK | STATE_CHANGE)) == STATE_OP)
-        dcu_data_session_pdo(data, nPdOutputSize);
-#elif defined(DCU_DATA_BACKEND_MCAN)
+#ifdef DCU_DATA_BACKEND_MCAN
     (void)dcu_data_mcan_stage(data, nPdOutputSize);
-#elif defined(DCU_DATA_BJCX_MIT_ONCE)
-    mit_once_stage(data, nPdOutputSize);
 #else
     (void)dcu_data_capture(data, nPdOutputSize);
 #endif
@@ -192,11 +139,7 @@ void APPL_OutputMapping(UINT16 *data)
 
 void APPL_InputMapping(UINT16 *data)
 {
-#ifdef DCU_DATA_BJCX_MIT_ONCE
-    mit_once_input(data, nPdInputSize);
-#else
     (void)dcu_data_copy(data, nPdInputSize);
-#endif
 }
 void APPL_Application(void) {}
 UINT16 APPL_GetDeviceID(void) { return 0; }

@@ -4,12 +4,6 @@
 #include "board.h"
 #include "hpm_interrupt.h"
 #include "realtime_port.h"
-#ifdef DCU_DATA_STATIC_PROFILE
-#include "static_profile.h"
-#endif
-#ifdef DCU_DATA_SESSION_GATE
-#include "session_bridge.h"
-#endif
 
 #include <string.h>
 
@@ -20,13 +14,8 @@
 #error "This diagnostic does not support the buffer access workaround"
 #endif
 _Static_assert(DCU_DATA_RX_BYTES % DCU_DATA_MCAN_FRAME_BYTES == 0, "Incomplete CAN frame");
-#ifdef DCU_DATA_STATIC_PROFILE
-_Static_assert(DCU_PROFILE_CAN_FRAMES * DCU_DATA_MCAN_FRAME_BYTES == DCU_DATA_RX_BYTES, "Profile/PDO size mismatch");
-_Static_assert(DCU_PROFILE_CAN_ID_BASE + DCU_PROFILE_CAN_FRAMES <= 0x800U, "CAN IDs must be standard");
-#else
 _Static_assert(DCU_DATA_MCAN_CAN_ID_BASE + DCU_DATA_RX_BYTES / DCU_DATA_MCAN_FRAME_BYTES <= 0x800U,
                "CAN IDs must be standard");
-#endif
 _Static_assert(DCU_DATA_MCAN_FIFO_DEPTH > 0 && DCU_DATA_MCAN_FIFO_DEPTH < 32U, "Invalid FIFO depth");
 
 ATTR_PLACE_AT(".ahb_sram") static uint32_t s_mcan_ram[MCAN_MSG_BUF_SIZE_IN_WORDS];
@@ -37,12 +26,8 @@ static uint32_t s_frame_timeout_ms;
 
 static bool frame_id(unsigned chunk, uint16_t *id)
 {
-#ifdef DCU_DATA_STATIC_PROFILE
-    return dcu_static_profile_can_id(dcu_static_profile()->bus, chunk, id);
-#else
     *id = DCU_DATA_MCAN_CAN_ID_BASE + chunk;
     return true;
-#endif
 }
 
 static bool internal_mode(void)
@@ -64,22 +49,10 @@ static void fail(dcu_data_mcan_status_t status)
 
 bool dcu_data_mcan_init(void)
 {
-#ifdef DCU_DATA_STATIC_PROFILE
-    const dcu_static_profile_t *profile = dcu_static_profile();
-    MCAN_Type *const controllers[] = {HPM_MCAN0, HPM_MCAN1, HPM_MCAN2, HPM_MCAN3};
-    const unsigned irqs[] = {IRQn_MCAN0, IRQn_MCAN1, IRQn_MCAN2, IRQn_MCAN3};
-    s_mcan_status = MCAN_ECHO_INIT_FAILED;
-    if (profile->bus >= sizeof(controllers) / sizeof(controllers[0])) return false;
-    s_controller = controllers[profile->bus];
-    s_frame_timeout_ms = profile->frame_timeout_ms;
-    const uint32_t bitrate = profile->nominal_bitrate_bps;
-    intc_m_disable_irq(irqs[profile->bus]);
-#else
     s_controller = HPM_MCAN0;
     s_frame_timeout_ms = DCU_DATA_MCAN_FRAME_TIMEOUT_MS;
     const uint32_t bitrate = DCU_DATA_MCAN_NOMINAL_BITRATE_KBPS * 1000U;
     intc_m_disable_irq(IRQn_MCAN0);
-#endif
     /* Deliberately do not configure CAN pinmux or a transceiver. */
     uint32_t clock_hz = board_init_can_clock(s_controller);
     mcan_msg_buf_attr_t attr = {
@@ -242,10 +215,6 @@ void dcu_data_mcan_poll(void)
         s_mcan.discard = false;
     } else if (++s_mcan.chunk == DCU_DATA_RX_BYTES / DCU_DATA_MCAN_FRAME_BYTES) {
         s_mcan.staged = false;
-#ifdef DCU_DATA_SESSION_GATE
-        dcu_data_session_can_complete(s_mcan.response, sizeof(s_mcan.response));
-#else
         (void)dcu_data_capture(s_mcan.response, sizeof(s_mcan.response));
-#endif
     }
 }

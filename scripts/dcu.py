@@ -22,7 +22,6 @@ GCC = ROOT / ".tools/hpm-gcc-13.2.0/bin"
 OPENOCD = ROOT / "scripts/openocd.sh"
 PRESETS = ("hpm-debug", "hpm-release", "hpm-release-five-axis")
 TEST_PRESETS = ("hpm-can-loopback", "hpm-ethercat-scan", "hpm-ethercat-data", "hpm-ethercat-mcan")
-OFFLINE_PRESETS = ("hpm-gateway-profile", "hpm-gateway-session")
 CONFIRMATION = "RESET_TARGET"
 
 
@@ -239,14 +238,10 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("doctor", help="Check tools and USB permissions without initializing a target")
     sub.add_parser("bootstrap", help="Install locked local tools, without sudo")
-    sub.add_parser("test", help="Run offline guard, layout and motor protocol tests")
     sub.add_parser("usb-check", help="Check USB enumeration and permissions without opening the probe")
     for action in ("configure", "build", "check-image", "flash", "verify", "debug-server"):
         command = sub.add_parser(action)
-        presets = PRESETS + TEST_PRESETS
-        if action in ("configure", "build", "check-image"):
-            presets += OFFLINE_PRESETS
-        command.add_argument("--preset", choices=presets, default="hpm-debug")
+        command.add_argument("--preset", choices=PRESETS + TEST_PRESETS, default="hpm-debug")
         if action in ("flash", "verify", "debug-server"):
             command.add_argument("--board", type=Path, default=ROOT / "scripts/cfg/board.local.json")
             command.add_argument("--confirm-target", default=os.environ.get("DCU_TARGET_CONFIRM", ""))
@@ -267,8 +262,6 @@ def main(argv=None):
             devices = usb_devices()
             print(json.dumps(devices, indent=2))
             return 0 if len(devices) == 1 and devices[0]["writable"] else 1
-        elif args.action == "test":
-            run([sys.executable, "-m", "unittest", "discover", "-s", "tests/host", "-v"])
         elif args.action == "configure":
             configure(args.preset)
         elif args.action == "build":

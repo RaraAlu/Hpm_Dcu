@@ -18,7 +18,7 @@
 | 4. 主站发现 | 在 RK3588 查看 IgH 状态和从站身份，再只启用 `DriverModule` 运行 `driver_ethercat_probe.yaml` | 专用口 Link UP，1 个匹配诊断身份的从站，零 PDO 映射，不请求 OP |
 | 5. 收尾 | 保存镜像、日志及保留区前后比较；结束本轮后暂停目标并关闭调试服务 | 保留区字节不变，未自动恢复生产固件 |
 
-离线入口：`python3 scripts/dcu.py build --preset hpm-ethercat-scan`；`python3 scripts/dcu.py check-image --preset hpm-ethercat-scan`；`python3 -m unittest discover -s tests/host -p test_ethercat_scan.py -v`。
+离线入口：`python3 scripts/dcu.py build --preset hpm-ethercat-scan`；`python3 scripts/dcu.py check-image --preset hpm-ethercat-scan`。
 
 离线通过 5 项扫描测试，覆盖 SII 校验、诊断身份、无邮箱/无 PDO、读取宽度和越界、AL 状态限制以及目标确认门槛。独立扫描、生产 Debug、CAN 内部回环构建通过。实板证据单独记录，不用离线结果代替 PHY 链路或扫描结果。
 

@@ -18,7 +18,7 @@
 - [透传布局切换](docs/当前说明/透传布局切换.md)：88 B 双向映射、RK 进程内切换 can2/can3 与实板复测。
 - [环境依赖与外部资源准备](docs/当前说明/环境依赖与外部资源准备.md)：系统依赖、锁定工具包、离线资源、VSIX 及新主机恢复流程。
 - [编译调试下载经验总结](docs/当前说明/编译调试下载经验总结.md)：日常 CLI/GUI 操作、关键踩坑、保留区保护、排错和环境精简边界。
-- [单路静态配置网关验证](docs/当前说明/单路静态配置网关验证.md)：治理第一阶段，YAML 驱动通道、设备路由和 PDO；独立预设，仅离线验证。
+- [RK 生产回环入口](tools/rk/profile_motor_run.py)：在 RK 的 DriverModule 部署构建目录运行。使用同次构建的五轴 Profile 及其 `rk/` 时序文件；`--stage ready` 检查空载就绪，`--stage once` 核验一拍全零 MIT 的 N+1 新反馈和逐轴 TX 计数。动力隔离、PREOP 契约核对和失败即停要求见[调测速记](AGENTS.md)。
 - [独立CAN内部回环测试](docs/当前说明/独立CAN内部回环测试.md)：独立 `hpm-can-loopback` 镜像，无需 CAN0/CAN1 接线；入口、离线验证及首轮实板 12 帧内部收发通过，不启动生产业务。
 - [MCAN0 内部回环首轮实板记录](docs/验证记录/2026-11-17-MCAN0内部回环首轮实板测试记录.md)：实际 TX/RX、中断、逐帧匹配、停止状态、保留区不变及原始证据。
 - [独立 EtherCAT 数据回环测试](docs/当前说明/独立EtherCAT数据回环测试.md)：只读 SDO、固定 32/48 字节 PDO 和实板验收顺序；首轮通过，不接 CAN 或电机。
@@ -55,7 +55,6 @@
 cd ~/work/MCU/Hpm/igh_ethercat_v2.2/hpm/Dcu_dev
 python3 scripts/dcu.py doctor
 python3 scripts/dcu.py build --preset hpm-debug
-python3 scripts/dcu.py test
 ```
 
 Release 构建：
@@ -105,7 +104,7 @@ python3 scripts/dcu.py bootstrap
 ## VS Code
 
 - `Ctrl+Shift+B`：默认执行 `DCU: Build Debug`。
-- 任务菜单提供 Release、离线检查、测试、烧录和校验入口。
+- 任务菜单提供 Release、工具检查、烧录和校验入口。
 - CMake Tools 使用 Presets；C/C++ 索引已从 ROS2/x86 旧配置切换到交叉工具链和编译数据库，其他扩展的 ROS2/Python 辅助设置不作为固件构建来源。
 - F5 提供两个独立入口：校验已有 Flash 后调试，或先备份/烧录再调试。
 - 两个调试入口都属于**复位后调试**，不是无扰动附加；使用 `stopAtConnect=true` 配合 `launchCompleteCommand=None` 保持连接后暂停，单设后者不够。

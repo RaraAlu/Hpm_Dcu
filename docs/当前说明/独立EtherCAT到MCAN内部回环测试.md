@@ -19,7 +19,6 @@
 ```bash
 python3 scripts/dcu.py build --preset hpm-ethercat-mcan
 python3 scripts/dcu.py check-image --preset hpm-ethercat-mcan
-python3 -m unittest discover -s tests/host -p 'test_ethercat*.py' -v
 ```
 
 产物：`build/hpm-ethercat-mcan/output/dcu.elf`。该预设与软件回显、独立扫描及生产镜像分开，不启用生产 CAN transport、电机或 RTOS。

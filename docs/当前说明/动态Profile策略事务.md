@@ -5,7 +5,7 @@
 ## 下发与生效
 
 1. 读 `0x2002:01` 取得启动代次；读 `0x2100:04/05` 取得活动 Profile ID/版本。若三个策略值与期望一致，跳过下载。
-2. 用[候选 YAML](../../tests/host/motor/cfg/动态策略验证配置.yaml)与[编码器](../../tools/protocol/encode_profile_update.py)生成 36 字节二进制：`python3 tools/protocol/encode_profile_update.py 配置.yaml --boot-epoch 21 --output candidate.bin`。实际启动代次读自目标，不写死。
+2. 用[候选 YAML](../../tools/protocol/cfg/动态策略验证配置.yaml)与[编码器](../../tools/protocol/encode_profile_update.py)生成 36 字节二进制：`python3 tools/protocol/encode_profile_update.py 配置.yaml --boot-epoch 21 --output candidate.bin`。实际启动代次读自目标，不写死。
 3. 在 PREOP 向 `0x2100:01` 下载候选，核对结果为 Staged 和待提交版本；此时旧策略仍有效。在 5 秒内向 `0x2100:02` 写候选版本进行一次提交。相同的已提交版本可重试，不重复准备。
 4. 提交成功后读取活动版本及策略，并等 MCU 用新策略自检到 READY。再进入 OP，沿用普通零使能 PDO 启动。提交时不允许业务运行，也不产生设备使能。
 
