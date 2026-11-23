@@ -57,8 +57,6 @@ bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, bool protect_
     if (c >= raw_cfg::bus_capacity || !policy.buses[c].can_send)
         return false;
     const auto &bus = policy.buses[c];
-    if (!RawCanPolicy::matches_route(bus.passthrough_ids, frame))
-        return false;
     if (protect_ids || bus.protect_full_bus) {
         if (bus.protected_count > raw_cfg::protected_id_capacity)
             return false;

@@ -45,11 +45,13 @@ class MotorApplicationTest(unittest.TestCase):
                 sys.executable, str(ROOT / "tools/protocol/generate_can_profile.py"),
                 "--profile", str(profile),
                 "--output", str(work / name / "dcu_can_profile_generated.h"),
+                *(["--allow-encos-fixture"] if name != "hra55h100" else []),
             ])
             obj = work / f"{name}.o"
             cls.run_command([
-                cc, "-std=c11", "-I", str(work / name), *flags, f"-Ddcu_production_profile=host_{name}_profile",
-                "-c", str(ROOT / "firmware/app/profile/production_profile.c"), "-o", str(obj),
+                cxx, "-std=c++17", "-fno-exceptions", "-fno-rtti", "-I", str(work / name), *flags,
+                f"-Ddcu_production_profile=host_{name}_profile",
+                "-c", str(ROOT / "firmware/app/profile/production_profile.cpp"), "-o", str(obj),
             ])
             profiles.append(str(obj))
         readiness = work / "readiness.o"
@@ -273,8 +275,11 @@ class MotorApplicationTest(unittest.TestCase):
     def test_hra55h100_accepts_contiguous_neutral_mit_on_can3_with_eof_evidence(self):
         self.run_command([str(self.executable), "hra55h100_profile"])
 
-    def test_registered_passthrough_is_not_a_motion_axis_and_routes_only_its_node(self):
+    def test_registered_passthrough_is_not_a_motion_axis_and_has_no_id_allowlist(self):
         self.run_command([str(self.executable), "registered_passthrough"])
+
+    def test_four_encos_axes_exchange_zero_impedance_on_the_normal_production_pdo(self):
+        self.run_command([str(self.executable), "encos_four_axis_production_pdo"])
 
     def test_hardware_retry_respects_the_same_neutral_mit_deadline(self):
         for scenario in ("recovers", "expires"):

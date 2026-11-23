@@ -141,7 +141,7 @@ static const dcu_motor_device_profile_t test_device{
     {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0}, 0, 0,
     DCU_MOTOR_PROTOCOL_ENCOS, nullptr, false, 0,
 };
-static dcu_production_profile_t test_profile{test_channels, ENCOS_CHANNEL_COUNT, &test_device, 1, 10, 20, {}, {}, {}};
+static dcu_production_profile_t test_profile{test_channels, ENCOS_CHANNEL_COUNT, &test_device, 1, 10, 20, {}, {}, nullptr, 0};
 static dcu_motor_device_profile_t two_bus_devices[2];
 
 extern "C" const dcu_production_profile_t *host_fixture_profile(void);
@@ -915,28 +915,130 @@ static void test_registered_passthrough()
     submit();
     wire.ValidMask = wire.SlotCount = 1;
     wire.Channel = 2;
-    wire.CanId = 2;
+    wire.CanId = 0x7ff;
     wire.FrameFlags = DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS;
+    wire.Dlc = 6;
+    wire.Data_1 = 1;
+    wire.Data_3 = 4;
+    wire.Data_5 = 4;
+    submit();
+    const uint8_t change_id[]{0, 1, 0, 4, 0, 4};
+    CHECK(sent.size() == 1 && sent[0].first == 2 && sent[0].second.id == 0x7ff &&
+          sent[0].second.flags == wire.FrameFlags && sent[0].second.dlc == wire.Dlc &&
+          !std::memcmp(sent[0].second.data, change_id, sizeof(change_id)));
+    const uint8_t ack[]{0, 4, 1, 4};
+    deliver(2, {0x7ff, 4, wire.FrameFlags, {0, 4, 1, 4}});
+    motor_control_prepare_input();
+    CHECK(ssc_txpdo[4] == 1 && ssc_txpdo[16] == 0xff && ssc_txpdo[17] == 7 &&
+          ssc_txpdo[20] == 2 && ssc_txpdo[21] == wire.FrameFlags && ssc_txpdo[22] == sizeof(ack) &&
+          !std::memcmp(ssc_txpdo + 24, ack, sizeof(ack)));
+
+    wire.CanId = 4;
     wire.Dlc = 2;
     wire.Data_0 = 0xe0;
-    wire.Data_1 = 1;
     submit();
-    CHECK(sent.empty());
-    wire.CanId = 1;
+    CHECK(sent.size() == 2 && sent[1].first == 2 && sent[1].second.id == 4 &&
+          sent[1].second.data[0] == 0xe0 && sent[1].second.data[1] == 1);
+    deliver(2, {4, 6, wire.FrameFlags, {0xa0, 1, 0xc3, 0x0b, 0x6c, 0x26}});
+    motor_control_prepare_input();
+    CHECK(ssc_txpdo[4] == 1 && ssc_txpdo[16] == 4 && ssc_txpdo[24] == 0xa0);
+
+    wire.CanId = 0x1abcdeff;
     wire.FrameFlags |= DCU_CAN_FLAG_EXTENDED;
     submit();
-    CHECK(sent.empty());
-    wire.FrameFlags &= ~DCU_CAN_FLAG_EXTENDED;
-    submit();
-    CHECK(sent.size() == 1 && sent[0].first == 2 && sent[0].second.id == 1 &&
-          sent[0].second.data[0] == 0xe0 && sent[0].second.data[1] == 1);
-    deliver(2, {2, 6, wire.FrameFlags, {0xa0, 1, 0xc3, 0x0b, 0x6c, 0x26}});
+    CHECK(sent.size() == 3 && sent[2].first == 2 && sent[2].second.id == wire.CanId &&
+          sent[2].second.flags == wire.FrameFlags);
+    deliver(2, {wire.CanId, 2, wire.FrameFlags, {0x12, 0x34}});
     motor_control_prepare_input();
-    CHECK(ssc_txpdo[4] == 0);
-    deliver(2, {1, 6, wire.FrameFlags, {0xa0, 1, 0xc3, 0x0b, 0x6c, 0x26}});
-    motor_control_prepare_input();
-    CHECK(ssc_txpdo[4] == 1 && ssc_txpdo[16] == 1 && ssc_txpdo[24] == 0xa0);
-    CHECK(sent.size() == 1 && !read_sdo<uint8_t>(0x2101, 6));
+    const uint8_t extended_id_le[]{0xff, 0xde, 0xbc, 0x1a};
+    CHECK(ssc_txpdo[4] == 1 && !std::memcmp(ssc_txpdo + 16, extended_id_le, sizeof(extended_id_le)) &&
+          ssc_txpdo[21] == wire.FrameFlags && ssc_txpdo[24] == 0x12 && ssc_txpdo[25] == 0x34);
+    CHECK(sent.size() == 3 && !read_sdo<uint8_t>(0x2101, 6) && !raw_drops());
+}
+
+static void test_encos_four_axis_production_pdo()
+{
+    auto profile = *host_hra55h100_profile();
+    dcu_motor_device_profile_t devices[5]{profile.devices[0]};
+    for (unsigned n = 0; n < 4; ++n) {
+        auto &device = devices[n + 1];
+        device = test_device;
+        device.bus = 2;
+        device.can_id = n + 1;
+        device.type = "7216";
+        device.encos.frame_format = 1;
+        device.encos.profile = {{0, 500}, {0, 50}, {-12.5, 12.5}, {-30, 30}, {-140, 140}, {-100, 100}, 1.90};
+        device.encos.timeout_ms = 500;
+    }
+    profile.devices = devices;
+    profile.device_count = 5;
+    profile.passthrough_devices = nullptr;
+    profile.passthrough_device_count = 0;
+    fixture_profile = &profile;
+    CHECK(motor_control_init() && motor_control_boot_startup(uint64_t{startup_epoch} << 32));
+    select_wire_profile(1);
+    CHECK(object<mc_board_config_t>(0x2001)->AxisConfiguredMask == ((15U << 14) | (1U << 21)));
+    constexpr uint8_t mit_zero[]{0, 0, 0, 0x7f, 0xff, 0x7f, 0xf7, 0xff};
+    unsigned transmitted[4]{}, sequence = 0;
+    size_t read = 0;
+    bool command_expected = false;
+    const auto worker = [&] {
+        test_ms = (test_us + DCU_WORKER_PERIOD_US) / 1000U;
+        run_cycle();
+        while (read < sent.size()) {
+            const auto [bus, tx] = sent[read++];
+            CHECK(bus == 2 && tx.id >= 1 && tx.id <= 4 && tx.flags == 0x18);
+            dcu_can_frame_t rx{tx.id, 6, tx.flags, {0xa0, tx.data[1]}};
+            if (tx.dlc == 2) {
+                CHECK(tx.data[0] == 0xe0 && tx.data[1] >= 1 && tx.data[1] <= 3);
+                if (tx.data[1] == 1) { rx.data[2] = 0x42; rx.data[3] = 0xb4; }
+            } else {
+                CHECK(command_expected && tx.dlc == sizeof(mit_zero) && !std::memcmp(tx.data, mit_zero, sizeof(mit_zero)));
+                ++transmitted[tx.id - 1];
+                rx = {tx.id, 8, tx.flags, {0x20, 0x80, static_cast<uint8_t>(tx.id), 0x80, 8, 0, 50, 50}};
+            }
+            incoming[2].emplace_back(rx, dcu_can_rx_stamp_t{test_ms, {}});
+        }
+    };
+    while (test_ms < 350 && startup_state() != DCU_GATEWAY_READY) worker();
+    CHECK(startup_state() == DCU_GATEWAY_READY);
+    nAlStatus = STATE_OP;
+    motor_control_operational(true);
+    const auto cycle = [&](bool enabled, uint16_t control) {
+        uint8_t wire[784]{};
+        mc_board_rx_t board{};
+        board.InterfaceVersion = MC_INTERFACE_VERSION;
+        board.CycleSeq = ++sequence;
+        board.CommandLeaseMs = 10;
+        board.BoardControl = enabled ? 1 : 0;
+        board.ChannelEnableMask = enabled ? 1U << 2 : 0;
+        board.AxisEnableMask = enabled ? 15U << 14 : 0;
+        motor_pdo::store(wire, 0, board);
+        motor_pdo::store(wire, 32 + 2 * 8, mc_channel_rx_t{1, 15, 1, 2000});
+        mc_axis_rx_t axis{};
+        axis.ControlWord = control;
+        axis.Mode = 4;
+        for (unsigned n = 0; n < 4; ++n) motor_pdo::store(wire, 64 + (14 + n) * 24, axis);
+        motor_control_output(wire);
+        for (unsigned us = 0; us < 2000; us += DCU_WORKER_PERIOD_US) worker();
+        motor_control_prepare_input();
+        CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == sequence);
+    };
+    cycle(false, 0);
+    cycle(true, 0);
+    for (unsigned i = 0; i < 40; ++i) cycle(true, MC_AXIS_ARM);
+    for (unsigned n = 0; n < 4; ++n) CHECK(axis_feedback(14 + n)->StatusWord & 4U);
+    command_expected = true;
+    for (unsigned i = 1; i <= 30000; ++i) {
+        cycle(true, MC_AXIS_ARM | MC_AXIS_START_MOTION);
+        for (unsigned n = 0; n < 4; ++n) {
+            CHECK(transmitted[n] == i && axis_diagnostics(14 + n)->TxCompleteCount == i);
+            const auto *feedback = axis_feedback(14 + n);
+            CHECK(feedback->ModeDisplay == 4 && (feedback->StatusWord & (8U | 16U)) == (8U | 16U));
+        }
+    }
+    command_expected = false;
+    cycle(false, 0);
 }
 
 static void test_raw_motor_handoff()
@@ -972,6 +1074,12 @@ static void test_raw_motor_handoff()
     run_cycle();
     motor_control_prepare_input();
     CHECK(ssc_txpdo[4] == 1 && ssc_txpdo[16] == 0x02 && ssc_txpdo[24] == 0x80);
+    test_ms += 2;
+    ++wire.BatchSeq;
+    wire.CanId = 0x7ff;
+    motor_control_output(&wire);
+    run_cycle();
+    CHECK(sent.size() == 1 && raw_drops() == 1);
     motor_control_operational(false);
     CHECK(!read_sdo<uint8_t>(0x2101, 6));
 }
@@ -1004,6 +1112,10 @@ int main(int argc, char **argv)
         return 0;
     }
     CHECK(argc == 2);
+    if (!std::strcmp(argv[1], "encos_four_axis_production_pdo")) {
+        test_encos_four_axis_production_pdo();
+        return 0;
+    }
     if (!std::strcmp(argv[1], "registered_passthrough")) {
         test_registered_passthrough();
         return 0;

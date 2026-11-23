@@ -2,6 +2,7 @@
 #include "can/detail/raw_can_submit.hpp"
 #include "can/cfg/gateway_schedule_policy.hpp"
 #include "motor_driver_binding.hpp"
+#include "motor_protocol.h"
 #include "can_transport.h"
 #include "realtime_port.h"
 
@@ -32,6 +33,7 @@ motor::MotorConfiguration motor_configuration(const dcu_motor_device_profile_t &
     motor.status_reply_timeout_ms = device.status_reply_timeout_ms;
     motor.protocol = device.protocol;
     motor.neutral_mit_only = device.neutral_mit_only;
+    motor.type = device.type;
     return motor;
 }
 
@@ -385,8 +387,7 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         return false;
     for (const auto &channel : configuration.channels) {
         if (channel.role > 3 || channel.frame_format > 1 || channel.raw_rate_limit > 8 ||
-            (!channel.enabled && channel.role) ||
-            (channel.passthrough_ids && (!channel.enabled || channel.frame_format != 1 || (channel.role & 1))))
+            (!channel.enabled && channel.role))
             return false;
     }
     unsigned neutral_bus = DCU_DEVICE_CAN_BUS_COUNT;
@@ -395,8 +396,6 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         const auto &device = configuration.devices[a];
         const unsigned bus = device.bus;
         if (bus >= DCU_DEVICE_CAN_BUS_COUNT || ++counts[bus] > DCU_MOTOR_DEVICES_PER_BUS)
-            return false;
-        if (device.protocol == DCU_MOTOR_PROTOCOL_BJCX && (!device.type || !*device.type))
             return false;
         if (device.neutral_mit_only) {
             const auto *applied = dcu_can_channel_config(bus);
@@ -540,8 +539,7 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
             collect_tx_events(c);
         const bool routed = !pure && consume_feedback(c, f, stamp, now, dcu_time_now_us());
         if (!routed && neutral_run_.active && c == neutral_run_.bus) stop_neutral_run(true);
-        const bool raw_enabled = raw_channel(c) &&
-            RawCanPolicy::matches_route(state_.channels[c].passthrough_ids, f);
+        const bool raw_enabled = raw_channel(c);
         if (f.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD && state_.mode != OperatingMode::SingleFd) {
             if (!routed || raw_enabled) ++state_.legacy_rx_drop[c];
         } else if (raw_enabled) {
@@ -657,10 +655,10 @@ bool GatewayApplication::process_raw(const CycleCommand &candidate, uint32_t now
         bus.can_send = channel.enabled && (single_fd || (state_.board_command.enabled_channels & (1u << c))) &&
             raw_channel(c) && transactions_.raw_send_allowed(c, now);
         bus.rate_limit = raw_only(mode) ? layout_.limits[c] : channel.raw_rate_limit;
-        bus.passthrough_ids = channel.passthrough_ids;
         bus.protect_full_bus = bus_device_count_[c] != 0;
         bus.fd_response = channel.frame_format != 0;
-        bus.protected_ids[bus.protected_count++] = legacy_broadcast_id;
+        if (!raw_only(mode) || bus.protect_full_bus)
+            bus.protected_ids[bus.protected_count++] = legacy_broadcast_id;
         if (!single_fd || !(layout_.motor_owner & (1U << c)))
             for (unsigned j = 0; j < bus_device_count_[c]; ++j)
                 bus.protected_ids[bus.protected_count++] = devices_[devices_on_bus_[c][j]].can_id();
@@ -759,13 +757,13 @@ bool detail::initialize_fixture(const Configuration &config) { return applicatio
 bool initialize_profile(const dcu_production_profile_t &profile)
 {
     if (!profile.channels || !profile.channel_count || profile.channel_count > DCU_DEVICE_CAN_BUS_COUNT ||
-        profile.device_count > DCU_MOTOR_DEVICE_CAPACITY || (profile.device_count && !profile.devices)) return false;
+        profile.device_count > DCU_MOTOR_DEVICE_CAPACITY || (profile.device_count && !profile.devices) ||
+        profile.passthrough_device_count > DCU_DEVICE_CAN_BUS_COUNT * 8U ||
+        (profile.passthrough_device_count && !profile.passthrough_devices)) return false;
     detail::Configuration config{};
     config.board = {profile.max_command_lease_ms, profile.feedback_timeout_ms};
     config.devices = profile.devices;
     config.device_count = profile.device_count;
-    for (unsigned bus = 0; bus < DCU_DEVICE_CAN_BUS_COUNT; ++bus)
-        config.channels[bus].passthrough_ids = profile.passthrough_ids[bus];
     for (size_t i = 0; i < profile.channel_count; ++i) {
         const auto &channel = profile.channels[i];
         if (channel.bus >= DCU_DEVICE_CAN_BUS_COUNT || config.channels[channel.bus].enabled) return false;
@@ -786,6 +784,18 @@ bool initialize_profile(const dcu_production_profile_t &profile)
         if (bus >= DCU_DEVICE_CAN_BUS_COUNT || !config.channels[bus].enabled)
             return false;
         config.channels[bus].role = 1;
+    }
+    uint8_t registered_ids[DCU_DEVICE_CAN_BUS_COUNT]{};
+    for (size_t i = 0; i < profile.passthrough_device_count; ++i) {
+        const auto &device = profile.passthrough_devices[i];
+        if (device.bus >= DCU_DEVICE_CAN_BUS_COUNT || !device.can_id || device.can_id > 8 ||
+            device.protocol != DCU_MOTOR_PROTOCOL_ENCOS ||
+            !motor::known_motor_model(device.protocol, device.type)) return false;
+        const auto &channel = config.channels[device.bus];
+        if (!channel.enabled || channel.frame_format != 1 || channel.role) return false;
+        const uint8_t bit = 1U << (device.can_id - 1);
+        if (registered_ids[device.bus] & bit) return false;
+        registered_ids[device.bus] |= bit;
     }
     return application.initialize(config);
 }

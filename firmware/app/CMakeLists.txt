@@ -22,7 +22,7 @@ sdk_src(
     gateway/can/can_bus_scheduler.cpp
     gateway/can/can_transactions.cpp
     gateway/can/raw_can_gateway.cpp
-    profile/production_profile.c
+    profile/production_profile.cpp
     gateway/startup/production_startup.cpp
     gateway/policy/profile_update.cpp
     gateway/startup/gateway_readiness.c

@@ -23,7 +23,6 @@ struct ChannelConfiguration {
     uint8_t role{}, frame_format{};
     uint16_t raw_rate_limit{};
     bool enabled{};
-    uint8_t passthrough_ids{};
 };
 struct BoardCommand {
     uint32_t sequence{}, enabled_devices{};

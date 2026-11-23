@@ -1,5 +1,6 @@
 import copy
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 
@@ -15,24 +16,39 @@ class CanProfileTest(unittest.TestCase):
         del self.profile["passthrough_devices"]
         self.profile["channels"] = [channel for channel in self.profile["channels"] if channel["bus"] == 3]
 
+    def compile_profile(self, profile, checks=""):
+        includes = ("app/profile", "comm/canfd", "devices/motor", "ports", "protocols/encos")
+        return subprocess.run(
+            ["c++", "-std=c++17", "-fsyntax-only", "-x", "c++",
+             *(f"-I{ROOT / 'firmware' / path}" for path in includes), "-"],
+            input='#include "production_profile.h"\n' + header(profile) + checks,
+            text=True, capture_output=True, timeout=15,
+        )
+
     def test_production_profile_separates_can2_passthrough_from_can3_motion(self):
         self.assertEqual([channel["bus"] for channel in self.production["channels"]], [3, 2])
         self.assertEqual(len(self.production["devices"]), 1)
-        self.assertEqual(self.production["startup"]["revision"], 7)
+        self.assertEqual(self.production["startup"]["revision"], 8)
         self.assertEqual(self.production["passthrough_devices"],
-                         [{"id": "encos_mcan2", "protocol": "encos", "bus": 2, "can_id": 1}])
+                         [{"id": "encos_mcan2", "protocol": "encos", "type": "EC-A7216-P2-22H",
+                           "bus": 2, "can_id": 1}])
         result = header(self.production)
         self.assertIn("{ 3U, 1000000U, 5000000U, true, true }", result)
         self.assertIn("{ 2U, 1000000U, 5000000U, true, true }", result)
         self.assertIn('"hra55h100_can3", 3U, 2U, 0U', result)
-        self.assertIn('DCU_MOTOR_PROTOCOL_BJCX, "HRA55H-100", true, 30000U', result)
+        self.assertIn('bjcx_config::find_model("HRA55H-100")', result)
+        self.assertIn("DCU_MOTOR_PROTOCOL_BJCX, dcu_model_0->part_number.data(), true, 30000U", result)
         self.assertIn("dcu_profile_devices, 1U", result)
-        self.assertIn("{ 0U, 0U, 1U, 0U }", result)
+        self.assertIn('encos_config::find_model("EC-A7216-P2-22H")', result)
+        self.assertIn("2U, 1U, DCU_MOTOR_PROTOCOL_ENCOS, dcu_model_2->part_number.data()", result)
+        self.assertIn("dcu_profile_passthrough, 1U", result)
+        compiled = self.compile_profile(self.production)
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
 
     def test_passthrough_must_use_a_dedicated_configured_fd_bus(self):
         route = self.production["passthrough_devices"][0]
         for mutation in ({"bus": 1}, {"bus": 3}, {"can_id": 0},
-                         {"id": "hra55h100_can3"}, {"limits": {}}, {"protocol": "unknown"}):
+                         {"id": "hra55h100_can3"}, {"limits": {}}, {"protocol": "unknown"}, {"type": ""}):
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 header(self.production | {"passthrough_devices": [route | mutation]})
         with self.assertRaisesRegex(ValueError, "duplicate CAN ID"):
@@ -40,6 +56,67 @@ class CanProfileTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dedicated CAN FD"):
             header(self.production | {"channels": [self.production["channels"][0],
                     {"bus": 2, "mode": "classic", "nominal_bitrate_kbps": 1000}]})
+
+    def test_catalog_rejects_unknown_and_cross_protocol_types_at_compile_time(self):
+        for list_name, invalid_types in (
+            ("devices", ("HRA99H-999", "EC-A7216-P2-22H", "hra55h_100", "7216")),
+            ("passthrough_devices", ("EC-A0000-P2-22H", "HRA55H-100", "EC-A9025-P2-23-625H",
+                                     "a7216", "55h_100", 9999)),
+        ):
+            entry = self.production[list_name][0]
+            for model_type in invalid_types:
+                with self.subTest(list_name=list_name, model_type=model_type):
+                    result = self.compile_profile(self.production | {list_name: [entry | {"type": model_type}]})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("unknown or ambiguous", result.stderr)
+
+    def test_only_encos_accepts_unquoted_numeric_aliases(self):
+        for list_name, invalid in (("devices", (7216, True)), ("passthrough_devices", (True, -7216, 7216.0))):
+            entry = self.production[list_name][0]
+            for model_type in invalid:
+                with self.subTest(type=model_type), self.assertRaisesRegex(ValueError, "invalid model name or alias"):
+                    header(self.production | {list_name: [entry | {"type": model_type}]})
+
+    def test_catalog_registers_related_encos_and_bjcx_models(self):
+        for list_name, models in (
+            ("devices", (("HRA40H-101", "40h_101"), ("HRA55H-100", "55h_100"))),
+            ("passthrough_devices", (("EC-A4315-P2-36", 4315), ("EC-A7216-P2-22H", 7216),
+                                     ("EC-A7220-P2-22H", 7220), ("EC-A9025-P2-23.625H", 9025))),
+        ):
+            entry = self.production[list_name][0]
+            for part_number, alias in models:
+                check = f'static_assert(std::string_view(dcu_profile.{list_name}[0].type) == "{part_number}");\n'
+                keys = (part_number, alias, str(alias)) if type(alias) is int else (part_number, alias)
+                for key in keys:
+                    with self.subTest(type=key):
+                        result = self.compile_profile(self.production | {list_name: [entry | {"type": key}]}, check)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_named_encos_wire_values_come_from_the_catalog_not_the_profile(self):
+        profile = load_yaml(ROOT / "tests/host/motor/cfg/单路ENCOS验证配置.yaml")
+        entry = profile["devices"][0]
+        with self.assertRaises(ValueError):
+            header(profile)
+        entry["type"] = 7216
+        del entry["model_profile_id"]
+        for name in ("velocity_mrad_s", "torque_mNm", "current_dA", "torque_constant_cNm_A"):
+            del entry["encoding"][name]
+        result = self.compile_profile(profile, """
+static_assert(std::string_view(dcu_profile.devices[0].type) == "EC-A7216-P2-22H");
+static_assert(dcu_profile.devices[0].encos.profile.vel[0] == -30);
+static_assert(dcu_profile.devices[0].encos.profile.torque[1] == 140);
+static_assert(dcu_profile.devices[0].encos.profile.current[1] == 100);
+static_assert(dcu_profile.devices[0].encos.profile.kt == 1.90);
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entry["type"] = 7220
+        result = self.compile_profile(profile)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unverified ENCOS MIT encoding", result.stderr)
+        entry["type"] = 7216
+        entry["encoding"]["torque_constant_cNm_A"] = 190
+        with self.assertRaises(ValueError):
+            header(profile)
 
     def test_neutral_mit_budget_is_mandatory_bounded_and_not_single_frame(self):
         device = self.profile["devices"][0]
@@ -97,34 +174,34 @@ class CanProfileTest(unittest.TestCase):
         entry = profile["devices"][0]
         profile["channels"].append({"bus": 0, "mode": "classic", "nominal_bitrate_kbps": 1000})
         profile["devices"] += [entry | {"id": "other_bus", "bus": 0}, entry | {"id": "next", "can_id": 1}]
-        result = header(profile)
-        self.assertIn('"fixture_encos", 2U, 3U, 0x8000U', result)
-        self.assertIn('"other_bus", 0U, 3U, 0x8000U', result)
-        self.assertIn('"next", 2U, 1U, 0x8000U', result)
+        result = header(profile, allow_encos_fixture=True)
+        self.assertIn('"fixture_encos", 2U, 3U, dcu::motor::encos_config::coe_encoding_id', result)
+        self.assertIn('"other_bus", 0U, 3U, dcu::motor::encos_config::coe_encoding_id', result)
+        self.assertIn('"next", 2U, 1U, dcu::motor::encos_config::coe_encoding_id', result)
         self.assertLess(result.index('"fixture_encos"'), result.index('"other_bus"'))
         self.assertLess(result.index('"other_bus"'), result.index('"next"'))
         self.assertIn("-9000000, 9000000, 18000000U, 5000U, 60U", result)
 
     def test_mixed_profile_preserves_bjcx_types_and_validates_shared_bus(self):
         profile = load_yaml(ROOT / "tests/host/motor/cfg/混挂电机验证配置.yaml")
-        result = header(profile)
+        result = header(profile, allow_encos_fixture=True)
         self.assertIn('"fixture_hra40", 2U, 36U, 0U', result)
         self.assertIn('"fixture_hra55", 0U, 3U, 0U', result)
         for motor_type in ("HRA40H-101", "HRA55H-100"):
-            self.assertIn(f'DCU_MOTOR_PROTOCOL_BJCX, "{motor_type}"', result)
-        for change in ({"can_id": 3}, {"type": "unknown"}, {"status_poll_period_ms": 10},
+            self.assertIn(f'bjcx_config::find_model("{motor_type}")', result)
+        for change in ({"can_id": 3}, {"type": "unknown model"}, {"status_poll_period_ms": 10},
                        {"model": "HRA40H-101"}, {"model_profile_id": 0x8000}):
             invalid = copy.deepcopy(profile)
             invalid["devices"][1].update(change)
             with self.subTest(change=change), self.assertRaises(ValueError):
-                header(invalid)
+                header(invalid, allow_encos_fixture=True)
         invalid = copy.deepcopy(profile)
         del invalid["devices"][1]["type"]
         with self.assertRaises(ValueError):
-            header(invalid)
+            header(invalid, allow_encos_fixture=True)
         profile["channels"][1] = {"bus": 0, "mode": "classic", "nominal_bitrate_kbps": 1000}
         with self.assertRaisesRegex(ValueError, "requires CAN FD"):
-            header(profile)
+            header(profile, allow_encos_fixture=True)
 
     def test_missing_and_invalid_devices_fail_closed(self):
         profile = load_yaml(ROOT / "tests/host/motor/cfg/单路ENCOS验证配置.yaml")
@@ -134,7 +211,7 @@ class CanProfileTest(unittest.TestCase):
                         [entry | {"bus": 1}], [entry | {"model_profile_id": 0}], too_many,
                         [entry | {"limits": entry["limits"] | {"current_dA": 101}}]):
             with self.subTest(devices=devices), self.assertRaises(ValueError):
-                header(profile | {"devices": devices})
+                header(profile | {"devices": devices}, allow_encos_fixture=True)
         del profile["devices"]
         with self.assertRaises(ValueError):
-            header(profile)
+            header(profile, allow_encos_fixture=True)

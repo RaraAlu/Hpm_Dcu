@@ -27,16 +27,9 @@ struct RawCanPolicy {
         uint32_t protected_ids[config::raw_can::protected_id_capacity]{};
         uint8_t protected_count{}, rate_limit{};
         bool can_send{}, fd_response{}, protect_full_bus{};
-        uint8_t passthrough_ids{};
     } buses[config::raw_can::bus_capacity]{};
     // Caller resolves session and channel admission from its active configuration.
     bool permitted{};
-
-    static bool matches_route(uint8_t ids, const dcu_can_frame_t &frame)
-    {
-        return !ids || (!(frame.flags & DCU_CAN_FLAG_EXTENDED) &&
-                        frame.id >= 1 && frame.id <= 8 && (ids & (1U << (frame.id - 1))));
-    }
 };
 
 struct RawCanDrops {

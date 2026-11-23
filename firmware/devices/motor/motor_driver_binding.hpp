@@ -15,8 +15,10 @@ struct MotorConfiguration {
     uint16_t status_poll_period_ms{}, status_reply_timeout_ms{};
     dcu_motor_protocol_t protocol{};
     bool neutral_mit_only{};
+    const char *type{};
 };
 
+bool known_motor_model(dcu_motor_protocol_t protocol, const char *type) noexcept;
 bool validate_motor_configuration(const MotorConfiguration &, uint8_t frame_format) noexcept;
 MotorSessionDriver *configure_motor_driver(unsigned device, const MotorConfiguration &, uint8_t frame_format) noexcept;
 

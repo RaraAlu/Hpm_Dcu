@@ -1,5 +1,6 @@
 #include "encos_driver.hpp"
 #include "encos_parameter_transactions.hpp"
+#include "motor_limits.hpp"
 #include "cfg/encos_runtime.hpp"
 #include <cmath>
 
@@ -37,17 +38,22 @@ bool EncosMotorDriver::query_ready(uint32_t now) const
 
 bool EncosMotorDriver::prepare_start(const Command &command, uint32_t now, Command &first)
 {
+    const bool no_effort = impedance_without_effort(command);
     if (!query_ready(now) || std::fabs(double(queries_.velocity)) > 20000.0 ||
-        ((command.mode == ControlMode::Position || command.mode == ControlMode::Impedance) &&
+        (!no_effort && (command.mode == ControlMode::Position || command.mode == ControlMode::Impedance) &&
          std::fabs(double(command.position_urad) - queries_.position) > 100000.0))
         return false;
 
     parameters::abort_internal(queries_.bus);
-    first = {};
-    first.control_bits = Arm;
-    first.mode = ControlMode::Position;
-    first.position_urad = queries_.position;
-    first.current_limit_dA = route_.current_limit_dA < 4095 ? route_.current_limit_dA : 4095;
+    if (no_effort) {
+        first = command;
+    } else {
+        first = {};
+        first.control_bits = Arm;
+        first.mode = ControlMode::Position;
+        first.position_urad = queries_.position;
+        first.current_limit_dA = route_.current_limit_dA < 4095 ? route_.current_limit_dA : 4095;
+    }
     CanFrame frame{};
     return encode(first, frame) == Result::Ok;
 }

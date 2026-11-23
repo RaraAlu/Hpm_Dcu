@@ -10,6 +10,12 @@ constexpr bool within_magnitude(int32_t value, int64_t limit) noexcept
     return value >= -limit && value <= limit;
 }
 
+constexpr bool impedance_without_effort(const Command &command) noexcept
+{
+    return command.mode == ControlMode::Impedance && !command.kp_centi && !command.kd_milli &&
+           !command.torque_mNm;
+}
+
 constexpr bool within_limits(const Command &command, const Routing &route) noexcept
 {
     const bool position_mode = command.mode == ControlMode::Position || command.mode == ControlMode::Impedance;

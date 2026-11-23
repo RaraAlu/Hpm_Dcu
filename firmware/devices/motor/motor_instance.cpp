@@ -158,7 +158,9 @@ bool MotorInstance::accept(const Command &intent, bool permit, uint32_t now)
         s->status_word |= 1u << 8;
         return false;
     }
-    if (active() && x->command.mode != command->mode) {
+    // A zero-effort start skips the position-hold entry; adding effort requires a fresh arm.
+    if (active() && (x->command.mode != command->mode ||
+        (impedance_without_effort(x->startup_command) && !impedance_without_effort(*command)))) {
         stop(8);
         s->status_word |= 1u << 8;
         return false;

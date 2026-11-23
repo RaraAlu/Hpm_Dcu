@@ -1,7 +1,7 @@
-schema_version: 2
+schema_version: 3
 startup:
   profile_id: 1
-  revision: 7
+  revision: 8
   readiness_ttl_ms: 1000
   activation_wait_s: 5
 safety:
@@ -29,5 +29,6 @@ devices:
 passthrough_devices:
   - id: encos_mcan2
     protocol: encos
+    type: EC-A7216-P2-22H
     bus: 2
     can_id: 0x01

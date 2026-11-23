@@ -78,12 +78,17 @@ class HeaderOwnershipTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_production_profile_contract_needs_no_gateway(self):
-        includes = ("app/profile", "comm/canfd", "ports", "protocols/encos")
-        for compiler, language in (("cc", "c"), ("c++", "c++")):
-            with self.subTest(language=language):
-                subprocess.run([compiler, "-x", language, "-fsyntax-only",
-                                *(f"-I{FIRMWARE / path}" for path in includes), "-"],
-                               input='#include "production_profile.h"\n', text=True, check=True, timeout=30)
+        includes = ("app/profile", "comm/canfd", "devices/motor", "ports", "protocols/encos")
+        for compiler, language, standard in (("cc", "c", "c11"), ("c++", "c++", "c++17")):
+            headers = ("production_profile.h",)
+            if language == "c++":
+                headers += ("drivers/encos/cfg/encos_models.h", "drivers/bjcx/cfg/bjcx_models.h")
+            for header in headers:
+                with self.subTest(language=language, header=header):
+                    subprocess.run([compiler, "-x", language, f"-std={standard}", "-fsyntax-only",
+                                    *(f"-I{FIRMWARE / path}" for path in includes), "-"],
+                                   input=f'#include "{header}"\n#include "{header}"\n',
+                                   text=True, check=True, timeout=30)
 
     def test_implementation_files_do_not_define_types_or_macros(self):
         declaration = re.compile(

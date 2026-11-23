@@ -35,7 +35,7 @@ class DeviceAbstractionTest(unittest.TestCase):
         ):
             flags.extend(("-I", str(ROOT / include)))
         cls.run_command([
-            cxx, *flags, str(ROOT / "tests/host/devices/encos_adapter.cpp"),
+            cxx, *flags, "-DDCU_HOST_ENGINE_TEST", str(ROOT / "tests/host/devices/encos_adapter.cpp"),
             str(ROOT / "tests/host/motor/encos_motion_reference.cpp"),
             str(ROOT / "firmware/devices/motor/motor_driver.cpp"),
             str(ROOT / "firmware/devices/motor/drivers/encos/encos_driver.cpp"),

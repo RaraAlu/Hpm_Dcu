@@ -17,7 +17,7 @@ class AxisCoreTest(unittest.TestCase):
         work = tempfile.TemporaryDirectory(prefix="dcu-axis-core-")
         cls.addClassCleanup(work.cleanup)
         cls.executable = Path(work.name) / "axis"
-        flags = ["-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
+        flags = ["-DDCU_HOST_ENGINE_TEST", "-std=c++17", "-O2", "-fno-exceptions", "-fno-rtti", "-Wall", "-Wextra", "-Werror", "-pedantic-errors"]
         if os.environ.get("DCU_HOST_SANITIZE") == "1":
             flags += ["-g", "-fsanitize=address,undefined,float-cast-overflow", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"]
         # No generated, EtherCAT, HPM, RTOS or application-implementation headers.
@@ -48,6 +48,9 @@ class AxisCoreTest(unittest.TestCase):
 
     def test_native_axis_runs_startup_feedback_and_stop_without_ethercat(self):
         self.run_command([str(self.executable), "lifecycle"])
+
+    def test_impedance_without_effort_starts_in_impedance_and_cannot_gain_effort_while_armed(self):
+        self.run_command([str(self.executable), "impedance_start"])
 
     def test_parameter_write_codec_uses_explicit_values_and_transactional_output(self):
         self.run_command([str(self.executable), "parameters"])

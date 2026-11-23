@@ -220,8 +220,8 @@ static void production_profile()
 {
     const auto status_motor = bjcx_on_bus2();
     dcu_motor_device_profile_t devices[]{status_motor, classic_motor};
-    const dcu_production_profile_t valid{applied_channels, 2, devices, 2, 8, 15, {}, {}, {}};
-    for (unsigned i = 0; i < 15; ++i) {
+    const dcu_production_profile_t valid{applied_channels, 2, devices, 2, 8, 15, {}, {}, nullptr, 0};
+    for (unsigned i = 0; i < 18; ++i) {
         auto invalid = valid;
         dcu_can_channel_config_t channels[]{applied_channels[0], applied_channels[1]};
         invalid.channels = channels;
@@ -244,6 +244,25 @@ static void production_profile()
         case 12: bad_device.type = nullptr; break;
         case 13: bad_device.model_profile_id = 0x8000; break;
         case 14: channels[0].timestamp_eof = true; break; // Applied controller has no EOF timestamps.
+        case 15: bad_device.type = "HRA99H-999"; break;
+        case 16: bad_device.type = "EC-A7216-P2-22H"; break;
+        case 17: bad_device.type = ""; break;
+        }
+        CHECK(!app::initialize_profile(invalid));
+        CHECK(!app::channel_configuration(2).enabled && sent.empty());
+    }
+    for (unsigned i = 0; i < 7; ++i) {
+        const dcu_passthrough_device_profile_t route{2, 1, DCU_MOTOR_PROTOCOL_ENCOS, "EC-A7216-P2-22H"};
+        dcu_passthrough_device_profile_t passthrough[]{route, route};
+        dcu_production_profile_t invalid{applied_channels, 2, nullptr, 0, 8, 15, {}, {}, passthrough, 1};
+        switch (i) {
+        case 0: invalid.passthrough_devices = nullptr; break;
+        case 1: invalid.devices = &status_motor; invalid.device_count = 1; break;
+        case 2: passthrough[0].type = "HRA55H-100"; break;
+        case 3: invalid.passthrough_device_count = 2; break;
+        case 4: passthrough[0].bus = 0; break; // Applied as classic CAN.
+        case 5: passthrough[0].protocol = DCU_MOTOR_PROTOCOL_BJCX; break;
+        case 6: passthrough[0].type = "EC-A0000-P2-22H"; break;
         }
         CHECK(!app::initialize_profile(invalid));
         CHECK(!app::channel_configuration(2).enabled && sent.empty());
@@ -276,7 +295,7 @@ static void interleaved_slots()
     devices[7].encos.frame_format = 1;
     devices[7].can_id = 7;
     parameters::initialize({});
-    CHECK(app::initialize_profile({applied_channels, 2, devices, 8, 8, 15, {}, {}, {}}));
+    CHECK(app::initialize_profile({applied_channels, 2, devices, 8, 8, 15, {}, {}, nullptr, 0}));
     CHECK(app::set_owner(app::OWNER_SDO));
     tick(); // BJCX slot 0 has no reply.
     CHECK(sent.size() == 1 && sent[0].second.id == 1 && sent_slots[0] == 0);

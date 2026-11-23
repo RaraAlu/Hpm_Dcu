@@ -32,6 +32,19 @@ static dcu::motor::MotorConfiguration configuration()
 
 static void validate()
 {
+    constexpr const char *encos_types[]{"EC-A4315-P2-36", "EC-A7216-P2-22H", "EC-A7220-P2-22H", "EC-A9025-P2-23.625H"};
+    constexpr const char *bjcx_types[]{"HRA40H-101", "HRA55H-100"};
+    for (const auto *type : encos_types) {
+        CHECK(motor::known_motor_model(DCU_MOTOR_PROTOCOL_ENCOS, type));
+        CHECK(!motor::known_motor_model(DCU_MOTOR_PROTOCOL_BJCX, type));
+    }
+    for (const auto *type : bjcx_types) {
+        CHECK(motor::known_motor_model(DCU_MOTOR_PROTOCOL_BJCX, type));
+        CHECK(!motor::known_motor_model(DCU_MOTOR_PROTOCOL_ENCOS, type));
+    }
+    CHECK(!motor::known_motor_model(DCU_MOTOR_PROTOCOL_ENCOS, "EC-A9025-P2-23-625H"));
+    CHECK(!motor::known_motor_model(DCU_MOTOR_PROTOCOL_ENCOS, nullptr));
+
     const auto valid = configuration();
     CHECK(motor::validate_motor_configuration(valid, 0));
     for (unsigned i = 0; i < 10; ++i) {
@@ -52,6 +65,25 @@ static void validate()
         CHECK(motor::configure_motor_driver(0, invalid, 0) == nullptr);
     }
     CHECK(motor::configure_motor_driver(0, valid, 0) != nullptr);
+
+    auto named = valid;
+    named.type = "7216";
+    named.encos.frame_format = 1;
+    named.encos.profile = {{0, 500}, {0, 5}, {-10, 10}, {-30, 30}, {-140, 140}, {-100, 100}, 1.90};
+    CHECK(motor::validate_motor_configuration(named, 1));
+    CHECK(motor::configure_motor_driver(0, named, 1) != nullptr);
+    for (unsigned i = 0; i < 5; ++i) {
+        auto invalid = named;
+        switch (i) {
+        case 0: invalid.type = "HRA55H-100"; break;
+        case 1: invalid.type = "EC-A7220-P2-22H"; break; // Only its datasheet values are known.
+        case 2: invalid.encos.profile.kt = 2.0; break;
+        case 3: invalid.encos.profile.torque[1] = 139; break;
+        case 4: invalid.route.current_limit_dA = 1001; break;
+        }
+        CHECK(!motor::validate_motor_configuration(invalid, 1));
+        CHECK(motor::configure_motor_driver(0, invalid, 1) == nullptr);
+    }
 }
 
 static void lifecycle()
@@ -85,7 +117,7 @@ static void lifecycle()
     command.control_bits |= motor::StartMotion;
     CHECK(axis.accept(command, true, 1) && axis.active());
     dcu_can_frame_t control{};
-    CHECK(axis.encode_control(control) && control.id == 1 && control.dlc == 8);
+    CHECK(axis.encode_control(control) && control.id == 1 && control.dlc == 8 && control.data[0] >> 5 == 1);
     axis.control_submitted(1, 5);
     CHECK(axis.finish_tx({5, DCU_CAN_TX_COMPLETED, {}}));
     dcu_can_frame_t reply{};
@@ -125,6 +157,53 @@ static void lifecycle()
     axis.read_feedback(21, 20, feedback, diagnostics);
     CHECK(diagnostics.tx_drop_count == 1 && diagnostics.rx_valid_count == 5);
     CHECK(!feedback.sample.valid_fields && !feedback.power_valid && !feedback.bridge_fault);
+}
+
+static void impedance_start()
+{
+    for (unsigned field = 0; field < 3; ++field) {
+        parameters::initialize({});
+        motor::MotorInstance axis;
+        CHECK(axis.bind(0, configuration(), 0));
+        motor::Command idle{};
+        CHECK(axis.accept(idle, true, 1));
+        motor::Command command{};
+        command.mode = motor::ControlMode::Impedance;
+        command.control_bits = motor::Arm;
+        CHECK(axis.accept(command, true, 1));
+        auto start = command;
+        start.control_bits |= motor::StartMotion;
+        CHECK(!axis.accept(start, true, 1) && !axis.active());
+
+        for (uint8_t code = 1; code <= 3; ++code) {
+            CHECK(parameters::start_query(0, 0, code, 1, 2, motor::ParameterDialect::EncosLegacy, 1, 0));
+            parameters::mark_submitted(0, 2, code);
+            parameters::finish_tx(0, {code, DCU_CAN_TX_COMPLETED, {}});
+            dcu_can_frame_t reply{1, 6, 0, {0xa0, code}};
+            if (code == 1) { reply.data[2] = 0x42; reply.data[3] = 0xb4; } // 90 degrees from the setpoint.
+            CHECK(axis.consume_feedback(reply, 2, 2));
+        }
+        auto effort = start;
+        if (field == 0) effort.kp_centi = 100;
+        else if (field == 1) effort.kd_milli = 100;
+        else effort.torque_mNm = 100;
+        CHECK(axis.accept(command, true, 2));
+        CHECK(!axis.accept(effort, true, 2) && !axis.active());
+        CHECK(axis.accept(command, true, 2));
+        CHECK(axis.accept(start, true, 2) && axis.active());
+
+        dcu_can_frame_t frame{};
+        const uint8_t expected[]{0, 0, 0, 0x7f, 0xff, 0x7f, 0xf7, 0xff};
+        CHECK(axis.encode_control(frame) && frame.id == 1 && frame.dlc == sizeof(expected));
+        CHECK(!std::memcmp(frame.data, expected, sizeof(expected)));
+        axis.control_submitted(2, 5);
+        CHECK(axis.finish_tx({5, DCU_CAN_TX_COMPLETED, {}}));
+        const dcu_can_frame_t feedback{1, 8, 0, {0x20, 0x80, 0, 0x80, 8, 0, 50, 50}};
+        CHECK(axis.consume_feedback(feedback, 2, 2));
+        CHECK(axis.accept(start, true, 3) && axis.active() && axis.encode_control(frame));
+        CHECK(!std::memcmp(frame.data, expected, sizeof(expected)));
+        CHECK(!axis.accept(effort, true, 3) && !axis.active() && !axis.encode_control(frame));
+    }
 }
 
 static void parameters_write()
@@ -181,6 +260,7 @@ int main(int argc, char **argv)
     CHECK(argc == 2);
     if (!std::strcmp(argv[1], "config")) validate();
     else if (!std::strcmp(argv[1], "lifecycle")) lifecycle();
+    else if (!std::strcmp(argv[1], "impedance_start")) impedance_start();
     else if (!std::strcmp(argv[1], "parameters")) parameters_write();
     else return 2;
     return 0;
