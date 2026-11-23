@@ -21,6 +21,7 @@ typedef struct {
     const char *type; // Canonical part number, independent of the CoE encoding ID.
     bool neutral_mit_only;
     uint32_t neutral_mit_frame_limit;
+    bool zero_mit_loopback;
 } dcu_motor_device_profile_t;
 
 typedef struct {

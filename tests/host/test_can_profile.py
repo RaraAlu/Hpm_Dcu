@@ -129,6 +129,23 @@ static_assert(dcu_profile.devices[0].encos.profile.kt == 1.90);
         with self.assertRaises(ValueError):
             header(self.profile)
 
+    def test_zero_mit_loopback_requires_named_timestamped_encos_and_encodable_zero(self):
+        bench = load_yaml(ROOT / "firmware/app/profile/cfg/五轴台架配置.yaml")
+        check = "".join(f"static_assert(dcu_profile.devices[{i}].zero_mit_loopback == {str(i > 0).lower()});\n"
+                        for i in range(5))
+        compiled = self.compile_profile(bench, check)
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        encos = bench["devices"][1]
+        for mutation in ({"zero_mit_loopback": 1}, {"encoding": encos["encoding"] | {"kd": [1, 50]}},
+                         {"limits": encos["limits"] | {"position_mrad": [1, 10]}}):
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                header(bench | {"devices": [encos | mutation]})
+        with self.assertRaisesRegex(ValueError, "EOF"):
+            header(bench | {"channels": [ch | {"timestamp_eof": False} if ch["bus"] == 2 else ch
+                                         for ch in bench["channels"]]})
+        with self.assertRaises(ValueError):
+            header(bench | {"devices": [bench["devices"][0] | {"zero_mit_loopback": True}]})
+
     def test_raw_rate_limit_requires_a_motor_free_profile(self):
         self.profile["channels"][0]["raw_rate_limit"] = 1
         with self.assertRaisesRegex(ValueError, "must not configure motors"):

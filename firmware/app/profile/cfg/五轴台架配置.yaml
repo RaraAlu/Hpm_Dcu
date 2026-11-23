@@ -1,7 +1,7 @@
 schema_version: 3
 startup:
   profile_id: 1
-  revision: 9
+  revision: 10
   readiness_ttl_ms: 1000
   activation_wait_s: 5
 safety:
@@ -23,6 +23,7 @@ devices:
     type: EC-A7216-P2-22H
     bus: 2
     can_id: 1
+    zero_mit_loopback: true
     power_query_period_ms: 0
     # Narrow acceptance for a bench zero command, not a mechanical travel specification.
     limits:
@@ -40,6 +41,7 @@ devices:
     type: EC-A7216-P2-22H
     bus: 2
     can_id: 2
+    zero_mit_loopback: true
     power_query_period_ms: 0
     limits: {position_mrad: [-1, 1], velocity_mrad_s: 1, torque_mNm: 1, current_dA: 1}
     encoding: {kp: [0, 500], kd: [0, 50], position_mrad: [-12500, 12500], can_timeout_ms: 500}
@@ -48,6 +50,7 @@ devices:
     type: EC-A7216-P2-22H
     bus: 2
     can_id: 3
+    zero_mit_loopback: true
     power_query_period_ms: 0
     limits: {position_mrad: [-1, 1], velocity_mrad_s: 1, torque_mNm: 1, current_dA: 1}
     encoding: {kp: [0, 500], kd: [0, 50], position_mrad: [-12500, 12500], can_timeout_ms: 500}
@@ -56,6 +59,7 @@ devices:
     type: EC-A7216-P2-22H
     bus: 2
     can_id: 4
+    zero_mit_loopback: true
     power_query_period_ms: 0
     limits: {position_mrad: [-1, 1], velocity_mrad_s: 1, torque_mNm: 1, current_dA: 1}
     encoding: {kp: [0, 500], kd: [0, 50], position_mrad: [-12500, 12500], can_timeout_ms: 500}

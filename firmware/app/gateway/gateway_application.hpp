@@ -71,6 +71,7 @@ struct ParameterReadResult {
 struct Publication {
     OperatingMode mode{};
     uint32_t sequence{}, accepted_cycle_sequence{}, cycle_sequence{};
+    uint32_t loopback_required{}, loopback_tx_complete{}, loopback_rx_matched{};
     uint16_t board_status{};
     uint8_t online_channels{}, fault_channels{};
     uint32_t online_devices{}, fault_devices{}, rx_drops{}, tx_drops{};

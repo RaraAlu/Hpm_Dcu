@@ -1,5 +1,6 @@
 #include "encos_driver.hpp"
 #include "encos_motor.hpp"
+#include "motor_limits.hpp"
 
 #include <math.h>
 
@@ -20,7 +21,7 @@ bool EncosMotorDriver::validate(const Routing &r, const encos_settings_t &settin
 }
 
 bool EncosMotorDriver::configure(const Routing &route, const encos_settings_t &settings,
-                                 uint8_t format) noexcept
+                                 uint8_t format, bool zero_mit_loopback) noexcept
 {
     configured_ = false;
     capabilities_ = {};
@@ -28,8 +29,10 @@ bool EncosMotorDriver::configure(const Routing &route, const encos_settings_t &s
         return false;
     route_ = route;
     profile_ = settings.profile;
+    zero_mit_loopback_ = zero_mit_loopback;
     capabilities_.control_modes = mode_bit(ControlMode::Position) | mode_bit(ControlMode::Velocity) |
         mode_bit(ControlMode::Current) | mode_bit(ControlMode::Impedance) | mode_bit(ControlMode::Torque);
+    if (zero_mit_loopback_) capabilities_.control_modes = mode_bit(ControlMode::Impedance);
     capabilities_.feedback_fields = Position | Velocity | Current | MotorTemperature | MosTemperature;
     if (profile_.kt > 0)
         capabilities_.feedback_fields |= Torque;
@@ -43,6 +46,7 @@ Result EncosMotorDriver::encode(const Command &command, CanFrame &frame) const n
 {
     if (!configured_)
         return Result::NotConfigured;
+    if (zero_mit_loopback_ && !is_zero_mit(command)) return Result::InvalidCommand;
     return encos::encode_motion(command, route_, profile_, frame) ? Result::Ok : Result::InvalidCommand;
 }
 

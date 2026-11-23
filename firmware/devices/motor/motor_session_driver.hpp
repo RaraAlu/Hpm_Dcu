@@ -35,6 +35,7 @@ public:
     virtual void acknowledge_queries() = 0;
     virtual bool prepare_status_poll(uint32_t, StatusPoll &) { return false; }
     virtual bool neutral_mit_only() const { return false; }
+    virtual bool zero_mit_loopback() const { return false; }
     virtual bool encode_neutral_mit(CanFrame &, uint8_t) const { return false; }
     virtual uint8_t max_rx_bytes() const { return DCU_CAN_CLASSIC_MAX_PAYLOAD; }
     virtual bool observe_status_reply(const CanFrame &, uint32_t, Feedback &, int32_t &, int32_t &) { return false; }

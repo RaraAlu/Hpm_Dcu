@@ -318,8 +318,9 @@ class ProtocolGenerationTest(unittest.TestCase):
         self.assertEqual(selection(catalogue, desired), expected)
         for change in (lambda p: p['devices'][1].update(can_id=2),
                        lambda p: p['devices'][1]['limits'].update(current_dA=2),
+                       lambda p: p['devices'][1].pop('zero_mit_loopback'),
                        lambda p: p['devices'].reverse(),
-                       lambda p: p['startup'].update(revision=10)):
+                       lambda p: p['startup'].update(revision=p['startup']['revision'] + 1)):
             modified = copy.deepcopy(desired)
             change(modified)
             with self.assertRaises(ValueError):

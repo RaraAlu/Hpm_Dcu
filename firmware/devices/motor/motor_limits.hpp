@@ -16,6 +16,12 @@ constexpr bool impedance_without_effort(const Command &command) noexcept
            !command.torque_mNm;
 }
 
+constexpr bool is_zero_mit(const Command &command) noexcept
+{
+    return impedance_without_effort(command) && !command.position_urad && !command.velocity_urad_s &&
+           !command.current_cA && !command.current_limit_dA && !command.reserved_flags;
+}
+
 constexpr bool within_limits(const Command &command, const Routing &route) noexcept
 {
     const bool position_mode = command.mode == ControlMode::Position || command.mode == ControlMode::Impedance;

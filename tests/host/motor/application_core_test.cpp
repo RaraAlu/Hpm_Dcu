@@ -34,7 +34,7 @@ static dcu_can_channel_config_t applied_channels[] = {
 static const dcu_motor_device_profile_t classic_motor{
     "test_motor", 0, 1, 0x8000, 0, -10000000, 10000000, 20000000, 10000, 100,
     {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0}, 0, 0,
-    DCU_MOTOR_PROTOCOL_ENCOS, nullptr, false, 0,
+    DCU_MOTOR_PROTOCOL_ENCOS, nullptr, false, 0, false,
 };
 
 const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus)

@@ -5,6 +5,7 @@
 #include "motor_adapter.hpp"
 #include "motor_pdo_codec.hpp"
 #include <dcu_profile_pdo.hpp>
+#include <dcu_loopback_evidence.hpp>
 #include "motor_axis_codec.hpp"
 #include "pdo_pipeline.h"
 #include "can_transport.h"
@@ -88,6 +89,8 @@ bool publish_board_and_channels()
 
 void publish_axes(uint8_t *diagnostic)
 {
+    dcu::loopback_evidence::Masks evidence{};
+    const auto &snap = publication.snapshot;
     for (unsigned i = 0; i < publication.slot_count; ++i) {
         const auto &slot = publication.slots[i];
         const auto &entry = publication.snapshot.devices[slot.device];
@@ -99,7 +102,20 @@ void publish_axes(uint8_t *diagnostic)
             const auto count = static_cast<uint8_t>(diagnostic[4] ? entry.cyclic_feedback_count :
                                                                    entry.diagnostics.tx_complete_count);
             diagnostic[5 + slot.slot] = publication.raw_tx[5 + slot.slot] = count;
+            const uint32_t device_bit = 1U << slot.device;
+            if (snap.loopback_required & device_bit) {
+                const uint32_t bit = 1U << slot.slot;
+                evidence.requested |= bit;
+                if (snap.loopback_tx_complete & device_bit) evidence.tx_complete |= bit;
+                if (snap.loopback_rx_matched & device_bit) evidence.rx_matched |= bit;
+            }
         }
+    }
+    namespace eof = dcu::loopback_evidence;
+    static_assert(eof::offset == 5 + ENCOS_AXIS_COUNT && eof::offset + eof::size == sizeof(mc_sideband_t));
+    if (diagnostic && (evidence.requested || diagnostic[eof::offset])) {
+        eof::store(diagnostic, evidence);
+        memcpy(publication.raw_tx + eof::offset, diagnostic + eof::offset, eof::size);
     }
 }
 }

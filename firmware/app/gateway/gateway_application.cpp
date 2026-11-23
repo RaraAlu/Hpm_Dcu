@@ -34,6 +34,7 @@ motor::MotorConfiguration motor_configuration(const dcu_motor_device_profile_t &
     motor.status_reply_timeout_ms = device.status_reply_timeout_ms;
     motor.protocol = device.protocol;
     motor.neutral_mit_only = device.neutral_mit_only;
+    motor.zero_mit_loopback = device.zero_mit_loopback;
     motor.type = device.type;
     return motor;
 }
@@ -80,7 +81,7 @@ bool GatewayApplication::command_permitted(uint32_t now) const
 }
 void GatewayApplication::stop_all(uint16_t fault)
 {
-    cyclic_.required = cyclic_.submitted = cyclic_.matched = 0;
+    cyclic_.required = cyclic_.submitted = cyclic_.completed = cyclic_.matched = 0;
     cyclic_.buses = 0;
     stop_neutral_run(fault != 0);
     for (unsigned a = 0; a < device_count_; a++)
@@ -114,7 +115,7 @@ void GatewayApplication::set_cyclic_feedback_window(uint32_t period_us, uint32_t
 {
     cyclic_.period_us = period_us;
     cyclic_.deadline_us = deadline_us;
-    cyclic_.required = cyclic_.submitted = cyclic_.matched = 0;
+    cyclic_.required = cyclic_.submitted = cyclic_.completed = cyclic_.matched = 0;
     cyclic_.buses = 0;
 }
 
@@ -432,6 +433,10 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         const unsigned bus = device.bus;
         if (bus >= DCU_DEVICE_CAN_BUS_COUNT || ++counts[bus] > DCU_MOTOR_DEVICES_PER_BUS)
             return false;
+        if (device.zero_mit_loopback) {
+            const auto *applied = dcu_can_channel_config(bus);
+            if (!applied || !applied->timestamp_eof) return false;
+        }
         if (device.neutral_mit_only) {
             const auto *applied = dcu_can_channel_config(bus);
             if ((neutral_bus != DCU_DEVICE_CAN_BUS_COUNT && bus != neutral_bus) || !applied || !applied->timestamp_eof ||
@@ -472,6 +477,7 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         const auto *channel = dcu_can_channel_config(device.bus);
         if (device.protocol == DCU_MOTOR_PROTOCOL_ENCOS && channel && channel->timestamp_eof)
             timestamped_encos_ |= 1U << a;
+        if (device.zero_mit_loopback) loopback_devices_ |= 1U << a;
         if (device.neutral_mit_only) neutral_run_.limit[a] = device.neutral_mit_frame_limit;
         else readiness_devices_ |= 1U << a;
         ++device_count_;
@@ -591,8 +597,10 @@ DCU_FAST_CODE void GatewayApplication::collect_tx_events(unsigned c)
         for (unsigned j = 0; j < bus_device_count_[c]; ++j) {
             const unsigned a = devices_on_bus_[c][j];
             if (!devices_[a].finish_tx(event)) continue;
-            if ((cyclic_.submitted & (1U << a)) && event.status == DCU_CAN_TX_COMPLETED)
+            if ((cyclic_.submitted & (1U << a)) && event.status == DCU_CAN_TX_COMPLETED) {
+                cyclic_.completed |= 1U << a;
                 cyclic_.tx_eof[a] = event.eof;
+            }
             break;
         }
     }

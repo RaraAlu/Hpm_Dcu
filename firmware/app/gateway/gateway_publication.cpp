@@ -16,6 +16,9 @@ DCU_FAST_CODE void GatewayApplication::prepare_publication(Publication &snapshot
     snapshot.sequence = ++state_.publication_sequence;
     snapshot.accepted_cycle_sequence = state_.last_cycle;
     snapshot.cycle_sequence = state_.board_command.sequence;
+    snapshot.loopback_required = cyclic_.required & loopback_devices_;
+    snapshot.loopback_tx_complete = cyclic_.completed & snapshot.loopback_required;
+    snapshot.loopback_rx_matched = cyclic_.matched & snapshot.loopback_required;
     snapshot.board_status = state_.board_fault | (state_.config_ready ? 1 : 0) | (state_.operational ? 2 : 0) | (state_.owner == OWNER_SDO ? 128 : 0);
     snapshot.online_devices = snapshot.fault_devices = 0;
     snapshot.online_channels = snapshot.fault_channels = 0;

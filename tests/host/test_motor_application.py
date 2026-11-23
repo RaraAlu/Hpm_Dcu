@@ -44,12 +44,13 @@ class MotorApplicationTest(unittest.TestCase):
             ("fixture", ROOT / "tests/host/motor/cfg/单路ENCOS验证配置.yaml"),
             ("mixed", ROOT / "tests/host/motor/cfg/混挂电机验证配置.yaml"),
             ("hra55h100", ROOT / "firmware/app/profile/cfg/生产CAN配置.yaml"),
+            ("five_axis", ROOT / "firmware/app/profile/cfg/五轴台架配置.yaml"),
         ):
             cls.run_command([
                 sys.executable, str(ROOT / "tools/protocol/generate_can_profile.py"),
                 "--profile", str(profile),
                 "--output", str(work / name / "dcu_can_profile_generated.h"),
-                *(["--allow-encos-fixture"] if name != "hra55h100" else []),
+                *(["--allow-encos-fixture"] if name in {"fixture", "mixed"} else []),
             ])
             obj = work / f"{name}.o"
             cls.run_command([
@@ -284,6 +285,11 @@ class MotorApplicationTest(unittest.TestCase):
 
     def test_four_encos_axes_exchange_zero_impedance_on_the_normal_production_pdo(self):
         self.run_command([str(self.executable), "encos_four_axis_production_pdo"])
+
+    def test_four_axis_tx_completion_and_matched_feedback_are_independent(self):
+        for case in ("silent", "bad_eof", "bad_tx_eof", "old_rx", "cancel_tx", "nonzero", "motor_fault", "regular_limits"):
+            with self.subTest(case=case):
+                self.run_command([str(self.executable), "encos_loopback_" + case])
 
     def test_hot_selection_rebinds_driver_set_and_requires_both_exact_assignments(self):
         self.run_command([str(self.executable), "hot_select"])

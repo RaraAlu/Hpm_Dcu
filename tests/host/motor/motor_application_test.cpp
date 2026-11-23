@@ -19,6 +19,7 @@
 #include "motor_axis_codec.hpp"
 #include "motor_adapter.hpp"
 #include "motor_ethercat.h"
+#include "dcu_loopback_evidence.hpp"
 #include "production_init.h"
 #include "can_transport.h"
 #include "realtime_port.h"
@@ -149,7 +150,7 @@ static const dcu_can_channel_config_t test_channels[] = {
 static const dcu_motor_device_profile_t test_device{
     "test_encos", 0, 1, 0x8000, 0, -10000000, 10000000, 20000000, 10000, 100,
     {{{0, 500}, {0, 5}, {-10, 10}, {-20, 20}, {-10, 10}, {-10, 10}, 0.5}, 100, 0}, 0, 0,
-    DCU_MOTOR_PROTOCOL_ENCOS, nullptr, false, 0,
+    DCU_MOTOR_PROTOCOL_ENCOS, nullptr, false, 0, false,
 };
 static dcu_production_profile_t test_profile{test_channels, ENCOS_CHANNEL_COUNT, &test_device, 1, 10, 20, {}, {}, nullptr, 0};
 static dcu_motor_device_profile_t two_bus_devices[2];
@@ -157,6 +158,7 @@ static dcu_motor_device_profile_t two_bus_devices[2];
 extern "C" const dcu_production_profile_t *host_fixture_profile(void);
 extern "C" const dcu_production_profile_t *host_mixed_profile(void);
 extern "C" const dcu_production_profile_t *host_hra55h100_profile(void);
+extern "C" const dcu_production_profile_t *host_five_axis_profile(void);
 extern "C" const dcu_production_profile_t *dcu_production_profile(void)
 {
     return fixture_profile ? fixture_profile : &test_profile;
@@ -1066,29 +1068,25 @@ static void test_hot_topology(bool timeout)
     CHECK(!channel_configuration(3).enabled && !adapter::configured_device(21));
 }
 
-static void test_encos_four_axis_production_pdo(const char *topology = nullptr)
+static void test_encos_four_axis_production_pdo(const char *scenario)
 {
-    auto profile = *host_hra55h100_profile();
-    dcu_motor_device_profile_t devices[5]{profile.devices[0]};
-    for (unsigned n = 0; n < 4; ++n) {
-        auto &device = devices[n + 1];
-        device = test_device;
-        device.bus = 2;
-        device.can_id = n + 1;
-        device.type = "7216";
-        device.encos.frame_format = 1;
-        device.encos.profile = {{0, 500}, {0, 50}, {-12.5, 12.5}, {-30, 30}, {-140, 140}, {-100, 100}, 1.90};
-        device.encos.timeout_ms = 500;
+    auto profile = *host_five_axis_profile();
+    const auto is = [&](const char *s) { return !std::strcmp(scenario, s); };
+    const bool endurance = is("encos_four_axis_production_pdo"), regular = is("regular_limits");
+    dcu_motor_device_profile_t devices[5];
+    CHECK(profile.device_count == 5);
+    std::copy_n(profile.devices, 5, devices);
+    for (unsigned n = 1; n <= 4; ++n) {
+        CHECK(devices[n].zero_mit_loopback && devices[n].bus == 2 && devices[n].can_id == n &&
+              devices[n].current_limit_dA == 1);
+        if (regular) devices[n].zero_mit_loopback = false;
     }
     profile.devices = devices;
-    profile.device_count = 5;
-    profile.passthrough_devices = nullptr;
-    profile.passthrough_device_count = 0;
     fixture_profile = &profile;
     CHECK(motor_control_init() && motor_control_boot_startup(uint64_t{startup_epoch} << 32));
     select_wire_profile(1);
     CHECK(object<mc_board_config_t>(0x2001)->AxisConfiguredMask == ((15U << 14) | (1U << 21)));
-    if (topology) { test_hot_topology(!std::strcmp(topology, "hot_timeout")); return; }
+    if (is("hot_select") || is("hot_timeout")) { test_hot_topology(is("hot_timeout")); return; }
     CHECK(test_input_size == 256 && motor_pdo::layout::active().bytes(1, false) == 216);
     CHECK(gRxAssign.aEntries[3] == 0x162E && gTxAssign.aEntries[7] == 0x1A35);
     const uint16_t saved = gRxAssign.aEntries[3];
@@ -1098,11 +1096,13 @@ static void test_encos_four_axis_production_pdo(const char *topology = nullptr)
     CHECK(motor_control_mapping(&in, &out) != 0 && !in && !out);
     select_wire_profile(1);
     constexpr uint8_t mit_zero[]{0, 0, 0, 0x7f, 0xff, 0x7f, 0xf7, 0xff};
-    unsigned transmitted[4]{}, sequence = 0;
+    unsigned transmitted[4]{}, sequence = 0, beat = 0, last_tx_us = 0;
     size_t read = 0;
     bool command_expected = false;
+    std::deque<std::pair<dcu_can_frame_t, dcu_can_rx_stamp_t>> held;
     const auto worker = [&] {
         test_ms = (test_us + DCU_WORKER_PERIOD_US) / 1000U;
+        test_tx_eof = {test_us * 100U + 100U, true};
         run_cycle();
         while (read < sent.size()) {
             const auto [bus, tx] = sent[read++];
@@ -1111,12 +1111,34 @@ static void test_encos_four_axis_production_pdo(const char *topology = nullptr)
             if (tx.dlc == 2) {
                 CHECK(tx.data[0] == 0xe0 && tx.data[1] >= 1 && tx.data[1] <= 3);
                 if (tx.data[1] == 1) { rx.data[2] = 0x42; rx.data[3] = 0xb4; }
+                else if (!regular) { rx.data[2] = 0x3f; rx.data[3] = 0x80; } // 1 rpm or 1 A
             } else {
                 CHECK(command_expected && tx.dlc == sizeof(mit_zero) && !std::memcmp(tx.data, mit_zero, sizeof(mit_zero)));
+                CHECK(!last_tx_us || test_us - last_tx_us >= 100);
+                last_tx_us = test_us;
                 ++transmitted[tx.id - 1];
                 rx = {tx.id, 8, tx.flags, {0x20, 0x80, static_cast<uint8_t>(tx.id), 0x80, 8, 0, 50, 50}};
+                if (!regular || (beat == 2 && tx.id == 3)) {
+                    rx.data[4] = beat % 2 ? 7 : 8;
+                    rx.data[5] = beat % 2 ? 0xfd : 2; // -0.12 A / +0.12 A
+                }
+                if (tx.id == 3 && beat == 2) {
+                    if (is("silent")) continue;
+                    if (is("cancel_tx")) tx_events[2].back().status = DCU_CAN_TX_CANCELLED;
+                    if (is("bad_tx_eof")) tx_events[2].back().eof.valid = false;
+                    if (is("motor_fault")) rx.data[0] |= 1;
+                }
             }
-            incoming[2].emplace_back(rx, dcu_can_rx_stamp_t{test_ms, {}});
+            const bool good_eof = !(command_expected && beat == 2 && tx.id == 3 && is("bad_eof"));
+            dcu_can_rx_stamp_t stamp{test_ms, {test_tx_eof.tick + 10U, good_eof}};
+            if (command_expected && beat == 2 && tx.id == 3 && is("old_rx")) stamp.eof.tick = test_tx_eof.tick - 1U;
+            if (endurance && tx.dlc == 8) {
+                held.emplace_back(rx, stamp);
+                if (held.size() == 4) {
+                    incoming[2].insert(incoming[2].end(), held.rbegin(), held.rend());
+                    held.clear();
+                }
+            } else incoming[2].emplace_back(rx, stamp);
         }
     };
     while (test_ms < 350 && startup_state() != DCU_GATEWAY_READY) worker();
@@ -1137,9 +1159,14 @@ static void test_encos_four_axis_production_pdo(const char *topology = nullptr)
         mc_axis_rx_t axis{};
         axis.ControlWord = control;
         axis.Mode = 4;
-        for (unsigned n = 0; n < 4; ++n) motor_pdo::store(wire, 48 + n * 24, axis);
+        for (unsigned n = 0; n < 4; ++n) {
+            axis.Kp = n == 2 && beat == 2 && is("nonzero") ? 1 : 0;
+            motor_pdo::store(wire, 48 + n * 24, axis);
+        }
+        motor_control_set_cyclic_feedback_window(2000, test_us + 1600);
         motor_control_output(wire);
         for (unsigned us = 0; us < 2000; us += DCU_WORKER_PERIOD_US) worker();
+        if (motor_control_cyclic_feedback_missing()) return; // No new SM3 on a missed deadline.
         motor_control_prepare_input();
         CHECK(object<mc_board_tx_t>(0x6000)->AcceptedCycleSeq == sequence);
     };
@@ -1148,16 +1175,45 @@ static void test_encos_four_axis_production_pdo(const char *topology = nullptr)
     for (unsigned i = 0; i < 40; ++i) cycle(true, MC_AXIS_ARM);
     for (unsigned n = 0; n < 4; ++n) CHECK(axis_feedback(14 + n)->StatusWord & 4U);
     command_expected = true;
-    for (unsigned i = 1; i <= 30000; ++i) {
+    const uint32_t all = 15U << 14;
+    const auto evidence = [&] {
+        return dcu::loopback_evidence::read(ssc_txpdo + motor_pdo::layout::active().sideband(true));
+    };
+    for (beat = 1; beat <= (endurance ? 30000U : 2U); ++beat) {
+        const bool failed = !endurance && beat == 2;
+        uint8_t previous[256];
+        if (failed) std::memcpy(previous, ssc_txpdo, sizeof(previous));
         cycle(true, MC_AXIS_ARM | MC_AXIS_START_MOTION);
+        CHECK(motor_control_cyclic_feedback_required() == 0x1e);
+        CHECK(motor_control_cyclic_feedback_missing() == (failed ? 1U << 3 : 0));
+        CHECK(motor_pdo::load<mc_board_tx_t>(ssc_txpdo, 0).AcceptedCycleSeq == sequence - failed);
+        if (failed) CHECK(!std::memcmp(previous, ssc_txpdo, sizeof(previous)));
+        const auto masks = evidence();
+        const bool no_tx = failed && (is("cancel_tx") || is("nonzero"));
+        CHECK(masks.requested == (regular ? 0 : all));
+        CHECK(masks.tx_complete == masks.requested && masks.rx_matched == masks.requested);
         for (unsigned n = 0; n < 4; ++n) {
-            CHECK(transmitted[n] == i && axis_diagnostics(14 + n)->TxCompleteCount == i);
-            const auto *feedback = axis_feedback(14 + n);
-            CHECK(feedback->ModeDisplay == 4 && (feedback->StatusWord & (8U | 16U)) == (8U | 16U));
+            CHECK(transmitted[n] == beat - (n == 2 && failed && is("nonzero")));
+            if (failed) {
+                const auto slot = 14 + n;
+                CHECK(read_sdo<uint32_t>(0x2400 + 16 * slot, 2) == beat - (n == 2 && no_tx));
+                MotorFeedback f{};
+                MotorDiagnostics d{};
+                CHECK(read_device(1 + n, f, d));
+                if (n == 2 && regular) CHECK(f.bridge_fault == 2 && d.active_fault_bits == 4);
+                if (n == 2 && is("motor_fault")) CHECK(f.sample.motor_fault != 0);
+            } else {
+                const auto *feedback = axis_feedback(14 + n);
+                CHECK(axis_diagnostics(14 + n)->TxCompleteCount == beat);
+                CHECK(feedback->ModeDisplay == 4 && (feedback->StatusWord & (8U | 16U)) == (8U | 16U));
+                CHECK(!feedback->BridgeFaultCode && !feedback->MotorFaultRaw && !axis_diagnostics(14 + n)->ActiveFaultBits);
+                if (!regular) CHECK(feedback->ActualCurrent == (beat % 2 ? -12 : 12));
+            }
         }
     }
     command_expected = false;
     cycle(false, 0);
+    CHECK(!evidence().requested && !axis_diagnostics(21)->TxCompleteCount);
 }
 
 static void test_raw_motor_handoff()
@@ -1235,8 +1291,8 @@ int main(int argc, char **argv)
         test_encos_four_axis_production_pdo(argv[1]);
         return 0;
     }
-    if (!std::strcmp(argv[1], "encos_four_axis_production_pdo")) {
-        test_encos_four_axis_production_pdo();
+    if (!std::strcmp(argv[1], "encos_four_axis_production_pdo") || !std::strncmp(argv[1], "encos_loopback_", 15)) {
+        test_encos_four_axis_production_pdo(!std::strncmp(argv[1], "encos_loopback_", 15) ? argv[1] + 15 : argv[1]);
         return 0;
     }
     if (!std::strcmp(argv[1], "registered_passthrough")) {

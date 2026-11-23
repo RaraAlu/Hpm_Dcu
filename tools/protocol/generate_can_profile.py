@@ -51,6 +51,9 @@ def device_line(device, channels, names, can_ids, slots, bindings, allow_encos_f
     fixture = protocol == "encos" and allow_encos_fixture and "type" not in device
     if protocol == "encos":
         fields = {"limits", "encoding", "power_query_period_ms", "model_profile_id" if fixture else "type"}
+        if not fixture and "zero_mit_loopback" in device:
+            require(device["zero_mit_loopback"] is True, "zero_mit_loopback: expected true")
+            fields.add("zero_mit_loopback")
     elif neutral_mit:
         fields = {"type", "neutral_mit_only", "neutral_mit_frame_limit"}
     else:
@@ -82,7 +85,7 @@ def device_line(device, channels, names, can_ids, slots, bindings, allow_encos_f
         unused_encos = "{ {{0}, {0}, {0}, {0}, {0}, {0}, 0}, 0, 0 }"
         return [f'    {{ "{name}", {bus}U, {can_id}U, 0U, 0U,',
                 f'      0, 0, 0U, 0U, 0U, {unused_encos}, {period}U, {timeout}U,',
-                f"      DCU_MOTOR_PROTOCOL_BJCX, {model}->part_number.data(), {str(neutral_mit).lower()}, {frame_limit}U }},"]
+                f"      DCU_MOTOR_PROTOCOL_BJCX, {model}->part_number.data(), {str(neutral_mit).lower()}, {frame_limit}U, false }},"]
 
     if fixture:
         require(type(device["model_profile_id"]) is int and device["model_profile_id"] == 0x8000,
@@ -103,6 +106,10 @@ def device_line(device, channels, names, can_ids, slots, bindings, allow_encos_f
     pos = pair(encoding["position_mrad"], "encoding.position_mrad", minimum=-327680, maximum=327670)
     p_min, p_max = pair(limits["position_mrad"], "limits.position_mrad",
                         minimum=pos[0], maximum=pos[1], crosses_zero=False)
+    loopback = device.get("zero_mit_loopback", False)
+    if loopback:
+        require(kp[0] == kd[0] == 0 and p_min <= 0 <= p_max,
+                f"{name}: zero MIT must be encodable and within command limits")
     require(pos[0] <= p_min < p_max <= pos[1], f"{name}: position limits exceed the encoding range")
     if fixture:
         velocity = pair(encoding["velocity_mrad_s"], "encoding.velocity_mrad_s", minimum=-327680, maximum=327670)
@@ -129,7 +136,7 @@ def device_line(device, channels, names, can_ids, slots, bindings, allow_encos_f
         f'    {{ "{name}", {bus}U, {can_id}U, dcu::motor::encos_config::coe_encoding_id, {power}U,',
         f"      {p_min * 1000}, {p_max * 1000}, {v_lim * 1000}U, {t_lim}U, {i_lim}U,",
         f"      {{ {{ {ranges}, {kt} }}, {timeout}U, {int(channels[bus])}U }}, 0U, 0U,",
-        f"      DCU_MOTOR_PROTOCOL_ENCOS, {model_type}, false, 0U }},",
+        f"      DCU_MOTOR_PROTOCOL_ENCOS, {model_type}, false, 0U, {str(loopback).lower()} }},",
     ]
 
 
@@ -200,6 +207,9 @@ def header(profile, *, allow_encos_fixture=False):
         lines.append("static constexpr dcu_motor_device_profile_t dcu_profile_devices[] = {")
         for device in devices:
             lines.extend(device_line(device, seen, names, can_ids, slots, bindings, allow_encos_fixture))
+            if device.get("zero_mit_loopback"):
+                require(any(ch["bus"] == device["bus"] and ch.get("timestamp_eof") for ch in channels),
+                        "zero MIT loopback requires EOF timestamps")
         neutral_buses = {device["bus"] for device in devices if device.get("neutral_mit_only")}
         require(not neutral_buses or (len(neutral_buses) == 1 and any(
             ch["bus"] in neutral_buses and ch.get("timestamp_eof") for ch in channels)),

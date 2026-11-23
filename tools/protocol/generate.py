@@ -485,7 +485,7 @@ def cyclic_contract(schema, pdos, profile):
         slot = bus * 7 + counts[bus]
         counts[bus] += 1
         axes[slot] = {k: d[k] for k in ('id', 'protocol', 'type', 'model_profile_id', 'bus', 'can_id',
-                                          'neutral_mit_only') if k in d}
+                                          'neutral_mit_only', 'zero_mit_loopback') if k in d}
     modes = []
     for mode, family in enumerate(schema['profiles']):
         image = {}
@@ -523,11 +523,13 @@ def cyclic_contract(schema, pdos, profile):
 
 
 def rk_header(contract):
+    loopback_mask = sum(1 << a['slot'] for a in contract['axes'] if a.get('zero_mit_loopback'))
     lines = [BANNER, '#ifndef DCU_PROFILE_PDO_HPP', '#define DCU_PROFILE_PDO_HPP', '#include <cstdint>',
              'namespace dcu_profile_pdo {',
              f"inline constexpr uint32_t interface_version = {contract['version']};",
              f"inline constexpr uint32_t profile_id = {contract['profile_id']}u, profile_revision = {contract['profile_revision']}u;",
              f"inline constexpr uint32_t channel_mask = {sum(1 << c for c in contract['channels'])}u, axis_mask = {sum(1 << a['slot'] for a in contract['axes'])}u;",
+             f"inline constexpr uint32_t zero_mit_loopback_mask = {loopback_mask}u;",
              'struct Unit { const char *name; unsigned slot; };',
              'inline constexpr Unit units[] = {' +
              ''.join('{' + json.dumps(a['id']) + ',' + str(a['slot']) + '},' for a in contract['axes']) + '{nullptr,0}};',

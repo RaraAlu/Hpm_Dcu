@@ -114,9 +114,9 @@ private:
     CanTransactions transactions_{};
     ProductionStartup startup_{};
     uint32_t readiness_devices_{};
-    uint32_t timestamped_encos_{};
+    uint32_t timestamped_encos_{}, loopback_devices_{};
     struct CyclicFeedback {
-        uint32_t period_us{}, deadline_us{}, required{}, submitted{}, matched{};
+        uint32_t period_us{}, deadline_us{}, required{}, submitted{}, completed{}, matched{};
         uint8_t buses{};
         dcu_can_eof_t tx_eof[DCU_MOTOR_DEVICE_CAPACITY]{};
     } cyclic_{};

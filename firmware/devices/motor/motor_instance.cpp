@@ -65,10 +65,7 @@ void MotorInstance::reset_session()
 bool MotorInstance::accept_neutral_mit(const Command &command, bool permit, bool continuing)
 {
     auto &x = state_;
-    if (!neutral_mit_only() || !permit || command.mode != ControlMode::Impedance ||
-        command.reserved_flags || command.position_urad || command.velocity_urad_s ||
-        command.torque_mNm || command.current_cA || command.current_limit_dA ||
-        command.kp_centi || command.kd_milli) {
+    if (!neutral_mit_only() || !permit || !is_zero_mit(command)) {
         x.neutral_armed = x.neutral_pending = false;
         return false;
     }
@@ -110,7 +107,8 @@ void MotorInstance::abort_neutral_mit(uint16_t fault)
 bool MotorInstance::query_ready(uint32_t now) const
 {
     return driver_ && driver_->query_ready(now) &&
-        within_magnitude(state_.feedback.sample.current_cA, int64_t{route_.current_limit_dA} * 10) &&
+        (driver_->zero_mit_loopback() ||
+         within_magnitude(state_.feedback.sample.current_cA, int64_t{route_.current_limit_dA} * 10)) &&
         !state_.feedback.sample.motor_fault && !state_.feedback.bridge_fault &&
         dcu_can_bus_state(bus_) != DCU_CAN_BUS_OFF;
 }
@@ -263,7 +261,8 @@ bool MotorInstance::consume_feedback(const CanFrame &frame, uint32_t stamp, uint
         x.feedback_ms = stamp;
         x.new_feedback = true;
         ++x.cyclic_feedback_count;
-        if (!within_magnitude(sample.current_cA, int64_t{route_.current_limit_dA} * 10)) stop(2);
+        if (!driver_->zero_mit_loopback() &&
+            !within_magnitude(sample.current_cA, int64_t{route_.current_limit_dA} * 10)) stop(2);
     } else {
         const auto result = driver_->observe(frame, stamp, now, active(), x.feedback.sample,
                                              history_.queried_position, history_.queried_velocity);
