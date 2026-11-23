@@ -1,0 +1,15 @@
+# RK scheduling contract for this HPM Profile and active selection (not flashed).
+profile_id: 1
+revision: 10
+profile_sha256: 9fb257bcaee656ece6b2b9613b17bbfa598e18e87d5745923420aa5b6cf59fdd
+channel_mask: 0x0c
+axis_mask: 0x23c000
+pdo:
+  period_us: 2000
+  sync0_shift_us: 375
+  arrival_before_sync0_us: 338
+  worker_before_send_us: 150
+  arrival_tolerance_us: 25
+sdo:
+  period_us: 2000
+  wake_offset_us: 700

@@ -1,6 +1,5 @@
 #include <ecrt.h>
 #include "dcu_igh_layout.hpp"
-#include "dcu_loopback_evidence.hpp"
 #include "encos_interface.h"
 #include "igh_probe_frame_stats.hpp"
 #include "probe_dc_clock.hpp"
@@ -28,8 +27,6 @@ constexpr unsigned rx_size = wire.rx.bytes, tx_size = wire.tx.bytes;
 constexpr int channel_offset = offset(wire.rx, 0x7100 + bus);
 constexpr int axis_rx_offset = offset(wire.rx, 0x7200 + first_slot);
 constexpr int axis_tx_offset = offset(wire.tx, 0x6200 + first_slot);
-constexpr int evidence_offset = offset(wire.tx, 0x6400);
-static_assert(!encos_axes || (evidence_offset >= 0 && evidence_offset + sizeof(mc_sideband_t) <= tx_size));
 constexpr bool target_mapped()
 {
     if (channel_offset < 0 || axis_tx_offset < 0 || axis_rx_offset < 0) return false;
@@ -81,12 +78,13 @@ uint32_t upload(ec_master_t *master, uint16_t index, uint8_t sub, size_t width)
 }
 struct Sample {
     uint64_t sent{}, received{}, frames{}, bytes{}, due{};
+    uint64_t pre_counter{}, post_counter{}, post_sync{}, send_gate{};
+    int counter_errno{};
     uint32_t seq{}, sof{}, grid{};
     unsigned wkc{}, al{};
     bool ok{};
     mc_board_tx_t board{};
     std::array<mc_axis_tx_t, axes> axis{};
-    dcu::loopback_evidence::Masks evidence{};
 };
 struct Session {
     ec_master_t *master;
@@ -105,7 +103,10 @@ struct Session {
         result.due = due;
         const uint64_t next = uint64_t(int64_t(due + period_ns) + follower.step_ns());
         wait(due - 50000);
+        result.pre_counter = now();
         const auto before = counter.read();
+        if (!before.valid) result.counter_errno = errno;
+        result.post_counter = now();
         if (!before.valid) return result;
         std::memset(pdo, 0, rx_size);
         mc_board_rx_t board{};
@@ -129,8 +130,10 @@ struct Session {
         ecrt_master_application_time(master, dc + now() - due);
         ecrt_master_sync_monitor_queue(master);
         ecrt_master_sync_slave_clocks(master);
+        result.post_sync = now();
         while (now() < due) {}
-        if ((op || prepare) && now() - due > 45000) return result;
+        result.send_gate = now();
+        if ((op || prepare) && result.send_gate - due > 45000) return result;
         ecrt_domain_queue(domain);
         result.sent = now();
         ecrt_master_send(master);
@@ -159,7 +162,6 @@ struct Session {
             result.sent < due + 45000 && result.received < due + period_ns;
         std::memcpy(&result.board, pdo, sizeof(result.board));
         std::memcpy(result.axis.data(), pdo + axis_tx_offset, sizeof(mc_axis_tx_t) * axes);
-        if constexpr (encos_axes) result.evidence = dcu::loopback_evidence::read(pdo + evidence_offset);
         due = next;
         dc += period_ns;
         return result;
@@ -189,20 +191,11 @@ constexpr bool fresh_axis(const mc_axis_tx_t &a)
            (!encos_axes || (a.ModeDisplay == 4 && (a.StatusWord & 8U)));
 }
 
-// -1 means that the N+1 image cannot establish this fact, not that no CAN TX occurred.
-constexpr int tx_complete(const Sample &s, uint32_t expected, unsigned i)
-{
-    const auto bit = 1U << (first_slot + i);
-    if (!encos_axes || !s.ok || s.board.AcceptedCycleSeq != expected || !(s.evidence.requested & bit)) return -1;
-    return (s.evidence.tx_complete & bit) != 0;
-}
 constexpr int next_fresh(const Sample &s, uint32_t expected, unsigned i)
 {
     if (!s.ok) return -1;
     if (s.board.AcceptedCycleSeq != expected) return 0;
-    const auto bit = 1U << (first_slot + i);
-    if (encos_axes && !(s.evidence.requested & bit)) return -1;
-    return fresh_axis(s.axis[i]) && (!encos_axes || (s.evidence.rx_matched & bit));
+    return fresh_axis(s.axis[i]);
 }
 
 #if defined(DCU_PROBE_CAN2_ENCOS)
@@ -210,11 +203,10 @@ static_assert([] {
     Sample s{};
     s.ok = true;
     s.board.AcceptedCycleSeq = 42;
-    s.evidence = {axis_mask, axis_mask, axis_mask ^ (1U << (first_slot + 2))};
     for (auto &a : s.axis) { a.StatusWord = fresh | 8U; a.ValidFlags = 7; a.ModeDisplay = 4; }
-    return tx_complete(s, 42, 2) == 1 && next_fresh(s, 42, 2) == 0 && next_fresh(s, 42, 3) == 1 &&
-           tx_complete(s, 43, 2) == -1 && next_fresh(s, 43, 2) == 0;
-}(), "score TX separately from feedback; a stale SM3 cannot confirm a current TX");
+    s.axis[2].StatusWord &= ~fresh;
+    return next_fresh(s, 42, 2) == 0 && next_fresh(s, 42, 3) == 1 && next_fresh(s, 43, 3) == 0;
+}(), "require the preceding command sequence and fresh production axis feedback");
 #endif
 
 constexpr bool matches(const Sample &sample, uint32_t expected, bool expect_feedback)
@@ -224,8 +216,7 @@ constexpr bool matches(const Sample &sample, uint32_t expected, bool expect_feed
     for (unsigned i = 0; i < axes; ++i) {
         const auto &axis = sample.axis[i];
         if (expect_feedback) {
-            if (next_fresh(sample, expected, i) != 1 ||
-                (encos_axes && tx_complete(sample, expected, i) != 1)) return false;
+            if (next_fresh(sample, expected, i) != 1) return false;
         } else if (encos_axes ? (axis.MotorFaultRaw || axis.BridgeFaultCode || (axis.StatusWord & 8U)) :
                                (axis.ValidFlags || (axis.StatusWord & fresh))) return false;
     }
@@ -241,20 +232,19 @@ struct RunRow {
 void write_run(FILE *file, const std::vector<RunRow> &rows)
 {
     fputs("seq,commanded,expected,accepted,publish,due_ns,send_ns,receive_ns,frames,bytes,wkc,al,"
-          "sof_ns,grid_ns,lrw_ok,next_lrw_ok,board,axis,valid,age_ms,position,velocity,current,motor_fault,bridge_fault,can_id,mode,can_tx_complete,n1_fresh\n",
+          "sof_ns,grid_ns,lrw_ok,next_lrw_ok,board,axis,valid,age_ms,position,velocity,current,motor_fault,bridge_fault,can_id,mode,n1_fresh\n",
           file);
     for (const auto &row : rows) {
         const auto &r = row.frame;
         for (unsigned i = 0; i < axes; ++i) {
             const auto &a = r.axis[i];
-            fprintf(file, "%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%u,%u,%u,%u,%d,%d,%u,%u,%u,%u,%d,%d,%d,%u,%u,%u,%u,%d,%d\n",
+            fprintf(file, "%u,%u,%u,%u,%u,%llu,%llu,%llu,%llu,%llu,%u,%u,%u,%u,%d,%d,%u,%u,%u,%u,%d,%d,%d,%u,%u,%u,%u,%d\n",
                 r.seq, row.commanded, row.expected, r.board.AcceptedCycleSeq, r.board.PublishSeq,
                 (unsigned long long)r.due, (unsigned long long)r.sent, (unsigned long long)r.received,
                 (unsigned long long)r.frames, (unsigned long long)r.bytes, r.wkc, r.al, r.sof, r.grid,
                 r.ok, row.verified, r.board.BoardStatus, a.StatusWord, a.ValidFlags,
                 a.FeedbackAgeMs, a.ActualPosition, a.ActualVelocity, a.ActualCurrent,
                 a.MotorFaultRaw, a.BridgeFaultCode, first_can_id + i, a.ModeDisplay,
-                row.expect_feedback ? tx_complete(r, row.expected, i) : -1,
                 row.expect_feedback ? next_fresh(r, row.expected, i) : -1);
         }
     }
@@ -386,7 +376,10 @@ try {
             if (matched) ++verified;
             else ++missed;
         }
-        if (!frame.sent) { stop_reason = "send_gate"; break; }
+        if (!frame.sent) {
+            stop_reason = frame.send_gate ? "send_deadline" : "frame_counter_read";
+            break;
+        }
         if (!frame.ok) { stop_reason = "lrw_gate"; break; }
         if (!matched) { stop_reason = "next_lrw_mismatch"; break; }
         predecessor = frame.seq;
@@ -403,8 +396,25 @@ try {
            goal - sent_count, stop_reason);
     show("first_scored", rows.front().frame);
     show("last_scored", rows.back().frame);
+    const auto &last_frame = rows.back().frame;
+    if (!last_frame.sent)
+        printf("pre_send seq=%u due_ns=%llu pre_counter_ns=%llu post_counter_ns=%llu post_sync_ns=%llu "
+               "gate_ns=%llu counter_errno=%d\n", last_frame.seq, (unsigned long long)last_frame.due,
+               (unsigned long long)last_frame.pre_counter, (unsigned long long)last_frame.post_counter,
+               (unsigned long long)last_frame.post_sync, (unsigned long long)last_frame.send_gate,
+               last_frame.counter_errno);
     bool tx_counts_ok = true;
     if constexpr (encos_axes) {
+        // Release the cyclic reservation before asking the idle master for mailbox data.
+        m.reset();
+        m.reset(ecrt_open_master(0));
+        need(bool(m), "cannot open master for independent TX count readback");
+        bool preop = false;
+        for (unsigned i = 0; i < 100 && !preop; ++i) {
+            preop = !ecrt_master_get_slave(m.get(), 0, &si) && si.al_state == 2;
+            if (!preop) { const timespec delay{0, 50000000}; nanosleep(&delay, nullptr); }
+        }
+        need(preop, "slave did not return to PREOP for TX count readback");
         const auto after = counter_snapshot();
         need(dcu_profile_pdo::read_exact(m.get(), 0, 0x2103, 5, boot_after.data(), boot_after.size()) &&
              boot_before == boot_after && topology_before == upload(m.get(), 0x2103, 2, 4),
