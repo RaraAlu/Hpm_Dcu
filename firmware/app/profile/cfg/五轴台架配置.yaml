@@ -1,7 +1,7 @@
 schema_version: 3
 startup:
   profile_id: 1
-  revision: 10
+  revision: 12
   readiness_ttl_ms: 1000
   activation_wait_s: 5
 safety:
@@ -10,6 +10,7 @@ safety:
 channels:
   - {bus: 3, mode: fd, nominal_bitrate_kbps: 1000, data_bitrate_kbps: 5000, timestamp_eof: true}
   - {bus: 2, mode: fd, nominal_bitrate_kbps: 1000, data_bitrate_kbps: 5000, timestamp_eof: true}
+  - {bus: 1, mode: fd, nominal_bitrate_kbps: 1000, data_bitrate_kbps: 5000, timestamp_eof: true}
 devices:
   - id: hra55h100_can3
     protocol: bjcx
@@ -59,6 +60,15 @@ devices:
     type: EC-A7216-P2-22H
     bus: 2
     can_id: 4
+    zero_mit_loopback: true
+    power_query_period_ms: 0
+    limits: {position_mrad: [-1, 1], velocity_mrad_s: 1, torque_mNm: 1, current_dA: 1}
+    encoding: {kp: [0, 500], kd: [0, 50], position_mrad: [-12500, 12500], can_timeout_ms: 500}
+  - id: encos_can1_1
+    protocol: encos
+    type: EC-A7216-P2-22H
+    bus: 1
+    can_id: 1
     zero_mit_loopback: true
     power_query_period_ms: 0
     limits: {position_mrad: [-1, 1], velocity_mrad_s: 1, torque_mNm: 1, current_dA: 1}
