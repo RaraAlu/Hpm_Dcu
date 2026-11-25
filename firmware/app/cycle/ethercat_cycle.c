@@ -125,8 +125,7 @@ void dcu_trace_neutral_consumed(uint32_t consumed_us)
 static uint32_t phase_command_after_release(const volatile dcu_pdo_phase_sample_t *sample,
                                             uint32_t begin_us, uint32_t end_us)
 {
-    const uint32_t release = sample->sync0_us + pipeline.period_us - pipeline.advance_us -
-                             DCU_TX_BUILD_BUDGET_US;
+    const uint32_t release = sample->sync0_us + pdo_pipeline_build_offset(&pipeline);
     if ((int32_t)(end_us - release) <= 0) return 0U;
     return end_us - ((int32_t)(begin_us - release) < 0 ? release : begin_us);
 }
@@ -608,7 +607,7 @@ static void publish_due(void)
         return;
     const bool cyclic = !sm2 && read_handoff(&pipeline.cyclic_active) && read_handoff(&pipeline.cyclic_epoch) == epoch;
     const uint32_t deadline = cyclic ? pdo_pipeline_cyclic_deadline(&pipeline, sync_us) :
-                                    sync_us + pipeline.period_us - pipeline.advance_us;
+                                      sync_us + pdo_pipeline_normal_deadline_offset(&pipeline);
 #if defined(CONFIG_PDO_PHASE_TRACE)
     volatile dcu_pdo_phase_sample_t *sample = !sm2 ? phase_current(epoch) : NULL;
 #endif
@@ -629,7 +628,7 @@ static void publish_due(void)
         return;
     }
     uint32_t offset_us = now_us - sync_us;
-    uint32_t release_us = pipeline.period_us - pipeline.advance_us - DCU_TX_BUILD_BUDGET_US;
+    uint32_t release_us = pdo_pipeline_build_offset(&pipeline);
     if (offset_us >= release_us && offset_us - release_us > cycle_diagnostics.publish_start_delay_max_us)
         cycle_diagnostics.publish_start_delay_max_us = offset_us - release_us;
 #if defined(CONFIG_PDO_PHASE_TRACE)
@@ -736,7 +735,8 @@ static void preview_ready_sm2(void)
     static uint8_t image[PDO_PIPELINE_RX_MAX] __attribute__((aligned(4)));
     if (!runtime.outputs_running || read_handoff(&handoff.sm2_cycles) ||
         read_handoff(&pipeline.ready) >= PDO_PIPELINE_SLOT_COUNT ||
-        runtime.preview_sequence == read_handoff(&handoff.stage_sequence)) return;
+        runtime.preview_sequence == read_handoff(&handoff.stage_sequence) ||
+        !motor_control_preview_supported()) return;
     // Only the PDI producer can recycle or write the image. Sync0 remains unmasked.
     intc_m_disable_irq(IRQn_ESC);
     const uint32_t index = read_handoff(&pipeline.ready);
@@ -752,6 +752,7 @@ void dcu_cycle_step(void)
 {
     uint32_t start = dcu_time_now_us();
     uint32_t ticks;
+    uint32_t duration;
     if (raw_pdo.configured) {
         raw_pdo_step();
         goto ssc;
@@ -765,7 +766,7 @@ void dcu_cycle_step(void)
             pdo_pipeline_update_cyclic(&pipeline, current_epoch, motor_control_cyclic_feedback_missing());
             publish_due();
         }
-        if (runtime.outputs_running && !read_handoff(&pipeline.published)) return;
+        if (runtime.outputs_running && !read_handoff(&pipeline.published)) goto finish;
         goto ssc;
     }
     if (runtime.outputs_running && !cycle_configuration_matches())
@@ -789,8 +790,7 @@ void dcu_cycle_step(void)
     if (pdo_pipeline_acquire(&pipeline, &view)) {
         if (runtime.outputs_running && view.epoch == __atomic_load_n(&pipeline.epoch, __ATOMIC_ACQUIRE)) {
             if (!sm2) record_timing(&view);
-            const uint32_t cutoff_us = view.sync_us + pipeline.period_us - pipeline.advance_us -
-                                       DCU_TX_BUILD_BUDGET_US;
+            const uint32_t cutoff_us = view.sync_us + pdo_pipeline_build_offset(&pipeline);
             motor_control_set_neutral_window(sm2 ? 0U : pipeline.period_ns, cutoff_us);
             motor_control_set_cyclic_feedback_window(sm2 ? 0U : pipeline.period_us,
                                                     pdo_pipeline_cyclic_deadline(&pipeline, view.sync_us));
@@ -843,7 +843,7 @@ void dcu_cycle_step(void)
     }
     publish_due();
     if (!sm2 && runtime.outputs_running && read_handoff(&pipeline.cyclic_active) &&
-        read_handoff(&pipeline.cyclic_epoch) == read_handoff(&pipeline.epoch) && !read_handoff(&pipeline.published)) return;
+        read_handoff(&pipeline.cyclic_epoch) == read_handoff(&pipeline.epoch) && !read_handoff(&pipeline.published)) goto finish;
 
 ssc:
     if (!raw_pdo.configured) preview_ready_sm2();
@@ -869,7 +869,8 @@ ssc:
 #endif
     }
     if (!raw_pdo.configured) (void)check_faults(dcu_time_now_us());
-    uint32_t duration = dcu_time_now_us() - start;
+finish:
+    duration = dcu_time_now_us() - start;
     if (duration > cycle_diagnostics.worker_max_us)
         cycle_diagnostics.worker_max_us = duration;
 }

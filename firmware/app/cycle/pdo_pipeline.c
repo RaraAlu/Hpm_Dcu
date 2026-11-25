@@ -189,8 +189,7 @@ bool pdo_pipeline_publish_due(const pdo_pipeline_t *p, uint32_t now_us)
         return false;
     if (load(&p->cyclic_active) && load(&p->cyclic_epoch) == epoch)
         return load(&p->cyclic_missing) == 0;
-    return (uint32_t)(now_us - sync_us) >=
-           p->period_us - p->advance_us - DCU_TX_BUILD_BUDGET_US;
+    return (uint32_t)(now_us - sync_us) >= pdo_pipeline_build_offset(p);
 }
 
 void pdo_pipeline_update_cyclic(pdo_pipeline_t *p, uint32_t epoch, uint32_t missing)
@@ -211,7 +210,8 @@ bool pdo_pipeline_mark_published(pdo_pipeline_t *p, uint32_t epoch, uint32_t now
 {
     const bool cyclic = load(&p->cyclic_active) && load(&p->cyclic_epoch) == epoch;
     const uint32_t sync_us = load(&p->sync_us);
-    const uint32_t deadline = cyclic ? pdo_pipeline_cyclic_deadline(p, sync_us) : sync_us + p->period_us - p->advance_us;
+    const uint32_t deadline = cyclic ? pdo_pipeline_cyclic_deadline(p, sync_us) :
+                                       sync_us + pdo_pipeline_normal_deadline_offset(p);
     if (cyclic && load(&p->cyclic_missing)) {
         pdo_pipeline_fault(p, PDO_PIPELINE_CAN_FEEDBACK_MISSING);
         return false;
@@ -238,7 +238,8 @@ uint32_t pdo_pipeline_check(pdo_pipeline_t *p, uint32_t now_us)
         uint32_t elapsed = now_us - sync_us;
         const bool cyclic = load(&p->cyclic_active) && load(&p->cyclic_epoch) == epoch;
         const uint32_t missing = cyclic ? load(&p->cyclic_missing) : 0U;
-        const uint32_t deadline = cyclic ? pdo_pipeline_cyclic_deadline(p, sync_us) : sync_us + p->period_us - p->advance_us;
+        const uint32_t deadline = cyclic ? pdo_pipeline_cyclic_deadline(p, sync_us) :
+                                           sync_us + pdo_pipeline_normal_deadline_offset(p);
         bool already_published = load(&p->published) && load(&p->published_epoch) == epoch;
         /* Sync0 can preempt this check and clear publication for the next epoch. */
         if (epoch != load(&p->epoch) || (int32_t)elapsed < 0)

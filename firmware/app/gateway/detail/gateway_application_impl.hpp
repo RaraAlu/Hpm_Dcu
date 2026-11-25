@@ -12,10 +12,6 @@
 
 namespace dcu::app::gateway_application::detail {
 
-struct BatchSample {
-    uint32_t sequence, preview, deadline_us, queued_us, tx_eof_us, rx_eof_us, matched_us, encoded_us;
-};
-
 // MainLoop and SDO callbacks share one task; only the C/C++ entry points own this object.
 class GatewayApplication {
 public:
@@ -73,6 +69,7 @@ private:
     bool begin_layout(OperatingMode, uint32_t, uint32_t, const uint8_t (&)[DCU_GATEWAY_DIGEST_BYTES], bool);
     bool finish_layout(OperatingMode, bool topology);
     bool raw_channel(unsigned bus) const;
+    void route_raw_rx(unsigned bus, const dcu_can_frame_t &frame, bool routed, bool single_fd);
     bool raw_motor_bus_idle(uint8_t buses) const;
     void checkpoint_raw_losses();
     uint32_t channel_losses(unsigned bus) const;

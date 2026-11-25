@@ -49,6 +49,10 @@ sdk_src(
     boot_identity/port/gateway_id_flash.c
 )
 sdk_src(cycle/pdo_pipeline.c cycle/ethercat_cycle.c)
+option(CONFIG_CAN_BATCH_SAMPLE "Record per-axis cyclic CAN batch timestamps" ON)
+if(CONFIG_CAN_BATCH_SAMPLE)
+    sdk_compile_definitions(-DCONFIG_CAN_BATCH_SAMPLE=1)
+endif()
 option(CONFIG_PDO_PHASE_TRACE "Trace PDO phase boundaries by command sequence" OFF)
 if(CONFIG_PDO_PHASE_TRACE)
     sdk_compile_definitions(-DCONFIG_PDO_PHASE_TRACE=1)

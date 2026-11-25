@@ -16,6 +16,7 @@ void motor_control_discard_profile(void);
 void motor_control_cycle_fault(void);
 void motor_control_raw_link_lost(void);
 void motor_control_output(const void *data);
+bool motor_control_preview_supported(void);
 void motor_control_preview(const void *data);
 bool motor_control_event_pdo(void);
 uint32_t motor_control_event_lease_us(void);

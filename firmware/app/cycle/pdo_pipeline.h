@@ -1,6 +1,7 @@
 #ifndef DCU_PDO_PIPELINE_H
 #define DCU_PDO_PIPELINE_H
 
+#include "cycle_config.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -63,6 +64,17 @@ typedef struct {
     uint32_t sync_us;
     uint32_t ready_us;
 } pdo_pipeline_view_t;
+
+/* Offsets from the epoch's sync time; causal feedback has a separate deadline. */
+static inline uint32_t pdo_pipeline_normal_deadline_offset(const pdo_pipeline_t *p)
+{
+    return p->period_us - p->advance_us;
+}
+
+static inline uint32_t pdo_pipeline_build_offset(const pdo_pipeline_t *p)
+{
+    return pdo_pipeline_normal_deadline_offset(p) - DCU_TX_BUILD_BUDGET_US;
+}
 
 /* Configure/reset only with the producer and Sync0 interrupts quiescent. */
 bool pdo_pipeline_configure(pdo_pipeline_t *pipeline, uint32_t period_ns,

@@ -15,7 +15,30 @@ using motor::RESULT_OK;
 using motor::RESULT_STATE;
 
 namespace {
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+struct BatchSample {
+    uint32_t sequence, preview, deadline_us, queued_us, tx_eof_us, rx_eof_us, matched_us, encoded_us;
+
+    void begin(uint32_t seq, bool prepacked, uint32_t deadline) volatile {
+        sequence = seq;
+        preview = prepacked;
+        deadline_us = deadline;
+        queued_us = tx_eof_us = 0;
+        rx_eof_us = matched_us = 0;
+    }
+    void match(uint32_t eof_us) volatile {
+        rx_eof_us = eof_us;
+        matched_us = dcu_time_now_us();
+    }
+};
 volatile BatchSample s_batch_sample[DCU_MOTOR_DEVICE_CAPACITY] __attribute__((section(".noncacheable.bss")));
+#define DCU_BATCH_SAMPLE(axis, observation) (s_batch_sample[(axis)].observation)
+inline void capture_batch_time(uint32_t &us) { us = dcu_time_now_us(); }
+#else
+#define DCU_BATCH_SAMPLE(axis, observation) ((void)0)
+inline void capture_batch_time(uint32_t &) {}
+#endif
+
 bool same_command(const motor::Command &a, const motor::Command &b)
 {
     return a.mode == b.mode && a.control_bits == b.control_bits && a.reserved_flags == b.reserved_flags &&
@@ -134,7 +157,7 @@ void GatewayApplication::preview_axis(unsigned a, const motor::Command &command)
     if (a < device_count_ && (timestamped_encos_ & (1U << a)) &&
         command.mode == motor::ControlMode::Impedance && devices_[a].preview_control(command, preview_.frames[a])) {
         preview_.commands[a] = command;
-        preview_.encoded_us[a] = dcu_time_now_us();
+        capture_batch_time(preview_.encoded_us[a]);
         preview_.mask |= 1U << a;
     }
 }
@@ -427,11 +450,7 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
                     // A first motion request may have been replaced by a position hold.
                     const bool prepacked = preview_.sequence == b.sequence && (preview_.mask & (1U << a)) &&
                         same_command(preview_.commands[a], devices_[a].effective_control());
-                    s_batch_sample[a].sequence = b.sequence;
-                    s_batch_sample[a].preview = prepacked;
-                    s_batch_sample[a].deadline_us = cyclic_.deadline_us;
-                    s_batch_sample[a].queued_us = s_batch_sample[a].tx_eof_us = 0;
-                    s_batch_sample[a].rx_eof_us = s_batch_sample[a].matched_us = 0;
+                    DCU_BATCH_SAMPLE(a, begin(b.sequence, prepacked, cyclic_.deadline_us));
                     if (prepacked)
                         frame = preview_.frames[a];
                     else if (!devices_[a].encode_control(frame)) {
@@ -439,7 +458,7 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
                         continue;
                     }
                     frame.flags = state_.channels[c].frame_format ? DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS : 0;
-                    s_batch_sample[a].encoded_us = prepacked ? preview_.encoded_us[a] : dcu_time_now_us();
+                    DCU_BATCH_SAMPLE(a, encoded_us = prepacked ? preview_.encoded_us[a] : dcu_time_now_us());
                     cyclic_.queued[c] |= 1U << j;
                 }
 #if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
@@ -591,8 +610,7 @@ DCU_FAST_CODE bool GatewayApplication::consume_feedback(unsigned c, const dcu_ca
                 device.cyclic_feedback_count() != before;
             if (matched) {
                 cyclic_.matched |= bit;
-                s_batch_sample[index].rx_eof_us = stamp.eof.us;
-                s_batch_sample[index].matched_us = dcu_time_now_us();
+                DCU_BATCH_SAMPLE(index, match(stamp.eof.us));
             }
             if (matched && startup_.enforced()) startup_.observe(index, stamp.observed_ms, now);
             if (c == 2)
@@ -645,10 +663,23 @@ DCU_FAST_CODE void GatewayApplication::collect_tx_events(unsigned c)
             if ((cyclic_.submitted & (1U << a)) && event.status == DCU_CAN_TX_COMPLETED) {
                 cyclic_.completed |= 1U << a;
                 cyclic_.tx_eof[a] = event.eof;
-                if (event.eof.valid) s_batch_sample[a].tx_eof_us = event.eof.us;
+                if (event.eof.valid) DCU_BATCH_SAMPLE(a, tx_eof_us = event.eof.us);
             }
             break;
         }
+    }
+}
+
+inline __attribute__((always_inline)) void GatewayApplication::route_raw_rx(
+    unsigned c, const dcu_can_frame_t &frame, bool routed, bool single_fd)
+{
+    const bool raw_enabled = raw_channel(c);
+    if (frame.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD && !single_fd) {
+        if (!routed || raw_enabled) ++state_.legacy_rx_drop[c];
+    } else if (raw_enabled) {
+        if (layout_.state == RawState::Active) raw_.receive(c, frame);
+        else if (layout_.state == RawState::Draining || layout_.state == RawState::Requested)
+            ++layout_.drops;
     }
 }
 
@@ -680,7 +711,8 @@ DCU_FAST_CODE void GatewayApplication::service_cyclic_feedback(uint32_t now, uin
                 items[count++] = {slot, &cyclic_.frames[a]};
             }
             if (count && !busy) {
-                const uint32_t queued_us = dcu_time_now_us();
+                uint32_t queued_us{};
+                capture_batch_time(queued_us);
                 const auto first = dcu_can_submit_batch(c, items, count, cyclic_.deadline_us);
                 cyclic_.queued[c] = 0;
                 for (unsigned i = 0; i < count; ++i) {
@@ -688,7 +720,7 @@ DCU_FAST_CODE void GatewayApplication::service_cyclic_feedback(uint32_t now, uin
                     const unsigned a = devices_on_bus_[c][slot];
                     auto &device = devices_[a];
                     if (first) {
-                        s_batch_sample[a].queued_us = queued_us;
+                        DCU_BATCH_SAMPLE(a, queued_us = queued_us);
                         scheduler.control_submitted(slot, now_us, cyclic_.period_us, !device.control_sent(), cost);
                         device.control_submitted(now, first + i);
                         cyclic_.submitted |= 1U << a;
@@ -707,14 +739,7 @@ DCU_FAST_CODE void GatewayApplication::service_cyclic_feedback(uint32_t now, uin
             // A reply can arrive between the initial retirement check and this dequeue.
             collect_tx_events(c);
             const bool routed = consume_feedback(c, frame, stamp, now, dcu_time_now_us());
-            const bool raw_enabled = raw_channel(c);
-            if (frame.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD) {
-                if (!routed || raw_enabled) ++state_.legacy_rx_drop[c];
-            } else if (raw_enabled) {
-                if (layout_.state == RawState::Active) raw_.receive(c, frame);
-                else if (layout_.state == RawState::Draining || layout_.state == RawState::Requested)
-                    ++layout_.drops;
-            }
+            route_raw_rx(c, frame, routed, false);
         }
     }
 }
@@ -783,14 +808,7 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
             collect_tx_events(c);
         const bool routed = !pure && consume_feedback(c, f, stamp, now, dcu_time_now_us());
         if (!routed && neutral_run_.active && c == neutral_run_.bus) stop_neutral_run(true);
-        const bool raw_enabled = raw_channel(c);
-        if (f.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD && state_.mode != OperatingMode::SingleFd) {
-            if (!routed || raw_enabled) ++state_.legacy_rx_drop[c];
-        } else if (raw_enabled) {
-            if (layout_.state == RawState::Active) raw_.receive(c, f);
-            else if (layout_.state == RawState::Draining || layout_.state == RawState::Requested)
-                ++layout_.drops;
-        }
+        route_raw_rx(c, f, routed, state_.mode == OperatingMode::SingleFd);
     }
     if (!pure) service_neutral_run(c, now, n < 32);
     if (dcu_can_bus_state(c) == 3) {
