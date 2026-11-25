@@ -1,5 +1,6 @@
-# 调测速记
+# 调测
 
+- **项目文档统一存放在根目录 `docs/`。** 根目录的 `README.md` 和 `AGENTS.md` 保留为入口；新增或移动文档时更新[文档索引](docs/文档索引.md)。
 - **Ubuntu 只编译，不跑宿主回归。** `python3 scripts/dcu.py build --preset hpm-release-five-axis` 编五轴台架固件；默认生产版用 `hpm-release`。编译不用接板。
 - **J-Link 烧录，HPM 接电机，RK 跑主站。** HPM 是 EtherCAT 从站，通过 CAN FD 接电机；RK3588 用 IgH 和 `DriverModule` 跑 EtherCAT 周期。
 - **烧录、回读或调试前，先确认动力隔离。** 用 `scripts/dcu.py` 的受保护入口，保留 SII 和启动编号日志。`verify` 虽然不写 Flash，也会复位或暂停目标。
