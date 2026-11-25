@@ -240,6 +240,7 @@ bool CanTransactions::submit_poll(unsigned bus, unsigned device, motor::MotorIns
     const auto id = dcu_can_submit(bus, slots_[device], &request.frame);
     if (!id) return false;
     schedule.charge(cost);
+    instance.status_poll_submitted(now);
     polls_[bus][slots_[device]] = {id, now, request.timeout_ms, false, channel->timestamp_eof, {}, false, 0};
     return true;
 }

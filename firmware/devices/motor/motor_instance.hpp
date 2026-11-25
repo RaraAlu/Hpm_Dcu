@@ -35,7 +35,8 @@ public:
     void check_startup(uint32_t now_ms);
     bool query_ready(uint32_t now_ms) const;
     bool start_query(uint32_t now_ms, bool cyclic_owner);
-    bool prepare_status_poll(uint32_t now_ms, StatusPoll &poll);
+    bool prepare_status_poll(uint32_t now_ms, StatusPoll &poll) const;
+    void status_poll_submitted(uint32_t now_ms) { driver_->status_poll_submitted(now_ms); }
     bool consume_status_reply(const CanFrame &, uint32_t timestamp_ms);
     bool neutral_mit_only() const { return driver_ && driver_->neutral_mit_only(); }
     bool accept_neutral_mit(const Command &, bool permitted, bool continuing);

@@ -249,7 +249,7 @@ bool MotorInstance::start_query(uint32_t now, bool cyclic_owner)
     return driver_->start_query(now, active());
 }
 
-bool MotorInstance::prepare_status_poll(uint32_t now, StatusPoll &poll)
+bool MotorInstance::prepare_status_poll(uint32_t now, StatusPoll &poll) const
 {
     return driver_ && driver_->prepare_status_poll(now, poll);
 }

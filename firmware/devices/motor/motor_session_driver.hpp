@@ -33,7 +33,9 @@ public:
     virtual void observe_cyclic(uint32_t stamp_ms, bool first) = 0;
     virtual QuerySample query_sample(uint32_t now_ms) const = 0;
     virtual void acknowledge_queries() = 0;
-    virtual bool prepare_status_poll(uint32_t, StatusPoll &) { return false; }
+    // Preparing a frame does not consume the poll period; a successful TX submission does.
+    virtual bool prepare_status_poll(uint32_t, StatusPoll &) const { return false; }
+    virtual void status_poll_submitted(uint32_t) {}
     virtual bool neutral_mit_only() const { return false; }
     virtual bool zero_mit_loopback() const { return false; }
     virtual bool encode_neutral_mit(CanFrame &, uint8_t) const { return false; }

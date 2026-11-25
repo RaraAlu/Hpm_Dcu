@@ -20,7 +20,8 @@ public:
     void observe_cyclic(uint32_t, bool) override {}
     QuerySample query_sample(uint32_t now_ms) const override;
     void acknowledge_queries() override {}
-    bool prepare_status_poll(uint32_t now_ms, StatusPoll &) override;
+    bool prepare_status_poll(uint32_t now_ms, StatusPoll &) const override;
+    void status_poll_submitted(uint32_t now_ms) override;
     bool neutral_mit_only() const override { return neutral_mit_; }
     bool encode_neutral_mit(CanFrame &, uint8_t counter) const override;
     uint8_t max_rx_bytes() const override;

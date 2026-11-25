@@ -34,13 +34,17 @@ bool BjcxMotorDriver::encode_neutral_mit(CanFrame &frame, uint8_t counter) const
     return neutral_mit_ && bjcx::encode_mit(can_id_, command, frame);
 }
 
-bool BjcxMotorDriver::prepare_status_poll(uint32_t now, StatusPoll &poll)
+bool BjcxMotorDriver::prepare_status_poll(uint32_t now, StatusPoll &poll) const
 {
     if (!can_id_ || neutral_mit_ || (requested_ && now - requested_ms_ < period_ms_)) return false;
     poll = {bjcx::status_request(can_id_), timeout_ms_, bjcx::status_reply_bytes};
+    return true;
+}
+
+void BjcxMotorDriver::status_poll_submitted(uint32_t now)
+{
     requested_ = true;
     requested_ms_ = now;
-    return true;
 }
 
 Result BjcxMotorDriver::decode(const CanFrame &frame, Feedback &out) const noexcept
