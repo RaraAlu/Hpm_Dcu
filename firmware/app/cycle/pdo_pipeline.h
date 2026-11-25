@@ -49,6 +49,7 @@ typedef struct {
     uint32_t period_us;
     uint32_t advance_us;
     uint16_t output_size;
+    bool ordered_outputs;
     uint32_t (*stage_clock_us)(void);
     uint32_t (*latch_clock_ticks)(void);
     uint32_t latch_ticks;

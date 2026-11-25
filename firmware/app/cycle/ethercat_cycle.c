@@ -265,8 +265,13 @@ uint16_t dcu_cycle_configure(void)
     runtime.configured = false;
     raw_pdo.configured = false;
     const bool sm2 = sm2_sync_selected();
-    if (motor_control_event_pdo()) {
-        if (!sm2_configuration_matches() || nPdOutputSize != DCU_SINGLE_FD_PDO_BYTES)
+    const bool single_fd = motor_control_event_pdo();
+    if (single_fd && (nPdOutputSize != DCU_SINGLE_FD_PDO_BYTES || nPdInputSize != DCU_SINGLE_FD_PDO_BYTES))
+        return ALSTATUSCODE_SYNCHRONNOTSUPPORTED;
+    /* Only an explicitly SM-synchronous master uses the legacy event queue.
+     * SingleFd with DC uses the same latch, watchdog and cutoff as motor PDOs. */
+    if (single_fd && sm2) {
+        if (!sm2_configuration_matches())
             return ALSTATUSCODE_SYNCHRONNOTSUPPORTED;
         write_handoff(&handoff.sm2_cycles, 0U);
         raw_pdo.configured = runtime.configured = true;
@@ -371,6 +376,8 @@ uint16_t dcu_cycle_start_outputs(void)
     runtime.command_pending = false;
     runtime.processed_epoch = 0U;
     runtime.outputs_running = true;
+    pipeline.ordered_outputs = motor_control_event_pdo();
+    raw_pdo.published = false;
     motor_control_set_neutral_window(0, 0);
     dcu_tx_allow();
     pipeline.stage_clock_us = dcu_time_now_us;
@@ -614,6 +621,13 @@ static void publish_due(void)
 #endif
         motor_control_neutral_feedback_deadline();
     }
+    /* Do not pop another raw frame before the master has read the last image. */
+    if (pipeline.ordered_outputs && raw_pdo.published &&
+        !(SWAPWORD(HW_GetALEventRegister()) & PROCESS_INPUT_EVENT)) {
+        if (pdo_pipeline_mark_published(&pipeline, epoch, dcu_time_now_us()))
+            cycle_diagnostics.published_epoch = epoch;
+        return;
+    }
     uint32_t offset_us = now_us - sync_us;
     uint32_t release_us = pipeline.period_us - pipeline.advance_us - DCU_TX_BUILD_BUDGET_US;
     if (offset_us >= release_us && offset_us - release_us > cycle_diagnostics.publish_start_delay_max_us)
@@ -658,6 +672,7 @@ static void publish_due(void)
         elapsed_ticks = dcu_time_ticks() - latch_ticks;
     } else {
         PDO_InputMapping();
+        if (pipeline.ordered_outputs) raw_pdo.published = true;
     }
     uint32_t end_us = dcu_time_now_us();
 #if defined(CONFIG_PDO_PHASE_TRACE)

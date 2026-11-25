@@ -97,8 +97,14 @@ DCU_FAST_CODE bool pdo_pipeline_commit(pdo_pipeline_t *p, uint32_t index, uint32
     /* Sync0 only discovers this slot through the release exchange of ready. */
     __atomic_store_n(&slot->state, SLOT_READY, __ATOMIC_RELAXED);
     uint32_t old = exchange(&p->ready, index);
-    if (old < PDO_PIPELINE_SLOT_COUNT)
+    if (old < PDO_PIPELINE_SLOT_COUNT) {
+        /* A raw frame is an event, not a replaceable motor setpoint. */
+        if (p->ordered_outputs && load(&p->received)) {
+            __atomic_fetch_add(&p->rx_drops, 1U, __ATOMIC_RELAXED);
+            pdo_pipeline_fault(p, PDO_PIPELINE_RX_OVERRUN);
+        }
         (void)claim(&p->slot[old].state, SLOT_READY, SLOT_FREE);
+    }
     return true;
 }
 
