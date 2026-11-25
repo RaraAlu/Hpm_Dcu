@@ -10,6 +10,11 @@ namespace dcu::motor {
 
 struct MotorConfiguration;
 
+struct ControlPreview {
+    Command command;
+    CanFrame frame;
+};
+
 struct MotorPublication {
     bool online;
     bool fault;
@@ -23,7 +28,9 @@ public:
     void stop(uint16_t fault);
     // After stop(), clear command-edge tracking without discarding RX history.
     void reset_session();
-    bool accept(const Command &command, bool permitted, uint32_t now_ms);
+    // A cyclic caller supplies a destination and an optional preview for this axis and sequence.
+    bool accept(const Command &command, bool permitted, uint32_t now_ms, CanFrame *cyclic,
+                const ControlPreview *preview, bool &used_preview);
     void check_timeouts(uint32_t now_ms, bool sdo_owner, uint16_t feedback_timeout_ms);
     void check_startup(uint32_t now_ms);
     bool query_ready(uint32_t now_ms) const;

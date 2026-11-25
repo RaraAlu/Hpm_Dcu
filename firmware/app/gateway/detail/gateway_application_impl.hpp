@@ -121,8 +121,7 @@ private:
     struct {
         uint32_t mask{}, sequence{};
         uint32_t encoded_us[DCU_MOTOR_DEVICE_CAPACITY]{};
-        motor::Command commands[DCU_MOTOR_DEVICE_CAPACITY]{};
-        dcu_can_frame_t frames[DCU_MOTOR_DEVICE_CAPACITY]{};
+        motor::ControlPreview controls[DCU_MOTOR_DEVICE_CAPACITY]{};
     } preview_{};
     struct CyclicFeedback {
         uint32_t period_us{}, deadline_us{}, required{}, submitted{}, completed{}, matched{};

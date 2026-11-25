@@ -7,6 +7,13 @@ namespace dcu::motor {
 using detail::MotorPhase;
 
 namespace {
+bool same_command(const Command &a, const Command &b)
+{
+    return a.mode == b.mode && a.control_bits == b.control_bits && a.reserved_flags == b.reserved_flags &&
+        a.position_urad == b.position_urad && a.velocity_urad_s == b.velocity_urad_s && a.torque_mNm == b.torque_mNm &&
+        a.current_cA == b.current_cA && a.current_limit_dA == b.current_limit_dA &&
+        a.kp_centi == b.kp_centi && a.kd_milli == b.kd_milli;
+}
 uint16_t age_ms(uint32_t now, uint32_t then, bool seen)
 {
     uint32_t d = now - then;
@@ -112,7 +119,8 @@ bool MotorInstance::query_ready(uint32_t now) const
         !state_.feedback.sample.motor_fault && !state_.feedback.bridge_fault &&
         dcu_can_bus_state(bus_) != DCU_CAN_BUS_OFF;
 }
-bool MotorInstance::accept(const Command &intent, bool permit, uint32_t now)
+bool MotorInstance::accept(const Command &intent, bool permit, uint32_t now, CanFrame *cyclic,
+                           const ControlPreview *preview, bool &used_preview)
 {
     const auto *command = &intent;
     auto *x = &state_;
@@ -150,8 +158,14 @@ bool MotorInstance::accept(const Command &intent, bool permit, uint32_t now)
         x->command = {};
         return true;
     }
-    dcu_can_frame_t f;
-    if (!configured() || !within_limits(*command, route_) || driver_->encode(*command, f) != Result::Ok) {
+    const auto pack = [&](const Command &selected) {
+        used_preview = preview && same_command(preview->command, selected);
+        return used_preview || preview_control(selected, *cyclic);
+    };
+    CanFrame scratch;
+    const bool running_cycle = cyclic && x->phase == MotorPhase::Running;
+    if (!configured() || !within_limits(intent, route_) ||
+        !(running_cycle ? pack(intent) : preview_control(intent, scratch))) {
         stop(configured() ? 2 : 1);
         s->status_word |= 1u << 8;
         return false;
@@ -176,6 +190,12 @@ bool MotorInstance::accept(const Command &intent, bool permit, uint32_t now)
     x->command = *command;
     s->mode = x->phase == MotorPhase::Running ? command->mode : x->startup_command.mode;
     s->status_word &= ~(1u << 8);
+    // Before Running, the driver may have substituted a position hold for the intent.
+    if (cyclic && !running_cycle && !pack(x->startup_command)) {
+        stop(2);
+        return false;
+    }
+    if (cyclic && used_preview) *cyclic = preview->frame;
     return true;
 }
 void MotorInstance::check_timeouts(uint32_t now, bool sdo_owner, uint16_t feedback_timeout_ms)

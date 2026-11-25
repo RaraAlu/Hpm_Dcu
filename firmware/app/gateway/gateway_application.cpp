@@ -37,13 +37,6 @@ inline void capture_batch_time(uint32_t &us) { us = dcu_time_now_us(); }
 inline void capture_batch_time(uint32_t &) {}
 #endif
 
-bool same_command(const motor::Command &a, const motor::Command &b)
-{
-    return a.mode == b.mode && a.control_bits == b.control_bits && a.reserved_flags == b.reserved_flags &&
-        a.position_urad == b.position_urad && a.velocity_urad_s == b.velocity_urad_s && a.torque_mNm == b.torque_mNm &&
-        a.current_cA == b.current_cA && a.current_limit_dA == b.current_limit_dA &&
-        a.kp_centi == b.kp_centi && a.kd_milli == b.kd_milli;
-}
 bool newer(uint32_t a, uint32_t b)
 {
     uint32_t d = a - b;
@@ -153,8 +146,8 @@ void GatewayApplication::set_cyclic_feedback_window(uint32_t period_us, uint32_t
 void GatewayApplication::preview_axis(unsigned a, const motor::Command &command)
 {
     if (a < device_count_ && (timestamped_encos_ & (1U << a)) &&
-        command.mode == motor::ControlMode::Impedance && devices_[a].preview_control(command, preview_.frames[a])) {
-        preview_.commands[a] = command;
+        command.mode == motor::ControlMode::Impedance && devices_[a].preview_control(command, preview_.controls[a].frame)) {
+        preview_.controls[a].command = command;
         capture_batch_time(preview_.encoded_us[a]);
         preview_.mask |= 1U << a;
     }
@@ -417,21 +410,16 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
                     cyclic_.buses |= 1U << c;
                     cyclic_.tx_eof[a] = {};
                 }
-                const bool accepted = devices_[a].accept(cmd, permit, now);
-                const bool active = devices_[a].active();
-                if (accepted && active && (cyclic_.required & (1U << a))) {
-                    auto &frame = cyclic_.frames[a];
-                    // A first motion request may have been replaced by a position hold.
-                    const bool prepacked = preview_.sequence == b.sequence && (preview_.mask & (1U << a)) &&
-                        same_command(preview_.commands[a], devices_[a].effective_control());
+                auto &device = devices_[a];
+                auto *wire = (cyclic_.required & (1U << a)) ? &cyclic_.frames[a] : nullptr;
+                const auto *preview = wire && preview_.sequence == b.sequence && (preview_.mask & (1U << a))
+                    ? &preview_.controls[a] : nullptr;
+                bool prepacked = false;
+                const bool accepted = device.accept(cmd, permit, now, wire, preview, prepacked);
+                const bool active = device.active();
+                if (wire && accepted && active) {
                     DCU_BATCH_SAMPLE(a, begin(b.sequence, prepacked, cyclic_.deadline_us));
-                    if (prepacked)
-                        frame = preview_.frames[a];
-                    else if (!devices_[a].encode_control(frame)) {
-                        devices_[a].stop(2);
-                        continue;
-                    }
-                    frame.flags = state_.channels[c].frame_format ? DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS : 0;
+                    wire->flags = state_.channels[c].frame_format ? DCU_CAN_FLAG_FD | DCU_CAN_FLAG_BRS : 0;
                     DCU_BATCH_SAMPLE(a, encoded_us = prepacked ? preview_.encoded_us[a] : dcu_time_now_us());
                     cyclic_.queued[c] |= 1U << j;
                 }
