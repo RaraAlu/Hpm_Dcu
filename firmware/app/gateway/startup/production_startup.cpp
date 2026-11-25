@@ -44,12 +44,12 @@ dcu_gateway_readiness_t ProductionStartup::status() const { return dcu_gateway_r
 
 bool ProductionStartup::running() const
 {
-    return !enforced() || status().state == DCU_GATEWAY_RUNNING;
+    return !enforced() || current_state() == DCU_GATEWAY_RUNNING;
 }
 
 bool ProductionStartup::may_probe() const
 {
-    const auto state = status().state;
+    const auto state = current_state();
     return enforced() && (state == DCU_GATEWAY_PREPARING || state == DCU_GATEWAY_READY);
 }
 
@@ -75,7 +75,7 @@ void ProductionStartup::step(uint32_t now, uint32_t expected_mask, bool healthy)
 {
     if (!boot_called_) return;
     const auto t = time_us(now);
-    auto state = status().state;
+    auto state = current_state();
     if (!healthy) {
         invalidate(DCU_GATEWAY_REASON_CAN_OFFLINE, now);
         return;

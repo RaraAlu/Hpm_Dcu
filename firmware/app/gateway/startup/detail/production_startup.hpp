@@ -16,6 +16,9 @@ public:
     bool resume() const { return dcu_gateway_resume_static(time_us_); }
     bool apply_policy(uint32_t profile, uint32_t base, uint32_t revision, uint32_t ttl_ms, uint32_t now_ms);
     uint32_t readiness_ttl_ms() const { return ttl_ms_; }
+    dcu_gateway_state_t current_state(uint64_t *session_id = nullptr) const {
+        return dcu_gateway_current_state(time_us_, session_id);
+    }
     dcu_gateway_readiness_t status() const;
     bool may_probe() const;
     bool running() const;

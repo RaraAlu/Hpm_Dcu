@@ -202,6 +202,13 @@ bool dcu_gateway_start_run(uint64_t session_id, uint64_t now_us)
     return true;
 }
 
+dcu_gateway_state_t dcu_gateway_current_state(uint64_t now_us, uint64_t *session_id)
+{
+    dcu_gateway_tick(now_us);
+    if (session_id) *session_id = s_gateway.session_id;
+    return s_gateway.state;
+}
+
 dcu_gateway_readiness_t dcu_gateway_readiness(uint64_t now_us)
 {
     dcu_gateway_tick(now_us);

@@ -255,16 +255,16 @@ void GatewayApplication::step_startup(uint32_t now)
     for (unsigned bus = 0; bus < DCU_DEVICE_CAN_BUS_COUNT; ++bus)
         if (state_.channels[bus].enabled && dcu_can_bus_state(bus) >= DCU_CAN_BUS_OFF)
             healthy = false;
-    const auto before = startup_.status().state;
+    const auto before = startup_.current_state();
     if (state_.operational && layout_.running && before != DCU_GATEWAY_RUNNING) layout_fault();
     if (before == DCU_GATEWAY_HOLD && healthy) revoke_business();
     // A neutral-only profile gates local transport, not readiness to move.
     startup_.step(now, raw_only(state_.mode) ? 0 : readiness_devices_, healthy);
     if (state_.operational && startup_.resume()) state_.owner = OWNER_PDO;
-    const auto status = startup_.status();
-    const auto after = status.state;
+    uint64_t session_id;
+    const auto after = startup_.current_state(&session_id);
     if (state_.operational && (layout_.state == RawState::Active || layout_.switching) &&
-        (status.session_id != layout_.session || after == DCU_GATEWAY_FAULT ||
+        (session_id != layout_.session || after == DCU_GATEWAY_FAULT ||
          after == DCU_GATEWAY_HOLD || (before == DCU_GATEWAY_RUNNING && after != before)))
         layout_fault();
     layout_.running = state_.operational && after == DCU_GATEWAY_RUNNING;

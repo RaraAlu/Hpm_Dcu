@@ -59,6 +59,8 @@ bool dcu_gateway_retry_preparation(uint64_t now_us);
 bool dcu_gateway_resume_static(uint64_t now_us);
 bool dcu_gateway_apply_policy(uint32_t profile_id, uint32_t base_revision, uint32_t revision,
                               uint32_t ttl_ms, uint64_t now_us);
+/* Tick first, then read the state and optional session ID without building a snapshot. */
+dcu_gateway_state_t dcu_gateway_current_state(uint64_t now_us, uint64_t *session_id);
 dcu_gateway_readiness_t dcu_gateway_readiness(uint64_t now_us);
 
 #ifdef __cplusplus
