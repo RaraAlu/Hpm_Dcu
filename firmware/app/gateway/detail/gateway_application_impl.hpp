@@ -143,7 +143,7 @@ private:
         ChannelCommand channel_command[DCU_DEVICE_CAN_BUS_COUNT]{};
         OperatingMode mode{};
         Owner owner{};
-        bool operational{}, session_armed{}, resume_pdo_owner{};
+        bool operational{}, session_armed{};
         bool seen_cycle{}, config_ready{};
         uint32_t last_command_ms{}, last_cycle{}, tx_total{}, last_process_us{};
         uint8_t query_cursor[DCU_DEVICE_CAN_BUS_COUNT]{};

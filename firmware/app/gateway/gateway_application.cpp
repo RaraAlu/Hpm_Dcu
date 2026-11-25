@@ -282,39 +282,15 @@ void GatewayApplication::operational(bool op)
         // 计划内退 OP 不取消协商；其他退站视为旧透传会话终结。
         if (!layout_.switching) layout_fault();
         raw_.discard_frames();
-    }
-    if (op && !state_.operational) {
+        startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, dcu_time_now_ms());
+    } else if (op && !state_.operational) {
         layout_.reset = false;
         layout_.running = false;
         layout_.started = true;
         if (layout_.state == RawState::Armed) activate_layout();
     }
-    if (startup_.enforced()) {
-        if (!op && state_.operational)
-            startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, dcu_time_now_ms());
-        state_.operational = op;
-        if (!op) revoke_business();
-        return;
-    }
-    if (!op) {
-        /* Leaving OP ends this PDO session.  The idle EtherCAT master may
-         * keep the slave in PREOP, but that must not keep CAN polling alive. */
-        state_.resume_pdo_owner = state_.resume_pdo_owner || state_.owner == OWNER_PDO;
-        state_.owner = OWNER_NONE;
-    } else if (state_.resume_pdo_owner && state_.owner == OWNER_NONE) {
-        /* A transient OP loss in the same HMI session can recover without
-         * repeating the PREOP SDO setup.  A new owner write cancels this. */
-        state_.owner = OWNER_PDO;
-        state_.resume_pdo_owner = false;
-    }
     state_.operational = op;
-    state_.seen_cycle = false;
-    raw_.reset_session();
-    state_.board_command = {};
-    stop_all(0);
-    if (!op) transactions_.reset_session(RESULT_STATE);
-    for (unsigned i = 0; i < device_count_; ++i)
-        devices_[i].reset_session();
+    if (!op) revoke_business();
 }
 void GatewayApplication::cycle_fault()
 {
@@ -967,18 +943,11 @@ bool GatewayApplication::read_device(unsigned device, motor::MotorFeedback &feed
 }
 bool GatewayApplication::set_owner(Owner owner)
 {
-    if (startup_.enforced()) {
-        if (owner != OWNER_NONE) return false;
-        if (startup_.running()) {
-            startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, dcu_time_now_ms());
-            revoke_business();
-        }
-        return true;
+    if (owner != OWNER_NONE) return false;
+    if (startup_.running()) {
+        startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, dcu_time_now_ms());
+        revoke_business();
     }
-    if (owner > OWNER_SDO || !owner_change_allowed()) return false;
-    stop_all(0);
-    state_.resume_pdo_owner = false;
-    state_.owner = owner;
     return true;
 }
 CommandResult GatewayApplication::commit_sdo_command(unsigned device, const SdoCommand &command, uint32_t now)
@@ -1026,9 +995,6 @@ dcu::app::gateway_application::detail::GatewayApplication application;
 }
 
 namespace dcu::app::gateway_application {
-#if defined(DCU_HOST_ENGINE_TEST)
-bool detail::initialize_fixture(const Configuration &config) { return application.initialize(config); }
-#endif
 
 bool initialize_profile(const dcu_production_profile_t &profile)
 {

@@ -17,10 +17,5 @@ struct Configuration {
     size_t device_count{};
 };
 
-#if defined(DCU_HOST_ENGINE_TEST)
-// Native fixtures can exercise Raw roles that the production Profile does not grant.
-bool initialize_fixture(const Configuration &config);
-#endif
-
 }
 #endif

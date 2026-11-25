@@ -66,7 +66,6 @@ bool GatewayApplication::stage_raw_motor_owner(uint8_t buses)
 void GatewayApplication::clear_layout_business()
 {
     revoke_business();
-    state_.resume_pdo_owner = false;
     for (auto &command : state_.channel_command) command = {};
     raw_.discard_frames();
     // 回切后不能用纯透传的本地就绪或旧电机反馈放行。
