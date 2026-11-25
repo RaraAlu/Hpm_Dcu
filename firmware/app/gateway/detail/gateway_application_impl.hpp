@@ -150,7 +150,7 @@ private:
         uint16_t board_fault{};
         uint32_t channel_tx_drop[DCU_DEVICE_CAN_BUS_COUNT]{};
         uint32_t legacy_rx_drop[DCU_DEVICE_CAN_BUS_COUNT]{};
-        uint32_t publication_sequence{}, sdo_accepted_sequence[DCU_MOTOR_DEVICE_CAPACITY]{};
+        uint32_t publication_sequence{};
     } state_{};
 };
 

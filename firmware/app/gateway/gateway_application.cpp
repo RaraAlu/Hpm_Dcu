@@ -9,9 +9,7 @@
 
 namespace dcu::app::gateway_application::detail {
 namespace policy = dcu::app::config::gateway_schedule;
-using motor::RESULT_INVALID;
 using motor::RESULT_IO;
-using motor::RESULT_OK;
 using motor::RESULT_STATE;
 
 namespace {
@@ -542,7 +540,6 @@ bool GatewayApplication::commit_topology(const dcu_production_profile_t &catalog
         schedule_[c].reset_budget(dcu_time_now_ms());
     }
     for (unsigned a = 0; a < device_count_; ++a) {
-        state_.sdo_accepted_sequence[a] = 0;
         if (!(enabled & (1U << a))) { devices_[a].disable(); continue; }
         const auto &d = catalogue.devices[a];
         auto &channel = state_.channels[d.bus];
@@ -954,27 +951,14 @@ CommandResult GatewayApplication::commit_sdo_command(unsigned device, const SdoC
 {
     if (raw_only(state_.mode) || device >= device_count_ || !devices_[device].configured()) return {};
     CommandResult result{};
-    result.accepted_sequence = state_.sdo_accepted_sequence[device];
-    if (command.sequence == result.accepted_sequence) {
+    if (command.sequence == 0) {
         result.changed = false;
         return result;
     }
-    bool gate = command_permitted(now);
-    if (state_.owner != OWNER_SDO || !gate) {
-        result.result = RESULT_STATE;
-        devices_[device].stop(8);
-    } else if (!command.lease_ms || command.lease_ms > state_.config.max_command_lease_ms ||
-               !newer(command.sequence, result.accepted_sequence)) {
-        devices_[device].stop(2);
-    } else {
-        bool ok = devices_[device].accept(command.command, true, now);
-        result.result = ok ? RESULT_OK : RESULT_INVALID;
-        if (ok) {
-            result.accepted_sequence = state_.sdo_accepted_sequence[device] = command.sequence;
-            result.mirror_command = devices_[device].active();
-            devices_[device].set_sdo_lease(command.lease_ms, now);
-        }
-    }
+    // SDO motion is never authorized; the permission check still ticks readiness before stopping.
+    (void)command_permitted(now);
+    result.result = RESULT_STATE;
+    devices_[device].stop(8);
     return result;
 }
 ParameterReadResult GatewayApplication::read_parameter(unsigned device, const ParameterRead &request,
