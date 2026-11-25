@@ -235,7 +235,8 @@ bool CanTransactions::submit_poll(unsigned bus, unsigned device, motor::MotorIns
         return false;
     const auto bytes = dcu_can_dlc_to_bytes(request.frame.dlc, request.frame.flags & DCU_CAN_FLAG_FD);
     const unsigned cost = BusScheduler::frame_cost(fd, bytes) + BusScheduler::frame_cost(fd, request.reply_bytes);
-    if (!schedule.query_window(controls, now_us, cost, 2u * BusScheduler::frame_cost(fd, 8))) return false;
+    if (!schedule.can_afford(cost) ||
+        !schedule.query_window(controls, now_us, cost, 2u * BusScheduler::frame_cost(fd, 8))) return false;
     const auto id = dcu_can_submit(bus, slots_[device], &request.frame);
     if (!id) return false;
     schedule.charge(cost);
