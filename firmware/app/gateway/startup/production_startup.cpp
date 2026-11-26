@@ -18,16 +18,6 @@ bool ProductionStartup::boot(const dcu_gateway_profile_t &profile, uint64_t boot
     return dcu_gateway_boot_static(&profile, boot_id, time_us_);
 }
 
-bool ProductionStartup::enforced() const
-{
-#if defined(DCU_HOST_ENGINE_TEST)
-    // Native engine fixtures can bypass the outer protocol; firmware cannot.
-    return boot_called_;
-#else
-    return true;
-#endif
-}
-
 bool ProductionStartup::apply_policy(uint32_t profile, uint32_t base, uint32_t revision,
                                      uint32_t ttl_ms, uint32_t now)
 {
@@ -44,13 +34,13 @@ dcu_gateway_readiness_t ProductionStartup::status() const { return dcu_gateway_r
 
 bool ProductionStartup::running() const
 {
-    return !enforced() || current_state() == DCU_GATEWAY_RUNNING;
+    return current_state() == DCU_GATEWAY_RUNNING;
 }
 
 bool ProductionStartup::may_probe() const
 {
     const auto state = current_state();
-    return enforced() && (state == DCU_GATEWAY_PREPARING || state == DCU_GATEWAY_READY);
+    return state == DCU_GATEWAY_PREPARING || state == DCU_GATEWAY_READY;
 }
 
 void ProductionStartup::invalidate(dcu_gateway_reason_t reason, uint32_t now)

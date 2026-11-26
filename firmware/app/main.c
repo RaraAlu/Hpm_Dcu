@@ -6,7 +6,6 @@
  */
 
 #include <stdio.h>
-#include "cfg/diagnostic_config.h"
 #include "board.h"
 #include "ecat_def.h"
 #include "ecatappl.h"
@@ -27,17 +26,10 @@ extern TOBJ1018 sIdentity;
 #include "hpm_ecat_hw.h"
 #include "hpm_l1c_drv.h"
 
-#if CONFIG_CAN_LED_TEST
-#include "can_led_test.h"
-#endif
-
 int main(void)
 {
     hpm_stat_t stat;
     board_init();
-#if defined(CONFIG_CAN_LED_TEST) && CONFIG_CAN_LED_TEST
-    can_led_test_run();
-#endif
     board_init_led_pins();
     board_init_can_led_pins();
     if (!dcu_timebase_init()) {

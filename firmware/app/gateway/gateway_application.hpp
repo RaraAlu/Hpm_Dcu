@@ -91,7 +91,6 @@ struct Publication {
 bool initialize_profile(const dcu_production_profile_t &profile);
 ChannelConfiguration channel_configuration(unsigned bus);
 bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id);
-bool startup_enabled();
 dcu::app::profile_update::Policy profile_policy();
 bool apply_profile_policy(uint32_t profile, uint32_t base, uint32_t revision, const profile_update::Policy &);
 dcu_gateway_readiness_t readiness();

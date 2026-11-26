@@ -43,15 +43,14 @@ def model_binding(bindings, name, protocol, motor_type, require_mit=False):
     return model
 
 
-def device_line(device, channels, names, can_ids, slots, bindings, allow_encos_fixture):
+def device_line(device, channels, names, can_ids, slots, bindings):
     common = {"id", "protocol", "bus", "can_id"}
     protocol = device.get("protocol") if isinstance(device, dict) else None
     require(protocol in ("encos", "bjcx"), "device: unsupported protocol")
     neutral_mit = protocol == "bjcx" and "neutral_mit_only" in device
-    fixture = protocol == "encos" and allow_encos_fixture and "type" not in device
     if protocol == "encos":
-        fields = {"limits", "encoding", "power_query_period_ms", "model_profile_id" if fixture else "type"}
-        if not fixture and "zero_mit_loopback" in device:
+        fields = {"limits", "encoding", "power_query_period_ms", "type"}
+        if "zero_mit_loopback" in device:
             require(device["zero_mit_loopback"] is True, "zero_mit_loopback: expected true")
             fields.add("zero_mit_loopback")
     elif neutral_mit:
@@ -87,20 +86,13 @@ def device_line(device, channels, names, can_ids, slots, bindings, allow_encos_f
                 f'      0, 0, 0U, 0U, 0U, {unused_encos}, {period}U, {timeout}U,',
                 f"      DCU_MOTOR_PROTOCOL_BJCX, {model}->part_number.data(), {str(neutral_mit).lower()}, {frame_limit}U, false }},"]
 
-    if fixture:
-        require(type(device["model_profile_id"]) is int and device["model_profile_id"] == 0x8000,
-                f"{name}: invalid ENCOS fixture encoding ID")
-    else:
-        require(channels[bus], f"{name}: named ENCOS encoding requires CAN FD+BRS")
+    require(channels[bus], f"{name}: named ENCOS encoding requires CAN FD+BRS")
     power = bounded(device["power_query_period_ms"], 0, 1000, "power_query_period_ms")
     require(power == 0 or power >= 20, "power_query_period_ms: expected 0 or 20..1000")
     limits, encoding = device["limits"], device["encoding"]
     scaled_fields = {"position_mrad", "velocity_mrad_s", "torque_mNm", "current_dA"}
     keys(limits, scaled_fields, "limits")
-    encoding_keys = {"kp", "kd", "position_mrad", "can_timeout_ms"}
-    if fixture:
-        encoding_keys |= scaled_fields | {"torque_constant_cNm_A"}
-    keys(encoding, encoding_keys, "encoding")
+    keys(encoding, {"kp", "kd", "position_mrad", "can_timeout_ms"}, "encoding")
     kp, kd = (pair(encoding[field], field, minimum=0, maximum=65535, crosses_zero=False)
               for field in ("kp", "kd"))
     pos = pair(encoding["position_mrad"], "encoding.position_mrad", minimum=-327680, maximum=327670)
@@ -111,27 +103,17 @@ def device_line(device, channels, names, can_ids, slots, bindings, allow_encos_f
         require(kp[0] == kd[0] == 0 and p_min <= 0 <= p_max,
                 f"{name}: zero MIT must be encodable and within command limits")
     require(pos[0] <= p_min < p_max <= pos[1], f"{name}: position limits exceed the encoding range")
-    if fixture:
-        velocity = pair(encoding["velocity_mrad_s"], "encoding.velocity_mrad_s", minimum=-327680, maximum=327670)
-        torque = pair(encoding["torque_mNm"], "encoding.torque_mNm", minimum=-3276800, maximum=3276700)
-        current = pair(encoding["current_dA"], "encoding.current_dA")
-        v_max, t_max, i_max = (min(-low, high) for low, high in (velocity, torque, current))
-        kt = f'{bounded(encoding["torque_constant_cNm_A"], 0, 65535, "torque_constant_cNm_A")} / 100.0'
-        model_type = "nullptr"
-        range_scales = (1000, 1000, 10)
-    else:
-        model = model_binding(bindings, name, protocol, device["type"], require_mit=True)
-        v_max, t_max, i_max = 327670, 3276700, 32767  # Model-specific bounds are checked at initialization.
-        velocity, torque, current = ((f"-{model}->mit.{field}", f"{model}->mit.{field}")
-                                     for field in ("max_speed_rad_s", "max_torque_Nm", "max_current_A"))
-        kt, model_type = f"{model}->mit.torque_constant_Nm_per_A", f"{model}->part_number.data()"
-        range_scales = (1, 1, 1)
+    model = model_binding(bindings, name, protocol, device["type"], require_mit=True)
+    v_max, t_max, i_max = 327670, 3276700, 32767  # Model-specific bounds are checked at initialization.
+    velocity, torque, current = ((f"-{model}->mit.{field}", f"{model}->mit.{field}")
+                                 for field in ("max_speed_rad_s", "max_torque_Nm", "max_current_A"))
+    kt, model_type = f"{model}->mit.torque_constant_Nm_per_A", f"{model}->part_number.data()"
     v_lim = bounded(limits["velocity_mrad_s"], 1, v_max, "limits.velocity_mrad_s")
     t_lim = bounded(limits["torque_mNm"], 1, t_max, "limits.torque_mNm")
     i_lim = bounded(limits["current_dA"], 1, i_max, "limits.current_dA")
     timeout = bounded(encoding["can_timeout_ms"], 1, 500, "encoding.can_timeout_ms")
     ranges = ", ".join(f"{{ {a} / {scale}.0, {b} / {scale}.0 }}"
-                       for (a, b), scale in zip((kp, kd, pos, velocity, torque, current), (1, 1, 1000, *range_scales)))
+                       for (a, b), scale in zip((kp, kd, pos, velocity, torque, current), (1, 1, 1000, 1, 1, 1)))
     return [
         f'    {{ "{name}", {bus}U, {can_id}U, dcu::motor::encos_config::coe_encoding_id, {power}U,',
         f"      {p_min * 1000}, {p_max * 1000}, {v_lim * 1000}U, {t_lim}U, {i_lim}U,",
@@ -140,7 +122,7 @@ def device_line(device, channels, names, can_ids, slots, bindings, allow_encos_f
     ]
 
 
-def header(profile, *, allow_encos_fixture=False):
+def header(profile):
     fields = {"schema_version", "channels", "safety", "devices", "startup"}
     if isinstance(profile, dict) and "passthrough_devices" in profile:
         fields.add("passthrough_devices")
@@ -206,7 +188,7 @@ def header(profile, *, allow_encos_fixture=False):
         require(not any(raw_limits), "raw-only Profile must not configure motors")
         lines.append("static constexpr dcu_motor_device_profile_t dcu_profile_devices[] = {")
         for device in devices:
-            lines.extend(device_line(device, seen, names, can_ids, slots, bindings, allow_encos_fixture))
+            lines.extend(device_line(device, seen, names, can_ids, slots, bindings))
             if device.get("zero_mit_loopback"):
                 require(any(ch["bus"] == device["bus"] and ch.get("timestamp_eof") for ch in channels),
                         "zero MIT loopback requires EOF timestamps")
@@ -250,10 +232,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--allow-encos-fixture", action="store_true", help="allow synthetic host test encodings")
     args = parser.parse_args()
     try:
-        content = header(load_yaml(args.profile), allow_encos_fixture=args.allow_encos_fixture)
+        content = header(load_yaml(args.profile))
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(content, encoding="ascii")
     except (OSError, ValueError) as error:

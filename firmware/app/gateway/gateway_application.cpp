@@ -285,7 +285,7 @@ void GatewayApplication::operational(bool op)
 void GatewayApplication::cycle_fault()
 {
     layout_fault();
-    if (startup_.enforced()) startup_.invalidate(DCU_GATEWAY_REASON_PROTOCOL_MISMATCH, dcu_time_now_ms());
+    startup_.invalidate(DCU_GATEWAY_REASON_PROTOCOL_MISMATCH, dcu_time_now_ms());
     operational(false);
     /* Keep the existing invalid-PDO bit understood by the master's 0xfc mask.
      * Detailed cycle causes remain in cycle_diagnostics. */
@@ -321,14 +321,12 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
         return true;
     }
     const auto &b = candidate.board;
-    if (startup_.enforced()) {
-        if (!state_.operational || !startup_.running()) return false;
-        // A stale enabled PDO must not establish the sequence baseline after reconnect.
-        if (!state_.session_armed &&
-            (!b.layout_valid || !b.sequence || !b.lease_ms || b.lease_ms > state_.config.max_command_lease_ms ||
-             (b.control_bits & ~6u) || b.enabled_channels || b.enabled_devices || b.unmapped_device_requested))
-            return false;
-    }
+    if (!state_.operational || !startup_.running()) return false;
+    // A stale enabled PDO must not establish the sequence baseline after reconnect.
+    if (!state_.session_armed &&
+        (!b.layout_valid || !b.sequence || !b.lease_ms || b.lease_ms > state_.config.max_command_lease_ms ||
+         (b.control_bits & ~6u) || b.enabled_channels || b.enabled_devices || b.unmapped_device_requested))
+        return false;
     /* Stop intent always wins, including duplicate sequence or malformed targets. */
     bool stop = !(b.control_bits & 1) || (b.control_bits & 2);
     const bool next_cycle = state_.seen_cycle && b.sequence == state_.last_cycle + 1U;
@@ -372,7 +370,7 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
     state_.seen_cycle = true;
     state_.last_command_ms = now;
     state_.board_command = b;
-    if (state_.mode == OperatingMode::Raw || (startup_.enforced() && stop)) {
+    if (state_.mode == OperatingMode::Raw || stop) {
         return true;
     }
     neutral_run_.sent_this_cycle = 0;
@@ -568,7 +566,7 @@ DCU_FAST_CODE bool GatewayApplication::consume_feedback(unsigned c, const dcu_ca
                 cyclic_.matched |= bit;
                 DCU_BATCH_SAMPLE(index, match(stamp.eof.us));
             }
-            if (matched && startup_.enforced()) startup_.observe(index, stamp.observed_ms, now);
+            if (matched) startup_.observe(index, stamp.observed_ms, now);
             return matched;
         }
         if (device.neutral_mit_only() && neutral_run_.active &&
@@ -583,7 +581,7 @@ DCU_FAST_CODE bool GatewayApplication::consume_feedback(unsigned c, const dcu_ca
             }
             return true;
         }
-        if (startup_.enforced() && verified && !device.neutral_mit_only()) {
+        if (verified && !device.neutral_mit_only()) {
             motor::MotorFeedback feedback{};
             motor::MotorDiagnostics diagnostics{};
             const auto status = device.read_feedback(now, state_.config.feedback_timeout_ms, feedback, diagnostics);
@@ -705,7 +703,7 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
         return result;
     state_.last_process_us = now_us;
     uint32_t now = dcu_time_now_ms();
-    if (startup_.enforced()) step_startup(now);
+    step_startup(now);
     result.consumed = candidate != nullptr;
     if (candidate && (layout_.state == RawState::Draining || layout_.state == RawState::Requested))
         reject_raw(*candidate);
@@ -722,7 +720,7 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
         if (!state_.channels[c].enabled) continue;
         process_bus(c, now, now_us);
     }
-    if (startup_.enforced() && !startup_.running() && state_.owner != OWNER_NONE) {
+    if (!startup_.running() && state_.owner != OWNER_NONE) {
         layout_fault();
         revoke_business();
         result.accepted = false;
@@ -917,13 +915,12 @@ CommandResult GatewayApplication::commit_sdo_command(unsigned device, const SdoC
     return result;
 }
 ParameterReadResult GatewayApplication::read_parameter(unsigned device, const ParameterRead &request,
-                                                        uint32_t now, bool is_preop)
+                                                        uint32_t now, bool)
 {
     if (raw_only(state_.mode) || device >= device_count_ || !devices_[device].configured()) return {};
     const auto &instance = devices_[device];
     const unsigned bus = instance.bus();
-    bool permitted = !startup_.enforced() && is_preop && preop_access_allowed() && state_.owner == OWNER_SDO &&
-                     state_.channels[bus].enabled;
+    constexpr bool permitted = false; // Production SDO cannot initiate a CAN parameter transaction.
     return transactions_.read_parameter(device, instance, request, state_.channels[bus].frame_format,
                                         now, permitted, channel_active(bus));
 }
@@ -983,7 +980,6 @@ bool initialize_profile(const dcu_production_profile_t &profile)
 ChannelConfiguration channel_configuration(unsigned bus) { return application.channel_configuration(bus); }
 bool boot_startup(const dcu_gateway_profile_t &profile, uint64_t boot_id)
 { return application.boot_startup(profile, boot_id); }
-bool startup_enabled() { return application.startup_enabled(); }
 profile_update::Policy profile_policy() { return application.profile_policy(); }
 bool apply_profile_policy(uint32_t profile, uint32_t base, uint32_t revision, const profile_update::Policy &policy)
 { return application.apply_profile_policy(profile, base, revision, policy); }

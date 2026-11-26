@@ -1,5 +1,7 @@
 # 独立 EtherCAT 数据回环测试
 
+> 历史说明：专用夹具和构建预设已移除。以下为当时的测试方法，不是当前操作入口。
+
 状态：已完成[首轮实板验收](../验证记录/2026-11-18-EtherCAT数据回环首轮实板测试记录.md)，通过 SDO 只读、固定映射和三组 PDO 回显。板卡随后切换至[MCAN 内部回环诊断镜像](独立EtherCAT到MCAN内部回环测试.md)。
 
 `hpm-ethercat-data` 是专用诊断镜像。它在 `hpm-ethercat-scan` 的 PHY/ESC 初始化基础上启用 SSC/CoE 邮箱和固定 PDO，回显只发生在 MCU 内存中。不初始化 CAN，不链接电机应用、生产对象字典、FreeRTOS 或 Flash EEPROM 仿真，不用 DC。它不是生产 Profile，也不验证 EtherCAT 到 CAN 的业务转发。

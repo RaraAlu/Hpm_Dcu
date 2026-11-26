@@ -12,9 +12,6 @@
 #include "motor_ethercat.h"
 #include "pdo_pipeline.h"
 #include "realtime_port.h"
-#if defined(CONFIG_SYNC0_HW_CAPTURE_TEST)
-#include "sync0_hw_capture.h"
-#endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
 #include "detail/pdo_phase_trace.h"
 #include "encos_interface.h"
@@ -207,9 +204,6 @@ static void record_timing(const pdo_pipeline_view_t *view)
 void dcu_cycle_init(void)
 {
     (void)pdo_pipeline_configure(&pipeline, 0, 0, 0);
-#if defined(CONFIG_SYNC0_HW_CAPTURE_TEST)
-    dcu_sync0_capture_init();
-#endif
 }
 
 uint16_t dcu_cycle_configure(void)
@@ -333,10 +327,6 @@ uint16_t dcu_cycle_start_outputs(void)
     pipeline.stage_clock_us = dcu_time_now_us;
     cyclic_latency = (dcu_cyclic_latency_t){.tick_hz = dcu_time_tick_hz()};
     if (!read_handoff(&handoff.sm2_cycles)) pipeline.latch_clock_ticks = dcu_time_ticks;
-#if defined(CONFIG_SYNC0_HW_CAPTURE_TEST)
-    if (!read_handoff(&handoff.sm2_cycles))
-        dcu_sync0_capture_begin(pipeline.period_ns);
-#endif
     if (read_handoff(&handoff.sm2_cycles))
         write_handoff(&handoff.sm2_event_us, dcu_time_now_us());
     pdo_pipeline_enable(&pipeline, true);
@@ -698,9 +688,6 @@ void dcu_cycle_step(void)
     uint32_t count = take(&handoff.sync0_pending);
     cycle_diagnostics.sync0_count += count;
     if (count) {
-#if defined(CONFIG_SYNC0_HW_CAPTURE_TEST)
-        if (runtime.outputs_running) dcu_sync0_capture_observe(count);
-#endif
         if (count > 1 && runtime.outputs_running)
             pdo_pipeline_fault(&pipeline, PDO_PIPELINE_RX_OVERRUN);
         /* SSC Sync and watchdog handlers share this task, never preempt each other. */

@@ -361,14 +361,6 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         config.enable_canfd = channel->fd;
         config.enable_tdc = channel->fd;
         config.disable_auto_retransmission = false;
-#if defined(CONFIG_CAN3_TDCO_AB_TEST)
-        /* Match the wheeled chassis TDCO trial without changing the TDCF baseline. */
-        if (bus == 3U && channel->fd && channel->timestamp_eof && clock_hz == 80000000U &&
-            config.baudrate == 1000000U && config.baudrate_fd == 5000000U) {
-            config.tdc_config.ssp_offset = 13U;
-            config.tdc_config.filter_window_length = 12U;
-        }
-#endif
         if (channel->timestamp_eof) {
             config.use_timestamping_unit = true;
             config.timestamp_cfg.timestamp_selection = MCAN_TIMESTAMP_SEL_EXT_TS_VAL_USED;

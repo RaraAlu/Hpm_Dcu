@@ -109,7 +109,7 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         return 0;
     }
     // Existing reserved board record: same indices, sizes and read-only descriptors.
-    if (index == 0x2002 && startup_enabled()) {
+    if (index == 0x2002) {
         if (sub > 4) return ABORTIDX_SUBINDEX_NOT_EXISTING;
         if (bytes != (sub == 3 ? 2U : 4U)) return ABORTIDX_PARAM_LENGTH_ERROR;
         const auto status = readiness();
@@ -157,7 +157,7 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         return 0;
     }
     // Project the immutable active Profile through existing read-only descriptors.
-    if (startup_enabled() && index >= axis_object_base(0) && index < axis_object_base(ENCOS_AXIS_COUNT)) {
+    if (index >= axis_object_base(0) && index < axis_object_base(ENCOS_AXIS_COUNT)) {
         const unsigned offset = index - axis_object_base(0);
         const auto *device = adapter::configured_device(offset / 16);
         if (device && offset % 16 == 0 && sub <= 7) {

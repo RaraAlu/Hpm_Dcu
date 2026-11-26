@@ -559,11 +559,11 @@ def rk_header(contract):
 
 
 def outputs(schema_path=HERE / 'cfg/接口定义.json', template_path=HERE / 'cfg/设备模板.xml',
-            profile_path=DEFAULT_CAN_PROFILE, allow_encos_fixture=False):
+            profile_path=DEFAULT_CAN_PROFILE):
     from generate_can_profile import header as validate_profile, load_yaml
     schema = json.loads(schema_path.read_text(encoding='utf-8'))
     profile = load_yaml(profile_path)
-    validate_profile(profile, allow_encos_fixture=allow_encos_fixture)
+    validate_profile(profile)
     objects, pdos = expand(schema)
     contract = cyclic_contract(schema, pdos, profile)
     default = contract['modes'][schema['default_profile']]
@@ -589,10 +589,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-root', type=Path, help='Generate into this directory; default is read-only check')
     parser.add_argument('--profile', type=Path, default=DEFAULT_CAN_PROFILE)
-    parser.add_argument('--allow-encos-fixture', action='store_true')
     arguments = parser.parse_args()
     mismatches = []
-    for relative, content in outputs(profile_path=arguments.profile, allow_encos_fixture=arguments.allow_encos_fixture).items():
+    for relative, content in outputs(profile_path=arguments.profile).items():
         target = (arguments.output_root or ROOT) / relative
         if arguments.output_root:
             target.parent.mkdir(parents=True, exist_ok=True)

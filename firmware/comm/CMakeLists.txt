@@ -1,9 +1,5 @@
 sdk_inc(canfd ethercat ethercat/port)
 sdk_compile_definitions(-DDCU_ECAT_CYCLE_PORT=1)
-option(CONFIG_CAN3_TDCO_AB_TEST "Use TDCO=13 on CAN3 for the production endurance comparison" OFF)
-if(CONFIG_CAN3_TDCO_AB_TEST)
-    sdk_compile_definitions(-DCONFIG_CAN3_TDCO_AB_TEST=1)
-endif()
 sdk_src(
     canfd/hpm_mcan_transport.c
     canfd/can_tx_gate.c

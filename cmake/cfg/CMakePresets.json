@@ -18,12 +18,7 @@
         "CMAKE_MAKE_PROGRAM": "${sourceDir}/.tools/host/usr/bin/ninja",
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,
         "EXCLUDED_IDE_IAR": true,
-        "EXCLUDED_IDE_SES": true,
-        "CONFIG_CAN_LED_TEST": false,
-        "CONFIG_CAN_INTERNAL_LOOPBACK_TEST": false,
-        "CONFIG_ETHERCAT_SCAN_TEST": false,
-        "CONFIG_ETHERCAT_DATA_TEST": false,
-        "CONFIG_ETHERCAT_MCAN_ECHO": false
+        "EXCLUDED_IDE_SES": true
       }
     },
     {
@@ -43,49 +38,11 @@
       "inherits": "hpm-release",
       "displayName": "HPM5E31 CAN2+CAN3 five-axis production bench",
       "cacheVariables": {"DCU_CAN_PROFILE_FILE": "${sourceDir}/firmware/app/profile/cfg/五轴台架配置.yaml"}
-    },
-    {
-      "name": "hpm-can-loopback",
-      "inherits": "hpm-base",
-      "displayName": "HPM5E31 Isolated MCAN0 Internal Loopback",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "debug",
-        "CONFIG_CAN_INTERNAL_LOOPBACK_TEST": true
-      }
-    },
-    {
-      "name": "hpm-ethercat-scan",
-      "inherits": "hpm-base",
-      "displayName": "HPM5E31 Isolated EtherCAT Discovery",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "debug",
-        "CONFIG_ETHERCAT_SCAN_TEST": true
-      }
-    },
-    {
-      "name": "hpm-ethercat-data",
-      "inherits": "hpm-base",
-      "displayName": "HPM5E31 Isolated EtherCAT Data Echo",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "debug",
-        "CONFIG_ETHERCAT_DATA_TEST": true
-      }
-    },
-    {
-      "name": "hpm-ethercat-mcan",
-      "inherits": "hpm-ethercat-data",
-      "displayName": "HPM5E31 Isolated EtherCAT to MCAN0 Internal Echo",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {"CONFIG_ETHERCAT_MCAN_ECHO": true}
     }
   ],
   "buildPresets": [
     {"name": "hpm-debug", "configurePreset": "hpm-debug", "jobs": 4},
     {"name": "hpm-release", "configurePreset": "hpm-release", "jobs": 4},
-    {"name": "hpm-release-five-axis", "configurePreset": "hpm-release-five-axis", "jobs": 4},
-    {"name": "hpm-can-loopback", "configurePreset": "hpm-can-loopback", "jobs": 4},
-    {"name": "hpm-ethercat-scan", "configurePreset": "hpm-ethercat-scan", "jobs": 4},
-    {"name": "hpm-ethercat-data", "configurePreset": "hpm-ethercat-data", "jobs": 4},
-    {"name": "hpm-ethercat-mcan", "configurePreset": "hpm-ethercat-mcan", "jobs": 4}
+    {"name": "hpm-release-five-axis", "configurePreset": "hpm-release-five-axis", "jobs": 4}
   ]
 }

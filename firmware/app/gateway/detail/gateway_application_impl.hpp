@@ -20,7 +20,6 @@ public:
         return bus < DCU_DEVICE_CAN_BUS_COUNT ? state_.channels[bus] : ChannelConfiguration{};
     }
     bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id);
-    bool startup_enabled() const { return startup_.enforced(); }
     dcu_gateway_readiness_t readiness() const { return startup_.status(); }
     profile_update::Policy profile_policy() const;
     bool apply_profile_policy(uint32_t profile, uint32_t base, uint32_t revision, const profile_update::Policy &);

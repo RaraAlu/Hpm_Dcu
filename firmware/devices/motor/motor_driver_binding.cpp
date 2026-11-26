@@ -13,9 +13,6 @@ BjcxMotorDriver bjcx_drivers[DCU_MOTOR_DEVICE_CAPACITY];
 
 bool matches_encos_model(const MotorConfiguration &motor, uint8_t format) noexcept
 {
-#if defined(DCU_HOST_ENGINE_TEST)
-    if (!motor.type) return true; // Synthetic encoding profiles exist only in native fixtures.
-#endif
     const auto *model = motor.type ? encos_config::find_model(motor.type) : nullptr;
     if (!model || format != 1 || !model->mit.verified()) return false;
     const auto &p = motor.encos.profile;
