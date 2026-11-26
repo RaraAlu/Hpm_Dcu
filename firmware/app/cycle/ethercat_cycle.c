@@ -12,16 +12,11 @@
 #include "motor_ethercat.h"
 #include "pdo_pipeline.h"
 #include "realtime_port.h"
-#include "first_pdo_trace.h"
 #if defined(CONFIG_SYNC0_HW_CAPTURE_TEST)
 #include "sync0_hw_capture.h"
 #endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
 #include "detail/pdo_phase_trace.h"
-#include "encos_interface.h"
-#endif
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-#include "detail/first_pdo_trace_state.h"
 #include "encos_interface.h"
 #endif
 #include <string.h>
@@ -36,46 +31,6 @@ static pdo_pipeline_t pipeline __attribute__((section(".fast_ram.bss")));
 static dcu_cycle_handoff_t handoff;
 static dcu_cycle_runtime_t runtime;
 static dcu_raw_pdo_t raw_pdo;
-
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-static volatile dcu_first_pdo_trace_t can2_first_pdo_trace;
-
-bool dcu_first_pdo_trace_active(void)
-{
-    return __atomic_load_n(&can2_first_pdo_trace.sequence, __ATOMIC_ACQUIRE) &&
-           dcu_time_now_us() - can2_first_pdo_trace.armed_us <= DCU_FIRST_PDO_CAPTURE_US;
-}
-
-void dcu_first_pdo_trace_at(uint32_t time_us, uint32_t event, uint32_t a, uint32_t b, uint32_t c, uint32_t d)
-{
-    if (!__atomic_load_n(&can2_first_pdo_trace.sequence, __ATOMIC_ACQUIRE) ||
-        time_us - can2_first_pdo_trace.armed_us > DCU_FIRST_PDO_CAPTURE_US) return;
-    const uint32_t n = __atomic_fetch_add(&can2_first_pdo_trace.count, 1U, __ATOMIC_RELAXED);
-    if (n < DCU_FIRST_PDO_EVENT_LIMIT)
-        can2_first_pdo_trace.entry[n] = (dcu_first_pdo_trace_entry_t){time_us, event, a, b, c, d};
-}
-
-static void trace_first_sm2(const void *data, uint32_t stage_done_us, uint32_t read_end_us)
-{
-    if (nPdOutputSize < sizeof(mc_board_rx_t)) return;
-    mc_board_rx_t board;
-    memcpy(&board, data, sizeof(board));
-    if (!__atomic_load_n(&can2_first_pdo_trace.sequence, __ATOMIC_ACQUIRE)) {
-        if (!board.CycleSeq || board.InterfaceVersion != MC_INTERFACE_VERSION || board.BoardControl != 1U ||
-            board.ChannelEnableMask != 4U || board.AxisEnableMask != (15U << 14)) return;
-        const mc_axis_rx_t zero = {.ControlWord = MC_AXIS_ARM | MC_AXIS_START_MOTION, .Mode = 4};
-        for (unsigned i = 0; i < 4; ++i) {
-            const unsigned offset = motor_control_command_offset(14U + i);
-            if (offset + sizeof(zero) > nPdOutputSize ||
-                memcmp((const uint8_t *)data + offset, &zero, sizeof(zero))) return;
-        }
-        can2_first_pdo_trace.armed_us = stage_done_us;
-        __atomic_store_n(&can2_first_pdo_trace.sequence, board.CycleSeq, __ATOMIC_RELEASE);
-    }
-    DCU_FIRST_TRACE_AT(stage_done_us, DCU_FIRST_SM2, board.CycleSeq,
-                       __atomic_load_n(&handoff.stage_start_us, __ATOMIC_ACQUIRE), read_end_us, board.BoardControl);
-}
-#endif
 
 #if defined(CONFIG_PDO_PHASE_TRACE)
 static volatile dcu_pdo_phase_trace_t pdo_phase_trace;
@@ -359,10 +314,6 @@ uint16_t dcu_cycle_start_outputs(void)
     cycle_diagnostics.first_rx_miss_stage_start_us = 0;
     cycle_diagnostics.fault_last_stage_us = 0;
     cycle_diagnostics.missing_can_devices = 0;
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-    __atomic_store_n(&can2_first_pdo_trace.sequence, 0U, __ATOMIC_RELEASE);
-    can2_first_pdo_trace.count = 0;
-#endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
     pdo_phase_trace.count = 0;
     pdo_phase_trace.fault_flags = 0;
@@ -402,14 +353,6 @@ void dcu_cycle_stop_outputs(void)
         LatchInputSync0Value = runtime.ssc_sync0_latch;
         LatchInputSync0Counter = 0U;
     }
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-    if (runtime.outputs_running && dcu_first_pdo_trace_active()) {
-        const uint32_t before = dcu_time_now_us();
-        uint32_t dc_low;
-        HW_EscReadDWord(dc_low, ESC_SYSTEMTIME_OFFSET);
-        DCU_FIRST_TRACE_AT(before, DCU_FIRST_DC_ANCHOR, SWAPDWORD(dc_low), dcu_time_now_us(), 0, 0);
-    }
-#endif
     runtime.outputs_running = false;
     runtime.command_pending = false;
 }
@@ -468,9 +411,6 @@ static void stage_finish(bool committed, const void *data, bool direct, uint32_t
     if (committed) {
         const uint32_t done_us = dcu_time_now_us();
         write_handoff(&handoff.stage_done_us, done_us);
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        trace_first_sm2(data, done_us, direct_read_end_us);
-#endif
         /* The ready slot is complete. Budget from the SM event, not copy end. */
         if (read_handoff(&handoff.sm2_cycles))
             (void)pdo_pipeline_sync(&pipeline, read_handoff(&handoff.sm2_event_us));
@@ -565,8 +505,6 @@ static bool check_faults(uint32_t now_us)
     cycle_diagnostics.fault_last_stage_us = read_handoff(&handoff.stage_done_us);
     if (faults & PDO_PIPELINE_CAN_FEEDBACK_MISSING)
         cycle_diagnostics.missing_can_devices = read_handoff(&pipeline.cyclic_missing);
-    DCU_FIRST_TRACE_AT(now_us, DCU_FIRST_WORKER_FAULT, faults, read_handoff(&pipeline.epoch),
-                       cycle_diagnostics.fault_last_stage_us, nAlStatus);
 #if defined(CONFIG_PDO_PHASE_TRACE)
     pdo_phase_trace.fault_epoch = read_handoff(&pipeline.epoch);
     volatile dcu_pdo_phase_sample_t *sample = phase_current(pdo_phase_trace.fault_epoch);
@@ -634,20 +572,8 @@ static void publish_due(void)
 #if defined(CONFIG_PDO_PHASE_TRACE)
     if (sample) sample->publish_begin_us = now_us;
 #endif
-    DCU_FIRST_TRACE_AT(now_us, DCU_FIRST_SM3_BEGIN, epoch, sync_us,
-                       deadline, runtime.processed_epoch);
     motor_control_prepare_input();
     uint32_t packed_us = dcu_time_now_us();
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-    if (dcu_first_pdo_trace_active()) {
-        uint16_t capacity;
-        const uint8_t *wire = dcu_ssc_txpdo_buffer(&capacity);
-        mc_board_tx_t header = {0};
-        if (wire && capacity >= sizeof(header)) memcpy(&header, wire, sizeof(header));
-        DCU_FIRST_TRACE_AT(packed_us, DCU_FIRST_SM3_PACKED, epoch, header.PublishSeq, header.AcceptedCycleSeq,
-                           header.BoardStatus);
-    }
-#endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
     if (sample) sample->pack_end_us = packed_us;
 #endif
@@ -682,8 +608,6 @@ static void publish_due(void)
     if (end_us - now_us > cycle_diagnostics.publish_max_us)
         cycle_diagnostics.publish_max_us = end_us - now_us;
     const bool marked = pdo_pipeline_mark_published(&pipeline, epoch, end_us);
-    DCU_FIRST_TRACE_AT(end_us, DCU_FIRST_SM3_WRITTEN, epoch, packed_us, 0, 0);
-    DCU_FIRST_TRACE(DCU_FIRST_SM3_MARK, epoch, marked, read_handoff(&pipeline.faults), end_us);
     if (marked) {
         if (cyclic) {
             if (!cyclic_latency.count) {
@@ -811,11 +735,6 @@ void dcu_cycle_step(void)
             runtime.pending_epoch = view.epoch;
             runtime.command_pending = true;
             cycle_diagnostics.latched_sequence = view.sequence;
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-            uint32_t sequence;
-            memcpy(&sequence, view.data, sizeof(sequence));
-            DCU_FIRST_TRACE(DCU_FIRST_LATCH, sequence, view.epoch, view.sync_us, view.ready_us);
-#endif
         }
         pdo_pipeline_release(&pipeline, &view);
     }
@@ -894,9 +813,6 @@ void dcu_cycle_watchdog_isr(void)
     check_sm2_gap(now_us);
     if (__atomic_load_n(&pipeline.enabled, __ATOMIC_ACQUIRE) &&
         pdo_pipeline_check(&pipeline, now_us)) {
-        DCU_FIRST_TRACE_AT(now_us, DCU_FIRST_WATCHDOG, read_handoff(&pipeline.faults),
-                           read_handoff(&pipeline.epoch), read_handoff(&pipeline.published),
-                           read_handoff(&pipeline.published_epoch));
         dcu_tx_inhibit();
         for (unsigned c = 0; c < DCU_CAN_BUS_COUNT; ++c)
             dcu_can_cancel_from_isr(c);

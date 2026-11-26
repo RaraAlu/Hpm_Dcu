@@ -2,7 +2,6 @@
 #include "can_transport.h"
 #include "cfg/can_bus_config.h"
 #include "detail/can_gateway_state.h"
-#include "first_pdo_trace.h"
 #include "realtime_port.h"
 #include "cycle_config.h"
 #include "FreeRTOS.h"
@@ -90,10 +89,6 @@ static volatile uint8_t s_led_ticks[DCU_CAN_BUS_COUNT][CANFD_LED_KIND_COUNT];
 static uint16_t s_heartbeat_ticks;
 static dcu_can_channel_config_t s_channels[DCU_CAN_BUS_COUNT];
 static uint32_t s_active_mask;
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-static uint32_t s_can2_first_gate;
-uint32_t dcu_first_pdo_can_gate(void) { return s_can2_first_gate; }
-#endif
 
 const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus)
 {
@@ -283,13 +278,6 @@ static void receive_isr(uint32_t bus)
                    (f.canfd_frame ? DCU_CAN_FLAG_FD : 0) | (f.bitrate_switch ? DCU_CAN_FLAG_BRS : 0)};
         memcpy(item->frame.data, f.data_8, bytes);
         item->stamp = (dcu_can_rx_stamp_t){dcu_time_now_ms(), eof};
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        if (bus == 2 && item->frame.id >= 1 && item->frame.id <= 4 && dcu_first_pdo_trace_active()) {
-            const uint32_t atb = base->ATB;
-            DCU_FIRST_TRACE(DCU_FIRST_RX_EOF, item->frame.id | (!eof.valid ? 0x100U : 0U),
-                            eof.tick, atb, (uint32_t)f.dlc << 8 | (bytes ? f.data_8[0] : 0U));
-        }
-#endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
         item->observed_us = dcu_time_now_us();
 #endif
@@ -489,32 +477,11 @@ unsigned dcu_can_tx_free(unsigned bus)
 }
 DCU_FAST_CODE bool dcu_can_tx_serial_ready(unsigned bus)
 {
-    if (!dcu_can_tx_free(bus)) {
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        if (bus == 2) s_can2_first_gate = DCU_FIRST_CAN_FIFO_FULL;
-#endif
-        return false;
-    }
-    if (dcu_can_pending(bus, DCU_CAN_DEVICE_ANY)) {
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        if (bus == 2) s_can2_first_gate = DCU_FIRST_CAN_PENDING;
-#endif
-        return false;
-    }
+    if (!dcu_can_tx_free(bus) || dcu_can_pending(bus, DCU_CAN_DEVICE_ANY)) return false;
     const tx_retirement_t *last = &s_tx_retirement[bus];
-    if (!last->seen || (uint32_t)(dcu_time_now_us() - last->observed_us) > DCU_CAN_TX_EOF_GAP_US) {
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        if (bus == 2) s_can2_first_gate = DCU_FIRST_CAN_READY;
-#endif
-        return true;
-    }
+    if (!last->seen || (uint32_t)(dcu_time_now_us() - last->observed_us) > DCU_CAN_TX_EOF_GAP_US) return true;
     // A strictly greater elapsed count is conservative at the timestamp quantum.
-    const bool ready = last->eof.valid && (int32_t)(s_mcan[bus]->ATB - last->eof.tick) > (int32_t)s_tx_gap_ticks[bus];
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-    if (bus == 2) s_can2_first_gate = ready ? DCU_FIRST_CAN_READY :
-        (last->eof.valid ? DCU_FIRST_CAN_EOF_GAP : DCU_FIRST_CAN_OBSERVED_GAP);
-#endif
-    return ready;
+    return last->eof.valid && (int32_t)(s_mcan[bus]->ATB - last->eof.tick) > (int32_t)s_tx_gap_ticks[bus];
 }
 uint32_t dcu_can_tx_progress(unsigned bus)
 {
@@ -638,14 +605,6 @@ DCU_FAST_CODE bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event
         }
         *event = (dcu_can_tx_event_t){.id = slot->id, .status = sent ? DCU_CAN_TX_COMPLETED : DCU_CAN_TX_CANCELLED};
         if (sent) event->eof = slot->eof;
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        if (bus == 2 && dcu_first_pdo_trace_active()) {
-            const uint32_t atb = base->ATB;
-            DCU_FIRST_TRACE(DCU_FIRST_TX_EOF,
-                            (slot->in_flight_device & 0xffU) | (!event->eof.valid ? 0x100U : 0U) |
-                                (!sent ? 0x200U : 0U), (uint32_t)slot->id, event->eof.tick, atb);
-        }
-#endif
         // Raw slots may retire out of order; observing the drain bounds all of them.
         if (slot->launched) s_tx_retirement[bus] = (tx_retirement_t){
             .eof = slot->in_flight_device != DCU_CAN_DEVICE_RAW ? event->eof : (dcu_can_eof_t){0},
@@ -767,11 +726,6 @@ DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, cons
             id = ++s_tx_serial[bus];
             s_tx[bus][index] = (tx_slot_t){.id = id, .in_flight_device = device, .launched = true};
             mcan_send_add_request(s_mcan[bus], index);
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-            if (bus == 2 && dcu_first_pdo_trace_active())
-                DCU_FIRST_TRACE(DCU_FIRST_TX_REQUEST, f->id, (uint32_t)id, device,
-                                (uint32_t)f->dlc << 8 | f->data[0]);
-#endif
         }
         taskEXIT_CRITICAL();
     }

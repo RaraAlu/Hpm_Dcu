@@ -1,10 +1,6 @@
 #include "pdo_pipeline.h"
 #include "detail/pdo_pipeline_slots.h"
 #include "cycle_config.h"
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-#include "first_pdo_trace.h"
-#include "realtime_port.h"
-#endif
 #include <string.h>
 
 _Static_assert(__GCC_ATOMIC_INT_LOCK_FREE == 2 && sizeof(uint32_t) == sizeof(unsigned int),
@@ -35,14 +31,7 @@ static inline __attribute__((always_inline)) bool claim(uint32_t *state, uint32_
 
 DCU_FAST_CODE void pdo_pipeline_fault(pdo_pipeline_t *p, uint32_t fault)
 {
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-    const uint32_t before = __atomic_fetch_or(&p->faults, fault, __ATOMIC_RELEASE);
-    if (fault & ~before)
-        DCU_FIRST_TRACE(DCU_FIRST_FAULT_BIT, fault & ~before, load(&p->epoch),
-                        load(&p->published), load(&p->published_epoch));
-#else
     __atomic_fetch_or(&p->faults, fault, __ATOMIC_RELEASE);
-#endif
 }
 
 bool pdo_pipeline_configure(pdo_pipeline_t *p, uint32_t period_ns,

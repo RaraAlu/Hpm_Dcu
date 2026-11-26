@@ -4,7 +4,6 @@
 #include "motor_driver_binding.hpp"
 #include "motor_protocol.h"
 #include "can_transport.h"
-#include "first_pdo_trace.h"
 #include "realtime_port.h"
 
 namespace dcu::app::gateway_application::detail {
@@ -423,10 +422,6 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
                     DCU_BATCH_SAMPLE(a, encoded_us = prepacked ? preview_.encoded_us[a] : dcu_time_now_us());
                     cyclic_.queued[c] |= 1U << j;
                 }
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-                if (c == 2)
-                    DCU_FIRST_TRACE(DCU_FIRST_AXIS_ACCEPT, devices_[a].can_id(), permit, accepted, active);
-#endif
                 if (accepted && active) result.mirrored_devices |= 1u << a;
             }
         }
@@ -574,22 +569,11 @@ DCU_FAST_CODE bool GatewayApplication::consume_feedback(unsigned c, const dcu_ca
                 DCU_BATCH_SAMPLE(index, match(stamp.eof.us));
             }
             if (matched && startup_.enforced()) startup_.observe(index, stamp.observed_ms, now);
-            if (c == 2)
-                DCU_FIRST_TRACE(DCU_FIRST_RX_CONSUMED, frame.id, matched,
-                                device.cyclic_feedback_count() - before, stamp.eof.tick);
             return matched;
         }
         if (device.neutral_mit_only() && neutral_run_.active &&
             (!(neutral_run_.awaiting & bit) || !neutral_window_open(now_us))) return false;
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        const auto before = device.cyclic_feedback_count();
-#endif
         const bool verified = transactions_.consume_reply(c, index, device, frame, bytes, stamp, now, now_us);
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        if (c == 2)
-            DCU_FIRST_TRACE(DCU_FIRST_RX_CONSUMED, frame.id, verified,
-                            device.cyclic_feedback_count() - before, stamp.eof.tick);
-#endif
         if (device.neutral_mit_only() && neutral_run_.active) {
             if (!verified) return false;
             neutral_run_.awaiting &= ~bit;
@@ -805,12 +789,6 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
     if (startup_.running() && state_.operational && state_.session_armed) {
         unsigned cost = 2u * frame_us(c, 8);
         const int selected = schedule_[c].next_control(controls, now_us, cost, dcu_can_tx_serial_ready(c));
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-        if (c == 2)
-            DCU_FIRST_TRACE(DCU_FIRST_SCHEDULE, controls.active_mask | (uint32_t{controls.first_send_mask} << 8) |
-                            (schedule_[c].can_afford(cost) ? 1U << 16 : 0U),
-                            static_cast<uint32_t>(selected), dcu_first_pdo_can_gate(), now_us);
-#endif
         if (selected >= 0) {
             unsigned slot = static_cast<unsigned>(selected);
             auto &device = devices_[devices_on_bus_[c][slot]];
@@ -821,27 +799,16 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
                     device.control_submitted(now, id);
                     controls.first_send_mask &= ~(1u << slot);
                 } else {
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-                    if (c == 2) DCU_FIRST_TRACE(DCU_FIRST_SUBMIT_FAILED, device.can_id(), dcu_tx_inhibited(), 0, 0);
-#endif
                     device.record_tx_drop();
                     ++state_.channel_tx_drop[c];
                     ++state_.tx_total;
                 }
             } else {
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-                if (c == 2) DCU_FIRST_TRACE(DCU_FIRST_ENCODE_FAILED, device.can_id(), 0, 0, 0);
-#endif
                 device.stop(2);
                 controls.active_mask &= ~(1u << slot);
             }
         }
     }
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-    else if (c == 2)
-        DCU_FIRST_TRACE(DCU_FIRST_NOT_RUNNING, startup_.running(), state_.operational, state_.session_armed,
-                        dcu_tx_inhibited());
-#endif
     const bool fd = state_.channels[c].frame_format != 0;
     if (!(cyclic_.buses & (1U << c)) && (startup_.running() || startup_.may_probe()))
         transactions_.submit_queued(c, schedule_[c], controls, fd, now, now_us);

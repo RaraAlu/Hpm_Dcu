@@ -349,12 +349,6 @@ bool motor_control_verify_contract(void)
     }
     return true;
 }
-#if defined(CONFIG_CAN2_FIRST_PDO_TRACE)
-uint16_t motor_control_command_offset(unsigned slot)
-{
-    return publication.motor_layout && slot < ENCOS_AXIS_COUNT ? publication.wire.axis(false, slot) : pdo_layout::absent;
-}
-#endif
 static uint16_t checked_mapping(uint16_t *in, uint16_t *out, bool commit)
 {
     *in = *out = 0;
