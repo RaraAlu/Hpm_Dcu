@@ -1,0 +1,10 @@
+features:
+  - name: dcu-firmware
+    design_pattern: HPM5E31 生产固件的单业务任务、IRQ 交接与过程数据契约
+    includes:
+      - 'firmware/**/{*.c,*.cpp,*.hpp,*.inc,*.cmake,CMakeLists.txt,*.hpmpc,dcu_hpm5e31.yaml,生产CAN配置.yaml,!(pdo_phase_trace).h}'
+    description: >-
+      以 hpm-release、生产 CAN 配置及 RK DriverModule 使用的模式为准；编入镜像不等于生产可达。
+      快 IRQ 锁存完整输入和时间戳；唯一业务任务运行 SSC、校验授权并处理设备；
+      MCAN 完成事件和有效回包才是发送与反馈证据。按 docs/当前说明/MCU固件审查规则.md
+      的 MCU-01 至 MCU-08 逐项检查；模板匹配不等于代码或台架通过。

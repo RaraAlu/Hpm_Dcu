@@ -1,0 +1,4 @@
+version: '1.0'
+projectType: monolith
+sourceTemplate: hpm5e31
+templatesPath: .toolkit/templates

@@ -9,13 +9,13 @@ HPM 运行 EtherCAT 从站和 CAN 网关，RK3588 上的 IgH / `DriverModule` �
 | 任务 | 入口 |
 | --- | --- |
 | 搭建环境、选择预设、受保护下载 | [环境准备](docs/当前说明/环境依赖与外部资源准备.md) · [编译调试下载](docs/当前说明/编译调试下载经验总结.md) · [上板前提](AGENTS.md) |
-| 核对 Profile 和双向 PDO | [启动配置与在线选择](docs/当前说明/按启动配置生成周期布局.md) · [RK 生产回环入口](tools/rk/profile_motor_run.py) |
+| 核对 Profile 和双向 PDO | [启动配置与在线选择](docs/当前说明/按启动配置生成周期布局.md) |
 | 理解一拍电机命令或 88 B 透传 | [周期锁存与反馈发布](docs/当前说明/周期锁存与反馈发布契约.md) · [SingleFd 布局与同步](docs/当前说明/透传布局切换.md) |
+| 审查固件的中断、实时性、发送授权及掉电行为 | [MCU 固件审查规则](docs/当前说明/MCU固件审查规则.md) |
 | 修改驱动、查询或授权 | [设备驱动接入](docs/当前说明/设备驱动扩展与接入规范.md) · [生产启动与重连](docs/当前说明/生产网关一次确认接入.md) |
 | 查证据、看下一步 | [文档索引](docs/文档索引.md) · [项目总计划](docs/设计资料/项目总计划.md)（唯一执行计划） |
-| 查四电机通宵长测 | [2026-11-24 CAN2 四电机八小时实测](docs/验证记录/2026-11-24-CAN2四电机八小时通宵实测.md)（Profile 1 / rev 10） |
 
-**验收到哪里：** 11 月 25 日的冻结镜像在 can1、can2 各一台 ENCOS 上完成[单拍](docs/验证记录/2026-11-25-周期整改后两轴单拍.md)和 [500 Hz 六十秒](docs/验证记录/2026-11-25-周期整改后两轴六十秒.md)验证：30,000 拍均在 N+1 读到两轴新反馈，各轴 TX 完成计数增加 30,000。随后合入的就绪查询、ENCOS 编码复用及 BJCX 普通轮询修复只完成编译与镜像检查，尚未上板复验。双轴跨通道结果也不代表单路七台通过。
+当前生产配置的接线、运动参数授权和验收边界见[启动配置与在线选择](docs/当前说明/按启动配置生成周期布局.md)。编译通过不代表当前镜像的实机收发已经验收。
 
 ## 快速开始
 
@@ -31,11 +31,10 @@ python3 scripts/dcu.py doctor
 python3 scripts/dcu.py build --preset hpm-debug
 ```
 
-默认生产版与五轴台架版（分别使用各自的 Profile 和同次构建的 RK 契约）：
+默认生产版（RK 使用同次构建导出的契约）：
 
 ```bash
 python3 scripts/dcu.py build --preset hpm-release
-python3 scripts/dcu.py build --preset hpm-release-five-axis
 ```
 
 构建产物示例：
@@ -46,7 +45,6 @@ build/hpm-debug/output/dcu.bin
 build/hpm-debug/output/dcu.map
 build/hpm-debug/image-check.json
 build/hpm-release/output/dcu.elf
-build/hpm-release-five-axis/output/dcu.elf
 ```
 
 不需要手动设置全局 `HPM_SDK_BASE` 或交叉编译器 PATH。根 `CMakePresets.json` 仅引用 [cmake/cfg/CMakePresets.json](cmake/cfg/CMakePresets.json)，实际构建参数只维护一份。Presets 和脚本使用当前工程内的工具与 SDK，普通构建不会访问 J-Link。

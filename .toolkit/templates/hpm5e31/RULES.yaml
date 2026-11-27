@@ -1,0 +1,17 @@
+# 编号及取证方法：docs/当前说明/MCU固件审查规则.md。按文件涉及的路径适用。
+rules:
+  - pattern: 'firmware/**/{*.c,*.cpp,*.hpp,*.inc,*.cmake,CMakeLists.txt,*.hpmpc,dcu_hpm5e31.yaml,生产CAN配置.yaml,!(pdo_phase_trace).h}'
+    description: 仅审查 hpm-release 生产配置及生产 RK 主站可达的固件路径
+    must_do:
+      - rule: '先核实生产 Profile、编译开关及主站模式；共用文件只报告生产可达分支，保留启动、维护、异常输入和故障恢复路径。'
+      - rule: 'MCU-01 核对 PLIC 优先级、RTOS 调用资格、共享槽发布顺序和资源初始化顺序。'
+      - rule: 'MCU-02 为热路径、FIFO 排空和临界区设定上界；时间比较核对单位、时基与回绕。'
+      - rule: 'MCU-03 严格 N+1 以逐轴 TX EOF、后续匹配 RX EOF、解码及截止前 SM3 发布为证据。'
+      - rule: 'MCU-04 掉线、到期、退 OP、拓扑切换和参数缺失均须失效关闭；恢复不能沿用旧使能。'
+      - rule: 'MCU-05 按外设语义读取、清除、锁存和上报丢帧、总线故障、取消与完成。'
+      - rule: 'MCU-06 按有效长度、ID、对齐、字节序和位宽访问线数据，对照同次构建的双向映射。'
+      - rule: 'MCU-07 区分空白、损坏和读失败；掉电更新须保留每板身份及启动编号单调性。'
+      - rule: 'MCU-08 按目标板和实际预设检查时钟、内存、栈、并发容量及生成、链接依赖。'
+    must_not_do:
+      - rule: '不得用 volatile 代替所有权交接，也不得在快 IRQ 或周期热路径中引入阻塞、动态分配或 Flash 擦写。'
+      - rule: '不得把工具空结果、WKC、提交成功、旧反馈或既往台架记录当作当前镜像的验收结果。'
