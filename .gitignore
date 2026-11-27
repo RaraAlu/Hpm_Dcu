@@ -40,3 +40,4 @@ __pycache__/
 # Standalone OpenOCD log; normal target-operation logs live in artifacts/.
 /openocd.log
 .alma-snapshots
+*.log
