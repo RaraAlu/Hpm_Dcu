@@ -4,6 +4,7 @@
 #include "can/can_bus_scheduler.hpp"
 #include "can_transport.h"
 #include "can/raw_can_gateway.hpp"
+#include "dcu_sideband.hpp"
 
 namespace dcu::app::gateway_application::detail {
 
@@ -16,6 +17,9 @@ inline RawCanSubmit raw_submit(BusScheduler (&schedule)[DCU_DEVICE_CAN_BUS_COUNT
     return {schedule, [](void *context, unsigned bus, const dcu_can_frame_t &frame, bool fd_response) {
         if (bus >= DCU_DEVICE_CAN_BUS_COUNT || !dcu_can_frame_valid(&frame) ||
             (!full_payload && frame.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD)) return false;
+        if constexpr (paced) {
+            if (!dcu_profile_pdo::sideband_tx_allowed(bus, frame.id, frame.dlc, frame.flags)) return false;
+        }
         const bool fd = (frame.flags & DCU_CAN_FLAG_FD) != 0;
         auto &budget = static_cast<BusScheduler *>(context)[bus];
         const unsigned cost = BusScheduler::frame_cost(fd, dcu_can_dlc_to_bytes(frame.dlc, fd)) +

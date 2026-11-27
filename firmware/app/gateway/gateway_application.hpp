@@ -3,20 +3,26 @@
 
 #include <cstdint>
 #include "motor_feedback.hpp"
+#include "cyclic_can_observer.hpp"
 #include "device_config.h"
 #include "can_frame.h"
 #include "motor_result.hpp"
 #include "can/raw_can_gateway.hpp"
 #include "production_profile.h"
+#include "gateway_flow.h"
 #include "startup/gateway_readiness.h"
 #include "policy/profile_update.hpp"
 
 namespace dcu::app::gateway_application {
 
-enum class OperatingMode : uint8_t { Motor, MotorWithRaw, Raw, SingleFd };
+enum class OperatingMode : uint8_t {
+    Motor = DCU_PDO_MOTOR, MotorWithRaw = DCU_PDO_MOTOR_WITH_RAW,
+    Raw = DCU_PDO_RAW, SingleFd = DCU_PDO_SINGLE_FD
+};
 constexpr bool raw_only(OperatingMode mode)
 { return mode == OperatingMode::Raw || mode == OperatingMode::SingleFd; }
-enum class RawState : uint8_t { Disabled, Requested, Armed, Active, Draining, Faulted };
+enum class RawState : uint8_t { Disabled = PDO_DISABLED, Requested = PDO_WAIT_CONFIRM, Armed = PDO_WAIT_OP,
+    Active = PDO_ACTIVE, Draining = PDO_DRAINING, Faulted = PDO_FAULTED };
 enum Owner : uint8_t { OWNER_NONE, OWNER_PDO, OWNER_SDO };
 
 struct ChannelConfiguration {
@@ -71,7 +77,6 @@ struct ParameterReadResult {
 struct Publication {
     OperatingMode mode{};
     uint32_t sequence{}, accepted_cycle_sequence{}, cycle_sequence{};
-    uint32_t loopback_required{}, loopback_tx_complete{}, loopback_rx_matched{};
     uint16_t board_status{};
     uint8_t online_channels{}, fault_channels{};
     uint32_t online_devices{}, fault_devices{}, rx_drops{}, tx_drops{};
@@ -83,12 +88,11 @@ struct Publication {
     struct Device {
         motor::MotorFeedback feedback{};
         motor::MotorDiagnostics diagnostics{};
-        uint32_t cyclic_feedback_count{};
     } devices[DCU_MOTOR_DEVICE_CAPACITY]{};
 };
 
 // One task owns all operations. Inputs are borrowed only for the duration of a call.
-bool initialize_profile(const dcu_production_profile_t &profile);
+bool initialize_profile(const dcu_production_profile_t &profile, const CyclicCanObserver *observer = nullptr);
 ChannelConfiguration channel_configuration(unsigned bus);
 bool boot_startup(const dcu_gateway_profile_t &, uint64_t boot_id);
 dcu::app::profile_update::Policy profile_policy();
@@ -113,7 +117,7 @@ bool request_topology();
 bool topology_pending();
 bool commit_topology(const dcu_production_profile_t &catalogue, uint32_t buses, uint32_t devices);
 bool reset_layout();
-void layout_fault();
+void layout_fault(dcu_layout_event_t cause = PDO_ABORT);
 OperatingMode mode();
 bool set_owner(Owner owner);
 Owner owner();

@@ -3,13 +3,22 @@
 #error This overlay requires the HPM vectored PLIC FreeRTOS port
 #endif
 
-/* A task outside a critical section must not inherit an ISR's PLIC threshold.
- * Preserve the SDK's saved threshold for nested ISRs and critical tasks. */
+#include "../../../cfg/cycle_config.h"
+
+/* Vectored IRQ entry may save the IRQ priority rather than the task's threshold.
+ * The HPM port masks MTIE/MSIE before incrementing xCriticalNesting. An IRQ
+ * returning in that window must not unmask the kernel's notification lists. */
 .macro dcu_restore_task_irq_mask
-    bnez t0, .Lmask_done\@
-    csrr t0, mscratch
-    bnez t0, .Lmask_done\@
+    csrr t1, mscratch
+    bnez t1, .Lmask_done\@
+    bnez t0, .Lkernel_mask\@
+    csrr t1, mie
+    andi t1, t1, 0x88  /* MTIE | MSIE */
+    bnez t1, .Lset_mask\@  /* t0 = zero: normal task */
+.Lkernel_mask\@:
+    li t0, DCU_IRQ_KERNEL_PRIORITY
+.Lset_mask\@:
     li t1, HPMICRO_PLIC_M_THRESHOLD
-    sw zero, 0(t1)
+    sw t0, 0(t1)
 .Lmask_done\@:
 .endm

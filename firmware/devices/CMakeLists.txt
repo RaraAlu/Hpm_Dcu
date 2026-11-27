@@ -1,5 +1,6 @@
-sdk_inc(motor motor/drivers/encos motor/drivers/bjcx imu)
+sdk_inc(motor motor/drivers/encos motor/drivers/bjcx imu head)
 sdk_src(
+    head/head_health.cpp
     motor/motor_driver.cpp
     motor/motor_driver_binding.cpp
     motor/motor_instance.cpp

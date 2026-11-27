@@ -288,7 +288,7 @@ static void receive_isr(uint32_t bus)
     const uint32_t left = s_chain[bus].cutoff_us - dcu_time_now_us();
     if (s_chain[bus].cutoff_us && left && left <= DCU_SYNC_MAX_PERIOD_NS / 1000U &&
         (flags & (MCAN_INT_TX_EVT_FIFO_NEW_ENTRY | MCAN_INT_RXFIFO0_NEW_MSG | MCAN_EVENT_TRANSMIT)))
-        dcu_worker_wake_from_can_isr();
+        dcu_notify_ecat_can_from_isr();
 }
 
 static void mcan0_isr(void) { receive_isr(0U); }

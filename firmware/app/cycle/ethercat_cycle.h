@@ -31,7 +31,13 @@ typedef struct {
 void dcu_cycle_read_diagnostics(dcu_cycle_diagnostics_t *snapshot);
 
 void dcu_cycle_init(void);
-void dcu_cycle_step(void);
+typedef enum {
+    DCU_CYCLE_WAIT_CAN_FEEDBACK,
+    DCU_CYCLE_ALLOW_SSC
+} dcu_cycle_work_t;
+dcu_cycle_work_t dcu_cycle_service_pdo_can(uint32_t start_us);
+void dcu_cycle_service_ethercat_al(void);
+void dcu_cycle_record_worker_duration(uint32_t start_us);
 /* SSC/worker task only, except for the explicit PDI/Sync/timer handoffs below. */
 uint16_t dcu_cycle_configure(void);
 uint16_t dcu_cycle_start_outputs(void);

@@ -12,6 +12,29 @@
 #define MC_STATUS_QUERY_SOURCE 0x1000u
 #define MC_STATUS_ARMED_QUERY_ONLY 0x2000u
 typedef struct __attribute__((packed)) {
+    uint8_t Monitoring;
+    uint8_t HeartbeatSeen;
+    uint8_t Offline;
+    uint16_t FeedbackSeen;
+    uint16_t Stale;
+    uint8_t DeviceErrors;
+    uint32_t Board1Error;
+    uint32_t Board2Error;
+    uint32_t Board3Error;
+    uint32_t Board4Error;
+} mc_head_health_t;
+DCU_STATIC_ASSERT(sizeof(mc_head_health_t)==24, "head_health size");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,Monitoring)==0, "head_health.Monitoring");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,HeartbeatSeen)==1, "head_health.HeartbeatSeen");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,Offline)==2, "head_health.Offline");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,FeedbackSeen)==3, "head_health.FeedbackSeen");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,Stale)==5, "head_health.Stale");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,DeviceErrors)==7, "head_health.DeviceErrors");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,Board1Error)==8, "head_health.Board1Error");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,Board2Error)==12, "head_health.Board2Error");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,Board3Error)==16, "head_health.Board3Error");
+DCU_STATIC_ASSERT(offsetof(mc_head_health_t,Board4Error)==20, "head_health.Board4Error");
+typedef struct __attribute__((packed)) {
     uint8_t Selection[88];
     uint32_t Generation;
     uint32_t Channels;
@@ -230,6 +253,17 @@ DCU_STATIC_ASSERT(offsetof(mc_imu_t,QuaternionZ)==52, "imu.QuaternionZ");
 DCU_STATIC_ASSERT(offsetof(mc_imu_t,Temperature)==56, "imu.Temperature");
 DCU_STATIC_ASSERT(offsetof(mc_imu_t,Reserved0)==58, "imu.Reserved0");
 DCU_STATIC_ASSERT(offsetof(mc_imu_t,Reserved1)==60, "imu.Reserved1");
+typedef struct __attribute__((packed)) {
+    uint16_t CanId;
+    uint8_t Dlc;
+    uint8_t Valid;
+    uint8_t Data[8];
+} mc_classic_slot_t;
+DCU_STATIC_ASSERT(sizeof(mc_classic_slot_t)==12, "classic_slot size");
+DCU_STATIC_ASSERT(offsetof(mc_classic_slot_t,CanId)==0, "classic_slot.CanId");
+DCU_STATIC_ASSERT(offsetof(mc_classic_slot_t,Dlc)==2, "classic_slot.Dlc");
+DCU_STATIC_ASSERT(offsetof(mc_classic_slot_t,Valid)==3, "classic_slot.Valid");
+DCU_STATIC_ASSERT(offsetof(mc_classic_slot_t,Data)==4, "classic_slot.Data");
 typedef struct __attribute__((packed)) {
     uint32_t BatchSeq;
     uint8_t ValidMask;

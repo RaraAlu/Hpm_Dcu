@@ -16,7 +16,7 @@ struct MotorConfiguration {
     dcu_motor_protocol_t protocol{};
     bool neutral_mit_only{};
     const char *type{};
-    bool zero_mit_loopback{};
+    bool motion_parameters_pending{};
 };
 
 bool known_motor_model(dcu_motor_protocol_t protocol, const char *type) noexcept;

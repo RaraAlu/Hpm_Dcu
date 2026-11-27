@@ -2,6 +2,8 @@
 #define DCU_MOTOR_PDO_LAYOUT_HPP
 
 #include <cstdint>
+#include <type_traits>
+#include <dcu_profile_pdo.hpp>
 #include "encos_interface.h"
 #include "raw_can_pdo.h"
 #include "device_config.h"
@@ -10,6 +12,9 @@ namespace dcu::ethercat::pdo_layout {
 
 inline constexpr unsigned profile_count = 4, assignment_capacity = 40;
 inline constexpr uint16_t absent = UINT16_MAX;
+using MappedSideband = std::conditional_t<(dcu_profile_pdo::sideband_bus >= 0), mc_classic_slot_t, mc_sideband_t>;
+static_assert(sizeof(MappedSideband) == dcu_profile_pdo::rx1_blocks[dcu_profile_pdo::modes[1].rx.count - 1].bytes);
+static_assert(sizeof(MappedSideband) == dcu_profile_pdo::tx1_blocks[dcu_profile_pdo::modes[1].tx.count - 1].bytes);
 
 // Bits and CoE indices retain their physical identities; only the wire is dense.
 struct Layout {
@@ -50,7 +55,7 @@ struct Layout {
     {
         if (mode == 3) return sizeof(mc_raw_t);
         if (mode == 2) return (tx ? sizeof(mc_board_tx_t) : sizeof(mc_board_rx_t)) + count(buses) * sizeof(canfd_bus_pdo_t);
-        return sideband(tx) + (mode == 1 ? sizeof(mc_sideband_t) : 0U);
+        return sideband(tx) + (mode == 1 ? sizeof(MappedSideband) : 0U);
     }
 };
 

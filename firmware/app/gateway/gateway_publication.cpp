@@ -16,9 +16,6 @@ DCU_FAST_CODE void GatewayApplication::prepare_publication(Publication &snapshot
     snapshot.sequence = ++state_.publication_sequence;
     snapshot.accepted_cycle_sequence = state_.last_cycle;
     snapshot.cycle_sequence = state_.board_command.sequence;
-    snapshot.loopback_required = cyclic_.required & loopback_devices_;
-    snapshot.loopback_tx_complete = cyclic_.completed & snapshot.loopback_required;
-    snapshot.loopback_rx_matched = cyclic_.matched & snapshot.loopback_required;
     snapshot.board_status = state_.board_fault | (state_.config_ready ? 1 : 0) | (state_.operational ? 2 : 0) | (state_.owner == OWNER_SDO ? 128 : 0);
     snapshot.online_devices = snapshot.fault_devices = 0;
     snapshot.online_channels = snapshot.fault_channels = 0;
@@ -29,7 +26,12 @@ DCU_FAST_CODE void GatewayApplication::prepare_publication(Publication &snapshot
         const uint32_t compatibility_drops = raw_.rx_drops(c) + state_.legacy_rx_drop[c];
         uint32_t drops = dcu_can_rx_drops(c) + compatibility_drops;
         rx_drops_total += drops;
+        if (state_.channels[c].enabled) {
+            snapshot.board_status |= state_.bus_fault[c];
+            if (drops != state_.rx_fault_origin[c]) snapshot.board_status |= 16;
+        }
         ch->status = (state_.config_ready ? 1 : 0) | (channel_active(c) ? 2 : 0) | (dcu_can_bus_state(c) == 3 ? 4 : 0) | (drops ? 8 : 0) | (state_.channel_tx_drop[c] ? 16 : 0);
+        if (observer_ && observer_->bus == c) ch->status |= observer_->channel_status(now);
         ch->rx_drops = drops;
         ch->tx_drops = state_.channel_tx_drop[c];
         ch->role = state_.channels[c].role;
@@ -39,7 +41,6 @@ DCU_FAST_CODE void GatewayApplication::prepare_publication(Publication &snapshot
             auto &device = snapshot.devices[a];
             const auto status = devices_[a].read_feedback(now, state_.config.feedback_timeout_ms,
                                                           device.feedback, device.diagnostics);
-            device.cyclic_feedback_count = devices_[a].cyclic_feedback_count();
             devices_[a].acknowledge_publication();
             if (status.online) {
                 snapshot.online_devices |= 1u << a;
@@ -54,10 +55,6 @@ DCU_FAST_CODE void GatewayApplication::prepare_publication(Publication &snapshot
     }
     snapshot.rx_drops = rx_drops_total;
     snapshot.tx_drops = state_.tx_total;
-    if (rx_drops_total) {
-        state_.board_fault |= 16;
-        snapshot.board_status |= 16;
-    }
 }
 
 }

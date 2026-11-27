@@ -1,4 +1,5 @@
 #include "motor_ethercat.h"
+#include "head_health.hpp"
 #include "motor_dictionary.hpp"
 #include "motor_pdo_layout.hpp"
 #include "gateway_application.hpp"
@@ -21,8 +22,6 @@ namespace adapter = dcu::ethercat::motor_adapter;
 namespace {
 static_assert(pdo_layout::assignment_capacity == sizeof(TMC_ASSIGN::aEntries) / sizeof(uint16_t));
 constexpr uint16_t profile_update_index = 0x2100;
-constexpr uint16_t raw_switch_index = 0x2101;
-constexpr uint16_t topology_index = 0x2103;
 constexpr unsigned candidate_bytes = sizeof(mc_profile_update_t::Candidate);
 
 uint32_t load_le(const uint8_t *p, unsigned n)
@@ -129,7 +128,7 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         memcpy(data, &values[sub - 3], bytes);
         return 0;
     }
-    if (index == raw_switch_index) {
+    if (index == DCU_SDO_2101_PDO_LAYOUT) {
         if (sub < 3) return ABORTIDX_WRITE_ONLY_ENTRY;
         if (sub > 8) return ABORTIDX_SUBINDEX_NOT_EXISTING;
         if (bytes != (sub == 3 || sub == 6 ? 1u : 4u)) return ABORTIDX_PARAM_LENGTH_ERROR;
@@ -147,7 +146,7 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         memcpy(data, &value, bytes);
         return 0;
     }
-    if (index == topology_index) {
+    if (index == DCU_SDO_2103_PDO_TOPOLOGY) {
         if (sub == 1 || sub == 6) return ABORTIDX_WRITE_ONLY_ENTRY;
         if (sub > 5) return ABORTIDX_SUBINDEX_NOT_EXISTING;
         if (bytes != (sub == 5 ? 8U : 4U)) return ABORTIDX_PARAM_LENGTH_ERROR;
@@ -157,6 +156,11 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
         return 0;
     }
     // Project the immutable active Profile through existing read-only descriptors.
+    if (index == 0x2104) {
+        const auto &h = dcu::head::health(dcu_time_now_ms());
+        *object<mc_head_health_t>(index) = {static_cast<uint8_t>(h.monitoring), h.heartbeat_seen, h.offline,
+            h.feedback_seen, h.stale, h.device_errors, h.last_error[0], h.last_error[1], h.last_error[2], h.last_error[3]};
+    }
     if (index >= axis_object_base(0) && index < axis_object_base(ENCOS_AXIS_COUNT)) {
         const unsigned offset = index - axis_object_base(0);
         const auto *device = adapter::configured_device(offset / 16);
@@ -202,7 +206,13 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
     }
     return ABORTIDX_SUBINDEX_NOT_EXISTING;
 }
-UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 complete)
+namespace {
+struct WriteEntry {
+    mc_object_t *object;
+    const mc_field_t *field;
+};
+
+UINT8 validate_write(UINT16 index, UINT8 sub, UINT32 bytes, UINT8 complete, WriteEntry *entry = nullptr)
 {
     if (complete)
         return ABORTIDX_COMPLETE_ACCESS_NOT_SUPPORTED;
@@ -224,56 +234,77 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
     if (!(field->access & 2))
         return ABORTIDX_READ_ONLY_ENTRY;
     bool command = index >= 0x2200 && index <= 0x23B0, owner = index == 0x2003;
-    if (index != raw_switch_index && !command && !owner && !preop())
+    if (index != DCU_SDO_2101_PDO_LAYOUT && !command && !owner && !preop())
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     if (bytes != field->bytes) {
         if (index == profile_update_index && sub == 1)
             profile_update::discard();
         return ABORTIDX_PARAM_LENGTH_ERROR;
     }
-    if (index == topology_index) {
-        static_assert(sizeof(mc_topology_t::Selection) == 88);
-        const auto *p = reinterpret_cast<const uint8_t *>(data);
-        if (sub == 6) return motor_control_commit_topology(load_le(p, 4)) ? 0 : ABORTIDX_VALUE_EXCEEDED;
-        const auto active = readiness();
-        const uint64_t boot = uint64_t{load_le(p + 4, 4)} << 32 | load_le(p, 4);
-        const auto *identity = object<mc_layout_identity_t>(0x2102);
-        if (!boot || boot != active.boot_id || load_le(p + 8, 4) != active.revision ||
-            memcmp(p + 24, identity->Sha256, sizeof(identity->Sha256)) || memcmp(p + 56, active.digest, sizeof(active.digest)) ||
-            !adapter::stage_selection(load_le(p + 16, 4), load_le(p + 20, 4), load_le(p + 12, 4)))
-            return ABORTIDX_VALUE_EXCEEDED;
-        profile_update::discard();
+    if (entry) *entry = {o, field};
+    return 0;
+}
+}
+
+UINT8 dcu_pdo_topology_sdo_write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 complete)
+{
+    if (index != DCU_SDO_2103_PDO_TOPOLOGY) return ABORTIDX_UNSUPPORTED_ACCESS;
+    if (const auto error = validate_write(index, sub, bytes, complete)) return error;
+    static_assert(sizeof(mc_topology_t::Selection) == 88);
+    const auto *p = reinterpret_cast<const uint8_t *>(data);
+    if (sub == 6) return motor_control_commit_topology(load_le(p, 4)) ? 0 : ABORTIDX_VALUE_EXCEEDED;
+    if (sub != 1) return ABORTIDX_SUBINDEX_NOT_EXISTING;
+    const auto active = readiness();
+    const uint64_t boot = uint64_t{load_le(p + 4, 4)} << 32 | load_le(p, 4);
+    const auto *identity = object<mc_layout_identity_t>(0x2102);
+    if (!boot || boot != active.boot_id || load_le(p + 8, 4) != active.revision ||
+        memcmp(p + 24, identity->Sha256, sizeof(identity->Sha256)) || memcmp(p + 56, active.digest, sizeof(active.digest)) ||
+        !adapter::stage_selection(load_le(p + 16, 4), load_le(p + 20, 4), load_le(p + 12, 4)))
+        return ABORTIDX_VALUE_EXCEEDED;
+    profile_update::discard();
+    return 0;
+}
+
+UINT8 dcu_pdo_layout_sdo_write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 complete)
+{
+    if (index != DCU_SDO_2101_PDO_LAYOUT) return ABORTIDX_UNSUPPORTED_ACCESS;
+    if (const auto error = validate_write(index, sub, bytes, complete)) return error;
+    const auto *wire = reinterpret_cast<const uint8_t *>(data);
+    if (sub == 5) {
+        if (!preop()) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+        return set_pure_raw_limits(load_le(wire, 4)) ? 0 : ABORTIDX_VALUE_EXCEEDED;
+    }
+    if (sub == 6) {
+        if (!preop()) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+        return stage_raw_motor_owner(*wire) ? 0 : ABORTIDX_VALUE_EXCEEDED;
+    }
+    if (sub == 1) {
+        const auto al = nAlStatus & STATE_MASK;
+        if (al != STATE_OP && al != STATE_PREOP) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+        static_assert(sizeof(mc_raw_switch_t::LayoutRequest) == 9 + DCU_GATEWAY_DIGEST_BYTES);
+        uint8_t digest[DCU_GATEWAY_DIGEST_BYTES];
+        memcpy(digest, wire + 9, sizeof(digest));
+        if (!request_layout(static_cast<OperatingMode>(wire[0]), load_le(wire + 1, 4),
+                            load_le(wire + 5, 4), digest)) return ABORTIDX_VALUE_EXCEEDED;
+        motor_control_clear_raw_input();
         return 0;
     }
-    if (index == raw_switch_index) {
-        const auto *wire = reinterpret_cast<const uint8_t *>(data);
-        if (sub == 5) {
-            if (!preop()) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
-            return set_pure_raw_limits(load_le(wire, 4)) ? 0 : ABORTIDX_VALUE_EXCEEDED;
-        }
-        if (sub == 6) {
-            if (!preop()) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
-            return stage_raw_motor_owner(*wire) ? 0 : ABORTIDX_VALUE_EXCEEDED;
-        }
-        if (sub == 1) {
-            const auto al = nAlStatus & STATE_MASK;
-            if (al != STATE_OP && al != STATE_PREOP) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
-            static_assert(sizeof(mc_raw_switch_t::LayoutRequest) == 9 + DCU_GATEWAY_DIGEST_BYTES);
-            uint8_t digest[DCU_GATEWAY_DIGEST_BYTES];
-            memcpy(digest, wire + 9, sizeof(digest));
-            if (!request_layout(static_cast<OperatingMode>(wire[0]), load_le(wire + 1, 4),
-                                load_le(wire + 5, 4), digest)) return ABORTIDX_VALUE_EXCEEDED;
-            motor_control_clear_raw_input();
-            return 0;
-        }
-        if (*wire == 2) { // 主站报告 WKC 或会话故障。
-            motor_control_raw_link_lost();
-            return 0;
-        }
-        if (*wire != 1) return ABORTIDX_VALUE_EXCEEDED;
-        return (nAlStatus & STATE_MASK) == STATE_PREOP && reset_layout() ? 0 :
-            ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+    if (sub != 2) return ABORTIDX_SUBINDEX_NOT_EXISTING;
+    if (*wire == 2) { // 主站报告 WKC 或会话故障。
+        motor_control_raw_link_lost();
+        return 0;
     }
+    if (*wire != 1) return ABORTIDX_VALUE_EXCEEDED;
+    return (nAlStatus & STATE_MASK) == STATE_PREOP && reset_layout() ? 0 :
+        ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
+}
+
+UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 complete)
+{
+    if (index == DCU_SDO_2101_PDO_LAYOUT || index == DCU_SDO_2103_PDO_TOPOLOGY)
+        return ABORTIDX_UNSUPPORTED_ACCESS; // Reload records must never fall through to a dictionary write.
+    WriteEntry entry;
+    if (const auto error = validate_write(index, sub, bytes, complete, &entry)) return error;
     if (index == profile_update_index) {
         if (topology_pending()) return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
         if (sub == 1)
@@ -287,12 +318,12 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
         board->FeedbackTimeoutMs = policy.feedback_timeout_ms;
         return 0;
     }
-    if (owner && !owner_change_allowed())
+    if (index == 0x2003 && !owner_change_allowed())
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
     if (index >= 0x3007 && index <= 0x31B7 && (index - 0x3007) % 16 == 0 &&
         parameter_service_busy(((index - 0x3007) / 16) / ENCOS_MOTORS_PER_CHANNEL))
         return ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
-    memcpy(o->data + field->offset, data, bytes);
+    memcpy(entry.object->data + entry.field->offset, data, bytes);
     uint32_t now = dcu_time_now_ms();
     UINT8 result = 0;
     if (index == 0x2003) {
@@ -306,7 +337,7 @@ UINT8 MC_OD_Write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 com
             v->Result = accepted ? dcu::motor::RESULT_OK : dcu::motor::RESULT_STATE;
             if (!accepted) result = ABORTIDX_IN_THIS_STATE_DATA_CANNOT_BE_READ_OR_STORED;
         }
-    } else if (command && sub == 11) {
+    } else if (index >= 0x2200 && index <= 0x23B0 && sub == 11) {
         unsigned a = (index - 0x2200) / 16;
         adapter::commit_sdo_command(a, now);
     } else if (index >= 0x3000) {

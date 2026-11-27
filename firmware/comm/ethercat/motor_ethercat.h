@@ -15,6 +15,7 @@ void motor_control_operational(bool operational);
 void motor_control_discard_profile(void);
 void motor_control_cycle_fault(void);
 void motor_control_raw_link_lost(void);
+void motor_control_mailbox_stopped(void);
 void motor_control_output(const void *data);
 bool motor_control_preview_supported(void);
 void motor_control_preview(const void *data);
@@ -36,6 +37,13 @@ void motor_control_neutral_feedback_deadline(void);
 /* SSC-owned RAM storage, borrowed once before the worker starts. */
 void *dcu_ssc_txpdo_buffer(uint16_t *capacity);
 uint16_t dcu_ssc_station_address(void);
+
+enum { DCU_SDO_2101_PDO_LAYOUT = 0x2101, DCU_SDO_2103_PDO_TOPOLOGY = 0x2103 };
+typedef uint8_t dcu_sdo_write_fn(uint16_t index, uint8_t subindex, uint32_t bytes,
+                                 uint16_t *data, uint8_t complete);
+bool dcu_ssc_bind_sdo_write(uint16_t index, dcu_sdo_write_fn *write);
+dcu_sdo_write_fn dcu_pdo_layout_sdo_write;
+dcu_sdo_write_fn dcu_pdo_topology_sdo_write;
 
 uint8_t MC_AssignWrite(uint16_t index, uint8_t subindex, uint32_t bytes,
                        uint16_t *data, uint8_t complete);

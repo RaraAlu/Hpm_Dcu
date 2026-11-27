@@ -36,17 +36,19 @@ bool known_motor_model(dcu_motor_protocol_t protocol, const char *type) noexcept
 
 bool validate_motor_configuration(const MotorConfiguration &config, uint8_t format) noexcept
 {
+    if (config.motion_parameters_pending && (config.neutral_mit_only ||
+        config.model_profile_id || format != 1 || !known_motor_model(config.protocol, config.type))) return false;
     switch (config.protocol) {
     case DCU_MOTOR_PROTOCOL_BJCX:
-        return !config.zero_mit_loopback && known_motor_model(config.protocol, config.type) &&
+        return known_motor_model(config.protocol, config.type) &&
             config.model_profile_id == 0 && format == 1 && !config.power_query_period_ms &&
             BjcxMotorDriver::validate(config.route.can_id, config.status_poll_period_ms,
                                       config.status_reply_timeout_ms, config.neutral_mit_only);
     case DCU_MOTOR_PROTOCOL_ENCOS:
+        if (config.motion_parameters_pending)
+            return config.route.can_id >= 1 && config.route.can_id <= 8 && !config.status_poll_period_ms &&
+                   !config.status_reply_timeout_ms && !config.power_query_period_ms;
         return config.model_profile_id == encos_config::coe_encoding_id && !config.neutral_mit_only &&
-            (!config.zero_mit_loopback || (config.type && format == 1 &&
-             config.route.position_min_urad <= 0 && config.route.position_max_urad >= 0 &&
-             config.encos.profile.kp[0] == 0 && config.encos.profile.kd[0] == 0)) &&
             !config.status_poll_period_ms && !config.status_reply_timeout_ms &&
             (!config.power_query_period_ms || (config.power_query_period_ms >= 20 && config.power_query_period_ms <= 1000)) &&
             matches_encos_model(config, format) && EncosMotorDriver::validate(config.route, config.encos, format);
@@ -66,7 +68,8 @@ MotorSessionDriver *configure_motor_driver(unsigned device, const MotorConfigura
                                 config.status_reply_timeout_ms, config.neutral_mit_only) ? &driver : nullptr;
     }
     auto &driver = encos_drivers[device];
-    if (!driver.configure(config.route, config.encos, format, config.zero_mit_loopback)) return nullptr;
+    if (config.motion_parameters_pending) driver.configure_queries(config.route);
+    else if (!driver.configure(config.route, config.encos, format)) return nullptr;
     driver.bind_session(device, config.bus, format, config.power_query_period_ms);
     return &driver;
 }

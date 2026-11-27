@@ -26,12 +26,12 @@ struct PublicationState {
     uint8_t *raw_tx;
     pdo_layout::Layout wire;
     uint32_t raw_batch;
-    uint8_t round_robin, diagnostic_page, slot_count, layout;
-    bool motor_layout, diagnostic_layout;
+    uint8_t round_robin, slot_count, layout;
+    bool motor_layout;
     mc_board_tx_t *board;
     ChannelSlot channels[ENCOS_CHANNEL_COUNT];
     MotorSlot slots[ENCOS_AXIS_COUNT];
-    mc_sideband_t *raw;
+    pdo_layout::MappedSideband *raw;
     mc_raw_t *single_fd;
     uint8_t slave_match;
     app::gateway_application::Publication snapshot;

@@ -7,7 +7,7 @@ bool GatewayApplication::select_mode(OperatingMode mode)
 {
     if (mode > OperatingMode::SingleFd) return false;
     // 上电默认值只选择一次；后续换档只能由 PREOP 映射提交。
-    if (layout_.selected || layout_.started || layout_.switching || layout_.state == RawState::Faulted)
+    if (layout_.selected || layout_.started || layout_.switching() || raw_state() == RawState::Faulted)
         return mode == state_.mode;
     if (state_.operational) return false;
     if (device_count_ && raw_only(mode)) clear_layout_business();
@@ -56,8 +56,8 @@ bool GatewayApplication::raw_motor_bus_idle(uint8_t buses) const
 
 bool GatewayApplication::stage_raw_motor_owner(uint8_t buses)
 {
-    if (!state_.config_ready || !preop_access_allowed() || !layout_.switching ||
-        layout_.target != OperatingMode::SingleFd || layout_.state != RawState::Requested ||
+    if (!state_.config_ready || !preop_access_allowed() ||
+        layout_.target != OperatingMode::SingleFd || raw_state() != RawState::Requested ||
         !raw_motor_bus_idle(buses)) return false;
     layout_.pending_motor_owner = buses;
     return true;
@@ -113,39 +113,36 @@ bool GatewayApplication::begin_layout(OperatingMode target, uint32_t profile, ui
                                       const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES], bool topology)
 {
     const auto active = readiness();
-    const bool recovering = layout_.state == RawState::Faulted;
+    const auto next = next_layout(topology ? PDO_SDO_2103_01_SELECT : PDO_SDO_2101_01_REQUEST);
     if (target > OperatingMode::SingleFd || (raw_only(target) && device_count_ && state_.operational) ||
-        layout_.switching || (layout_.topology && !topology) ||
-        (recovering && (!layout_.reset || state_.operational)) || !active.boot_id ||
+        next == PDO_REFUSED || !active.boot_id ||
         !profile || profile != active.profile_id || revision != active.revision ||
         std::memcmp(active.digest, digest, sizeof(digest))) return false;
     layout_.target = target;
+    if (observer_) observer_->stop();
     layout_.pending_motor_owner = 0;
-    layout_.switching = true;
-    layout_.reset = recovering;
+    layout_.phase = next;
     layout_.session = active.session_id;
     layout_.revision = revision;
     layout_.drain_ms = dcu_time_now_ms();
     layout_.baseline = raw_drops();
     raw_.discard_frames();
     layout_.topology = topology;
-    if (topology) clear_layout_business();
-    layout_.state = drain_layout() ? RawState::Requested : RawState::Draining;
+    if (topology) {
+        for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c)
+            layout_.topology_request_rx[c] = channel_losses(c);
+        clear_layout_business();
+    }
+    if (drain_layout()) layout_.phase = next_layout(PDO_CAN_DRAINED);
     return true;
 }
 
 bool GatewayApplication::reset_layout()
 {
-    if (state_.operational || (layout_.state != RawState::Requested && layout_.state != RawState::Faulted) ||
-        !drain_layout()) return false;
-    if (layout_.state == RawState::Faulted) {
-        // 复位不恢复旧授权；主站还要提交当前 Profile 的摘要及目标布局。
-        layout_.reset = true;
-        return true;
-    }
-    if (!layout_.switching || layout_.state != RawState::Requested) return false;
-    layout_.reset = true;
-    layout_.baseline = raw_drops();
+    const auto next = next_layout(PDO_SDO_2101_02_CONFIRM);
+    if (next == PDO_REFUSED || !drain_layout()) return false;
+    if (raw_state() == RawState::Requested) layout_.baseline = raw_drops();
+    layout_.phase = next;
     return true;
 }
 
@@ -156,36 +153,29 @@ bool GatewayApplication::map_layout(OperatingMode mode)
 
 bool GatewayApplication::finish_layout(OperatingMode mode, bool topology)
 {
-    if (state_.operational || mode > OperatingMode::SingleFd || topology != layout_.topology)
-        return false;
-    if (layout_.switching) {
-        if (layout_.state != RawState::Requested || !layout_.reset || mode != layout_.target ||
+    if (mode > OperatingMode::SingleFd) return false;
+    const auto next = next_layout(topology ? PDO_SDO_2103_06_COMMIT : PDO_PREOP_MAPPING, mode);
+    if (next == PDO_REFUSED) return false;
+    if (layout_.switching()) {
+        if (mode != layout_.target ||
             readiness().revision != layout_.revision || !drain_layout() ||
             !raw_motor_bus_idle(layout_.pending_motor_owner)) return false;
     } else {
         if (mode != state_.mode) return false;
         // 故障不妨碍电机用原布局重新上线，也不解除透传闭锁。
-        if (layout_.state == RawState::Faulted) return true;
+        if (raw_state() == RawState::Faulted) return true;
     }
     if (mode != state_.mode) {
         checkpoint_raw_losses();
         if (raw_only(mode) || raw_only(state_.mode)) clear_layout_business();
     }
     state_.mode = mode;
-    if (layout_.switching) layout_.motor_owner = layout_.pending_motor_owner;
+    if (layout_.switching()) layout_.motor_owner = layout_.pending_motor_owner;
     layout_.pending_motor_owner = 0;
     layout_.selected = true;
-    layout_.switching = false;
     layout_.topology = false;
-    layout_.state = mode == OperatingMode::Motor ? RawState::Disabled : RawState::Armed;
+    layout_.phase = next;
     return true;
-}
-
-void GatewayApplication::activate_layout()
-{
-    layout_.state = RawState::Active;
-    layout_.session = readiness().session_id;
-    layout_.baseline = raw_drops();
 }
 
 uint32_t GatewayApplication::raw_drops() const
@@ -224,28 +214,34 @@ void GatewayApplication::reject_raw(const CycleCommand &candidate)
 
 void GatewayApplication::advance_layout(uint32_t now)
 {
-    if (layout_.state == RawState::Draining) {
-        if (now - layout_.drain_ms >= state_.config.feedback_timeout_ms) layout_fault();
-        else if (drain_layout()) layout_.state = RawState::Requested;
+    if (raw_state() == RawState::Draining) {
+        if (now - layout_.drain_ms >= state_.config.feedback_timeout_ms) layout_fault(PDO_DRAIN_TIMEOUT);
+        else if (drain_layout()) layout_.phase = next_layout(PDO_CAN_DRAINED);
+    } else if (layout_.topology && layout_.switching()) {
+        // The host may spend many mailbox cycles assigning the new PDOs.
+        // Passive CAN producers keep sending while all business is suspended.
+        (void)drain_layout();
     }
-    if (layout_.topology && layout_.state == RawState::Requested && now - layout_.drain_ms >= 60000U)
-        layout_fault();
-    if ((layout_.state == RawState::Active || layout_.switching) &&
+    if (layout_.topology && raw_state() == RawState::Requested && now - layout_.drain_ms >= 60000U)
+        layout_fault(PDO_TOPOLOGY_TIMEOUT);
+    if ((layout_.phase == PDO_ACTIVE || layout_.switching()) &&
         raw_drops() - layout_.baseline > config::raw_can::drop_limit)
-        layout_fault();
+        layout_fault(PDO_DROP_LIMIT);
 }
 
-void GatewayApplication::layout_fault()
+void GatewayApplication::layout_fault(dcu_layout_event_t cause)
 {
-    layout_.reset = false;
+    const auto next = next_layout(cause, state_.mode);
+    if (next != PDO_FAULTED && next != PDO_DISABLED) return;
+    if (observer_) observer_->stop();
     layout_.motor_owner = layout_.pending_motor_owner = 0;
-    if (layout_.state == RawState::Disabled || layout_.state == RawState::Faulted) return;
-    layout_.state = RawState::Faulted;
-    layout_.switching = false;
+    const bool discard = raw_state() != RawState::Disabled && raw_state() != RawState::Faulted;
+    layout_.phase = next;
+    if (!discard) return;
     raw_.discard_frames();
     drain_raw();
 }
 
 bool GatewayApplication::take_raw_frame(unsigned bus, dcu_can_frame_t &frame)
-{ return layout_.state == RawState::Active && raw_.take(bus, frame); }
+{ return layout_.phase == PDO_ACTIVE && raw_.take(bus, frame); }
 }

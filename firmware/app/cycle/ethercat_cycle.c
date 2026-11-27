@@ -662,14 +662,11 @@ static void preview_ready_sm2(void)
     if (index < PDO_PIPELINE_SLOT_COUNT) motor_control_preview(image);
 }
 
-void dcu_cycle_step(void)
+dcu_cycle_work_t dcu_cycle_service_pdo_can(uint32_t start)
 {
-    uint32_t start = dcu_time_now_us();
-    uint32_t ticks;
-    uint32_t duration;
     if (raw_pdo.configured) {
         raw_pdo_step();
-        goto ssc;
+        return DCU_CYCLE_ALLOW_SSC;
     }
     const bool sm2 = read_handoff(&handoff.sm2_cycles);
     const uint32_t current_epoch = read_handoff(&pipeline.epoch);
@@ -680,8 +677,8 @@ void dcu_cycle_step(void)
             pdo_pipeline_update_cyclic(&pipeline, current_epoch, motor_control_cyclic_feedback_missing());
             publish_due();
         }
-        if (runtime.outputs_running && !read_handoff(&pipeline.published)) goto finish;
-        goto ssc;
+        if (runtime.outputs_running && !read_handoff(&pipeline.published)) return DCU_CYCLE_WAIT_CAN_FEEDBACK;
+        return DCU_CYCLE_ALLOW_SSC;
     }
     if (runtime.outputs_running && !cycle_configuration_matches())
         pdo_pipeline_fault(&pipeline, PDO_PIPELINE_CONFIG_CHANGED);
@@ -749,11 +746,15 @@ void dcu_cycle_step(void)
     }
     publish_due();
     if (!sm2 && runtime.outputs_running && read_handoff(&pipeline.cyclic_active) &&
-        read_handoff(&pipeline.cyclic_epoch) == read_handoff(&pipeline.epoch) && !read_handoff(&pipeline.published)) goto finish;
+        read_handoff(&pipeline.cyclic_epoch) == read_handoff(&pipeline.epoch) && !read_handoff(&pipeline.published))
+        return DCU_CYCLE_WAIT_CAN_FEEDBACK;
+    return DCU_CYCLE_ALLOW_SSC;
+}
 
-ssc:
+void dcu_cycle_service_ethercat_al(void)
+{
     if (!raw_pdo.configured) preview_ready_sm2();
-    ticks = take(&handoff.timer_pending);
+    uint32_t ticks = take(&handoff.timer_pending);
     if (ticks > DCU_MAX_DEFERRED_SSC_TICKS) {
         if (runtime.outputs_running && !raw_pdo.configured)
             pdo_pipeline_fault(&pipeline, PDO_PIPELINE_SYNC_LOST);
@@ -775,8 +776,11 @@ ssc:
 #endif
     }
     if (!raw_pdo.configured) (void)check_faults(dcu_time_now_us());
-finish:
-    duration = dcu_time_now_us() - start;
+}
+
+void dcu_cycle_record_worker_duration(uint32_t start_us)
+{
+    uint32_t duration = dcu_time_now_us() - start_us;
     if (duration > cycle_diagnostics.worker_max_us)
         cycle_diagnostics.worker_max_us = duration;
 }

@@ -19,6 +19,37 @@ def bounded(value, low, high, name):
     return value
 
 
+def validate_sideband(channel):
+    spec = channel["cyclic_sideband"]
+    fields = {"period_us", "slots", "frames", "service_frames"}
+    if type(spec) is dict and "ustc_head_v2" in spec:
+        fields.add("ustc_head_v2")
+        health = spec["ustc_head_v2"]
+        keys(health, {"heartbeat_timeout_ms", "feedback_periods"}, "ustc_head_v2")
+        bounded(health["heartbeat_timeout_ms"], 4001, 60000, "heartbeat_timeout_ms")
+        bounded(health["feedback_periods"], 1, 100, "feedback_periods")
+    keys(spec, fields, "cyclic_sideband")
+    require(spec["period_us"] == 2000, "cyclic_sideband requires a 2 ms PDO cycle")
+    require(channel["mode"] == "classic" and channel.get("raw_rate_limit") == 1,
+            "cyclic_sideband requires a dedicated classic CAN channel with one frame per window")
+    slots, frames, service = spec["slots"], spec["frames"], spec["service_frames"]
+    require(type(slots) is list and len(slots) == 10, "cyclic_sideband requires ten 2 ms slots")
+    for name in slots:
+        identifier(name, "slot name")
+    targets = [name for name in slots if name != "idle"]
+    require(len(set(targets)) == len(targets), "duplicate cyclic sideband slot name")
+    require(type(frames) is dict and frames and set(frames) <= set(targets),
+            "sideband frames must bind named non-idle slots")
+    require(type(service) is list, "service_frames: expected list")
+    ids = set()
+    for frame in [*frames.values(), *service]:
+        keys(frame, {"can_id", "dlc"}, "classic sideband frame")
+        can_id = bounded(frame["can_id"], 0, 0x7fe, "sideband.can_id (0x7ff is a protected broadcast)")
+        bounded(frame["dlc"], 0, 8, "sideband.dlc")
+        require(can_id not in ids, "duplicate sideband CAN ID")
+        ids.add(can_id)
+
+
 def pair(value, name, *, minimum=-32768, maximum=32767, crosses_zero=True):
     require(type(value) is list and len(value) == 2, f"{name}: expected [min, max]")
     low, high = (bounded(part, minimum, maximum, name) for part in value)
@@ -48,11 +79,14 @@ def device_line(device, channels, names, can_ids, slots, bindings):
     protocol = device.get("protocol") if isinstance(device, dict) else None
     require(protocol in ("encos", "bjcx"), "device: unsupported protocol")
     neutral_mit = protocol == "bjcx" and "neutral_mit_only" in device
-    if protocol == "encos":
+    pending = "motion_parameters" in device
+    if pending:
+        require(device["motion_parameters"] == "pending", "motion_parameters: expected pending")
+        fields = {"type", "motion_parameters"}
+        if protocol == "bjcx":
+            fields.update(("status_poll_period_ms", "status_reply_timeout_ms"))
+    elif protocol == "encos":
         fields = {"limits", "encoding", "power_query_period_ms", "type"}
-        if "zero_mit_loopback" in device:
-            require(device["zero_mit_loopback"] is True, "zero_mit_loopback: expected true")
-            fields.add("zero_mit_loopback")
     elif neutral_mit:
         fields = {"type", "neutral_mit_only", "neutral_mit_frame_limit"}
     else:
@@ -70,6 +104,12 @@ def device_line(device, channels, names, can_ids, slots, bindings):
     slot = slots.get(bus, 0)
     require(slot < 7, f"bus {bus}: too many devices for the fixed PDO slots")
     slots[bus] = slot + 1
+    unused_encos = "{ {{0}, {0}, {0}, {0}, {0}, {0}, 0}, 0, 0 }"
+    if pending and protocol == "encos":
+        require(channels[bus], f"{name}: ENCOS requires CAN FD+BRS")
+        model = model_binding(bindings, name, protocol, device["type"])
+        return [f'    {{ "{name}", {bus}U, {can_id}U, 0U, 0U, 0, 0, 0U, 0U, 0U, {unused_encos}, 0U, 0U,',
+                f"      DCU_MOTOR_PROTOCOL_ENCOS, {model}->part_number.data(), false, 0U, true }},"]
     if protocol == "bjcx":
         require(channels[bus], f"{name}: bjcx requires CAN FD+BRS at 1000/5000 kbps")
         model = model_binding(bindings, name, protocol, device["type"])
@@ -81,10 +121,9 @@ def device_line(device, channels, names, can_ids, slots, bindings):
         else:
             timeout = bounded(device["status_reply_timeout_ms"], 2, 20, "status_reply_timeout_ms")
             period = bounded(device["status_poll_period_ms"], 2 * timeout, 1000, "status_poll_period_ms")
-        unused_encos = "{ {{0}, {0}, {0}, {0}, {0}, {0}, 0}, 0, 0 }"
         return [f'    {{ "{name}", {bus}U, {can_id}U, 0U, 0U,',
                 f'      0, 0, 0U, 0U, 0U, {unused_encos}, {period}U, {timeout}U,',
-                f"      DCU_MOTOR_PROTOCOL_BJCX, {model}->part_number.data(), {str(neutral_mit).lower()}, {frame_limit}U, false }},"]
+                f"      DCU_MOTOR_PROTOCOL_BJCX, {model}->part_number.data(), {str(neutral_mit).lower()}, {frame_limit}U, {str(pending).lower()} }},"]
 
     require(channels[bus], f"{name}: named ENCOS encoding requires CAN FD+BRS")
     power = bounded(device["power_query_period_ms"], 0, 1000, "power_query_period_ms")
@@ -98,10 +137,6 @@ def device_line(device, channels, names, can_ids, slots, bindings):
     pos = pair(encoding["position_mrad"], "encoding.position_mrad", minimum=-327680, maximum=327670)
     p_min, p_max = pair(limits["position_mrad"], "limits.position_mrad",
                         minimum=pos[0], maximum=pos[1], crosses_zero=False)
-    loopback = device.get("zero_mit_loopback", False)
-    if loopback:
-        require(kp[0] == kd[0] == 0 and p_min <= 0 <= p_max,
-                f"{name}: zero MIT must be encodable and within command limits")
     require(pos[0] <= p_min < p_max <= pos[1], f"{name}: position limits exceed the encoding range")
     model = model_binding(bindings, name, protocol, device["type"], require_mit=True)
     v_max, t_max, i_max = 327670, 3276700, 32767  # Model-specific bounds are checked at initialization.
@@ -118,7 +153,7 @@ def device_line(device, channels, names, can_ids, slots, bindings):
         f'    {{ "{name}", {bus}U, {can_id}U, dcu::motor::encos_config::coe_encoding_id, {power}U,',
         f"      {p_min * 1000}, {p_max * 1000}, {v_lim * 1000}U, {t_lim}U, {i_lim}U,",
         f"      {{ {{ {ranges}, {kt} }}, {timeout}U, {int(channels[bus])}U }}, 0U, 0U,",
-        f"      DCU_MOTOR_PROTOCOL_ENCOS, {model_type}, false, 0U, {str(loopback).lower()} }},",
+        f"      DCU_MOTOR_PROTOCOL_ENCOS, {model_type}, false, 0U, false }},",
     ]
 
 
@@ -144,6 +179,7 @@ def header(profile):
     channels = profile["channels"]
     require(type(channels) is list and 1 <= len(channels) <= 4, "channels: expected one to four entries")
     seen = {}
+    sideband_bus = None
     raw_limits = [0] * 4
     preamble = ["/* Generated by generate_can_profile.py; do not edit. */",
                 "#ifndef DCU_CAN_PROFILE_GENERATED_H", "#define DCU_CAN_PROFILE_GENERATED_H",
@@ -162,6 +198,8 @@ def header(profile):
             fields.add("timestamp_eof")
         if type(channel) is dict and "raw_rate_limit" in channel:
             fields.add("raw_rate_limit")
+        if type(channel) is dict and "cyclic_sideband" in channel:
+            fields.add("cyclic_sideband")
         keys(channel, fields, "channel")
         bus = channel["bus"]
         uint(bus, 2, "channel.bus")
@@ -169,6 +207,10 @@ def header(profile):
         seen[bus] = fd
         raw_limits[bus] = bounded(channel.get("raw_rate_limit", 0), 0, 8, "raw_rate_limit")
         require(channel["mode"] in ("classic", "fd"), "channel.mode: expected classic or fd")
+        if "cyclic_sideband" in channel:
+            require(sideband_bus is None, "only one channel can own the scheduled PDO tail")
+            validate_sideband(channel)
+            sideband_bus = bus
         nominal = channel["nominal_bitrate_kbps"]
         data = channel["data_bitrate_kbps"] if fd else 0
         timestamp_eof = channel.get("timestamp_eof", False)
@@ -181,17 +223,17 @@ def header(profile):
         lines.append(f"    {{ {bus}U, {nominal * 1000}U, {data * 1000}U, "
                      f"{str(fd).lower()}, {str(timestamp_eof).lower()} }},")
     lines.append("};")
+    if sideband_bus is not None:
+        require(all(bus == sideband_bus or not limit for bus, limit in enumerate(raw_limits)),
+                "scheduled PDO tail cannot be shared with another raw channel")
     devices = profile["devices"]
     require(type(devices) is list and len(devices) <= 28, "devices: expected a list of up to 28 entries")
     names, can_ids, slots = set(), set(), {}
     if devices:
-        require(not any(raw_limits), "raw-only Profile must not configure motors")
         lines.append("static constexpr dcu_motor_device_profile_t dcu_profile_devices[] = {")
         for device in devices:
             lines.extend(device_line(device, seen, names, can_ids, slots, bindings))
-            if device.get("zero_mit_loopback"):
-                require(any(ch["bus"] == device["bus"] and ch.get("timestamp_eof") for ch in channels),
-                        "zero MIT loopback requires EOF timestamps")
+            require(not raw_limits[device["bus"]], "a motor and a raw quota cannot share a CAN bus")
         neutral_buses = {device["bus"] for device in devices if device.get("neutral_mit_only")}
         require(not neutral_buses or (len(neutral_buses) == 1 and any(
             ch["bus"] in neutral_buses and ch.get("timestamp_eof") for ch in channels)),

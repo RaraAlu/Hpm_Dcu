@@ -451,9 +451,11 @@ def sii(xml, settings):
             encoded += struct.pack('<HBBBBH', number(pdo.findtext('Index')), len(entries),
                                    number(pdo.get('Sm', '255')), 0, 0, 0)
             for entry in entries:
+                datatype = entry.findtext('DataType')
+                code = 0x0A if datatype.startswith('OCTET_STRING(') else codes[datatype]
                 encoded += struct.pack('<HBBBBH', number(entry.findtext('Index')),
                                        number(entry.findtext('SubIndex')), 0,
-                                       codes[entry.findtext('DataType')], number(entry.findtext('BitLen')), 0)
+                                       code, number(entry.findtext('BitLen')), 0)
         if assigned_bits != 8 * number(sms[sm].get('DefaultSize')):
             raise ValueError('PDO entries disagree with the default SyncManager length')
         return encoded
@@ -485,7 +487,7 @@ def cyclic_contract(schema, pdos, profile):
         slot = bus * 7 + counts[bus]
         counts[bus] += 1
         axes[slot] = {k: d[k] for k in ('id', 'protocol', 'type', 'model_profile_id', 'bus', 'can_id',
-                                          'neutral_mit_only', 'zero_mit_loopback') if k in d}
+                                          'neutral_mit_only', 'motion_parameters') if k in d}
     modes = []
     for mode, family in enumerate(schema['profiles']):
         image = {}
@@ -501,7 +503,7 @@ def cyclic_contract(schema, pdos, profile):
                 if 0x20 <= ordinal < 0x3C:
                     device = axes.get(ordinal - 0x20)
                     if not device or (not tx and device['protocol'] == 'bjcx' and
-                                      not device.get('neutral_mit_only')): continue
+                                      not device.get('neutral_mit_only') and not device.get('motion_parameters')): continue
                 if tx and ordinal == 0x40: continue  # No production IMU driver or Profile binding.
                 offset = length
                 for sub, field in enumerate(p['fields'], 1):
@@ -515,6 +517,9 @@ def cyclic_contract(schema, pdos, profile):
         modes.append(image)
     result = dict(version=schema['constants']['MC_INTERFACE_VERSION'], channels=buses,
                   axes=[dict(slot=k, **axes[k]) for k in sorted(axes)], modes=modes)
+    for channel in profile['channels']:
+        if 'cyclic_sideband' in channel:
+            result['cyclic_sideband'] = dict(bus=channel['bus'], **channel['cyclic_sideband'])
     result['sha256'] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     result['profile_id'] = profile['startup']['profile_id']
     result['profile_revision'] = profile['startup']['revision']
@@ -523,13 +528,13 @@ def cyclic_contract(schema, pdos, profile):
 
 
 def rk_header(contract):
-    loopback_mask = sum(1 << a['slot'] for a in contract['axes'] if a.get('zero_mit_loopback'))
-    lines = [BANNER, '#ifndef DCU_PROFILE_PDO_HPP', '#define DCU_PROFILE_PDO_HPP', '#include <cstdint>',
+    pending_mask = sum(1 << a['slot'] for a in contract['axes'] if a.get('motion_parameters') == 'pending')
+    lines = [BANNER, '#ifndef DCU_PROFILE_PDO_HPP', '#define DCU_PROFILE_PDO_HPP', '#include <array>', '#include <cstdint>',
              'namespace dcu_profile_pdo {',
              f"inline constexpr uint32_t interface_version = {contract['version']};",
              f"inline constexpr uint32_t profile_id = {contract['profile_id']}u, profile_revision = {contract['profile_revision']}u;",
              f"inline constexpr uint32_t channel_mask = {sum(1 << c for c in contract['channels'])}u, axis_mask = {sum(1 << a['slot'] for a in contract['axes'])}u;",
-             f"inline constexpr uint32_t zero_mit_loopback_mask = {loopback_mask}u;",
+             f"inline constexpr uint32_t motion_parameters_pending_mask = {pending_mask}u;",
              'struct Unit { const char *name; unsigned slot; };',
              'inline constexpr Unit units[] = {' +
              ''.join('{' + json.dumps(a['id']) + ',' + str(a['slot']) + '},' for a in contract['axes']) + '{nullptr,0}};',
@@ -540,6 +545,24 @@ def rk_header(contract):
              ','.join(str(v) for v in bytes.fromhex(contract['profile_sha256'])) + '};',
              'inline constexpr uint8_t digest[] = {' +
              ','.join(str(v) for v in bytes.fromhex(contract['sha256'])) + '};']
+    side = contract.get('cyclic_sideband', {})
+    slots, frames = side.get('slots', []), side.get('frames', {})
+    services = side.get('service_frames', [])
+    health = side.get('ustc_head_v2', {})
+    lines += ['struct SidebandFrame { uint16_t can_id; uint8_t dlc; };',
+              'struct SidebandSlot { const char *name; bool bound; SidebandFrame frame; };',
+              f"inline constexpr int sideband_bus = {side.get('bus', -1)};",
+              f"inline constexpr unsigned sideband_period_us = {side.get('period_us', 0)};",
+              f"inline constexpr unsigned head_heartbeat_timeout_ms = {health.get('heartbeat_timeout_ms', 0)};",
+              f"inline constexpr unsigned head_feedback_periods = {health.get('feedback_periods', 0)};",
+              f'inline constexpr std::array<SidebandSlot,{len(slots)}> sideband_slots = {{{{']
+    for name in slots:
+        frame = frames.get(name)
+        value = (f'true,{{0x{frame["can_id"]:03x},{frame["dlc"]}}}' if frame else 'false,{}')
+        lines.append(f'    {{"{name}",{value}}},')
+    lines += ['}};', f'inline constexpr std::array<SidebandFrame,{len(services)}> sideband_services = {{{{']
+    lines.extend(f'    {{0x{f["can_id"]:03x},{f["dlc"]}}},' for f in services)
+    lines += ['}};']
     rows = []
     for n, mode in enumerate(contract['modes']):
         images = []
@@ -564,6 +587,11 @@ def outputs(schema_path=HERE / 'cfg/接口定义.json', template_path=HERE / 'cf
     schema = json.loads(schema_path.read_text(encoding='utf-8'))
     profile = load_yaml(profile_path)
     validate_profile(profile)
+    if any('cyclic_sideband' in channel for channel in profile['channels']):
+        for family in schema['families']:
+            if 'cyclic_sideband_type' in family:
+                family['type'] = family['cyclic_sideband_type']
+                family['name'] = family['cyclic_sideband_name']
     objects, pdos = expand(schema)
     contract = cyclic_contract(schema, pdos, profile)
     default = contract['modes'][schema['default_profile']]

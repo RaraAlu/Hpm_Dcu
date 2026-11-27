@@ -4,8 +4,7 @@
 #include "motor_dictionary.hpp"
 #include "motor_adapter.hpp"
 #include "motor_pdo_codec.hpp"
-#include <dcu_profile_pdo.hpp>
-#include <dcu_loopback_evidence.hpp>
+#include <dcu_sideband.hpp>
 #include "motor_axis_codec.hpp"
 #include "pdo_pipeline.h"
 #include "can_transport.h"
@@ -54,14 +53,13 @@ void latch_layout(unsigned profile)
                 motor_pdo::store(publication.slots[i].tx, 0, empty);
         }
     } else if (profile == 1) {
-        memset(publication.raw_tx, 0, sizeof(mc_sideband_t));
+        memset(publication.raw_tx, 0, sizeof(*publication.raw));
     }
     publication.layout = profile;
     publication.motor_layout = motor;
-    publication.diagnostic_layout = false;
 }
 
-bool publish_board_and_channels()
+void publish_board_and_channels()
 {
     const auto &snapshot = publication.snapshot;
     const auto online = dcu::ethercat::motor_adapter::slots_for_devices(snapshot.online_devices);
@@ -71,7 +69,6 @@ bool publish_board_and_channels()
         snapshot.online_channels, snapshot.fault_channels, online, faults,
         snapshot.rx_drops, snapshot.tx_drops, 0};
     motor_pdo::write_board(publication.image, board);
-    bool motor_only = true;
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
         const auto &channel = snapshot.channels[c];
         const auto &slot = publication.channels[c];
@@ -82,15 +79,11 @@ bool publish_board_and_channels()
             static_cast<uint16_t>(channel.rx_drops > UINT16_MAX ? UINT16_MAX : channel.rx_drops),
             static_cast<uint16_t>(channel.tx_drops > UINT16_MAX ? UINT16_MAX : channel.tx_drops)};
         if (publication.motor_layout && slot.tx) motor_pdo::store(slot.tx, 0, mirror);
-        motor_only &= channel.role < 2;
     }
-    return motor_only;
 }
 
-void publish_axes(uint8_t *diagnostic)
+void publish_axes()
 {
-    dcu::loopback_evidence::Masks evidence{};
-    const auto &snap = publication.snapshot;
     for (unsigned i = 0; i < publication.slot_count; ++i) {
         const auto &slot = publication.slots[i];
         const auto &entry = publication.snapshot.devices[slot.device];
@@ -98,24 +91,6 @@ void publish_axes(uint8_t *diagnostic)
         mirror = dcu::ethercat::motor_axis_codec::feedback(entry.feedback);
         dcu::ethercat::motor_axis_codec::diagnostics(entry.diagnostics, *slot.diagnostics);
         if (publication.motor_layout) motor_pdo::store(slot.tx, 0, mirror);
-        if (diagnostic) {
-            const auto count = static_cast<uint8_t>(diagnostic[4] ? entry.cyclic_feedback_count :
-                                                                   entry.diagnostics.tx_complete_count);
-            diagnostic[5 + slot.slot] = publication.raw_tx[5 + slot.slot] = count;
-            const uint32_t device_bit = 1U << slot.device;
-            if (snap.loopback_required & device_bit) {
-                const uint32_t bit = 1U << slot.slot;
-                evidence.requested |= bit;
-                if (snap.loopback_tx_complete & device_bit) evidence.tx_complete |= bit;
-                if (snap.loopback_rx_matched & device_bit) evidence.rx_matched |= bit;
-            }
-        }
-    }
-    namespace eof = dcu::loopback_evidence;
-    static_assert(eof::offset == 5 + ENCOS_AXIS_COUNT && eof::offset + eof::size == sizeof(mc_sideband_t));
-    if (diagnostic && (evidence.requested || diagnostic[eof::offset])) {
-        eof::store(diagnostic, evidence);
-        memcpy(publication.raw_tx + eof::offset, diagnostic + eof::offset, eof::size);
     }
 }
 }
@@ -136,7 +111,7 @@ bool bind_publication(const dcu_production_profile_t &profile)
     publication.image = static_cast<uint8_t *>(dcu_ssc_txpdo_buffer(&capacity));
     if (!publication.image || capacity < pdo_layout::max_input_bytes) return false;
     publication.board = object<mc_board_tx_t>(0x6000);
-    publication.raw = object<mc_sideband_t>(0x6400);
+    publication.raw = object<layout::MappedSideband>(0x6400);
     publication.single_fd = object<mc_raw_t>(0x6401);
     if (!publication.board || !publication.raw || !publication.single_fd) return false;
     layout::Layout wire{};
@@ -150,7 +125,7 @@ bool bind_publication(const dcu_production_profile_t &profile)
         if (slot >= ENCOS_AXIS_COUNT || device.bus >= ENCOS_CHANNEL_COUNT || !(wire.buses & (1U << device.bus))) return false;
         const auto bit = 1U << slot;
         wire.feedback_axes |= bit;
-        if (device.protocol == DCU_MOTOR_PROTOCOL_ENCOS || device.neutral_mit_only)
+        if (device.protocol == DCU_MOTOR_PROTOCOL_ENCOS || device.neutral_mit_only || device.motion_parameters_pending)
             wire.command_axes |= bit;
     }
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
@@ -169,7 +144,7 @@ void select_publication(const layout::Layout &wire)
     publication.raw_tx = publication.image + wire.sideband(true);
     publication.slot_count = 0;
     publication.layout = pdo_layout::profile_count;
-    publication.motor_layout = publication.diagnostic_layout = false;
+    publication.motor_layout = false;
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
         auto &slot = publication.channels[c];
         slot = {object<mc_channel_tx_t>(0x6100 + c), object<canfd_bus_pdo_t>(0x6500 + c * 16),
@@ -193,6 +168,41 @@ void select_publication(const layout::Layout &wire)
         publication.slots[publication.slot_count++] = {
             feedback, diagnostics, publication.image + wire.axis(true, a), wire.axis(false, a),
             static_cast<uint8_t>(a), static_cast<uint8_t>(device)};
+    }
+}
+
+static inline void decode_sideband(const mc_classic_slot_t &wire, uint32_t cycle, app::RawCanBatch &batch)
+{
+    batch = {};
+    batch.sequence = cycle;
+    if (!wire.Valid) { batch.valid = true; return; }
+    if (wire.Valid != 1 || !dcu_profile_pdo::fits_classic_slot(wire.CanId, wire.Dlc)) return;
+    auto &slot = batch.slots[0];
+    slot.bus = static_cast<uint8_t>(dcu_profile_pdo::sideband_bus);
+    slot.frame.id = wire.CanId;
+    slot.frame.dlc = wire.Dlc;
+    std::memcpy(slot.frame.data, wire.Data, wire.Dlc);
+    batch.count = 1;
+    batch.valid = true;
+}
+
+static inline void decode_sideband(const mc_sideband_t &raw, uint32_t, app::RawCanBatch &batch)
+{
+    batch = {};
+    batch.sequence = raw.BatchSeq;
+    if ((raw.ValidMask & ~3u) || raw.SlotCount > 2 || raw.Flags || raw.DropCount ||
+        raw.Reserved || raw.Reserved1 || raw.Reserved2)
+        return;
+    batch.valid = true;
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!(raw.ValidMask & (1u << i))) continue;
+        const auto wire = sideband_slot(raw, i);
+        auto &slot = batch.slots[batch.count++];
+        slot.bus = wire.channel;
+        slot.frame.id = wire.id;
+        slot.frame.flags = wire.flags;
+        slot.frame.dlc = wire.dlc;
+        std::memcpy(slot.frame.data, wire.data, sizeof(wire.data));
     }
 }
 
@@ -249,27 +259,7 @@ void decode_cycle(const void *image, app::gateway_application::OperatingMode mod
         }
         command.board.unmapped_device_requested = (b.AxisEnableMask & ~publication.wire.command_axes) != 0;
         if (mode == app::gateway_application::OperatingMode::MotorWithRaw)
-            decode_raw_sideband(raw(image), command.raw[0]);
-    }
-}
-
-void decode_raw_sideband(const mc_sideband_t &raw, app::RawCanBatch &batch)
-{
-    batch = {};
-    batch.sequence = raw.BatchSeq;
-    if ((raw.ValidMask & ~3u) || raw.SlotCount > 2 || raw.Flags || raw.DropCount ||
-        raw.Reserved || raw.Reserved1 || raw.Reserved2)
-        return;
-    batch.valid = true;
-    for (unsigned i = 0; i < 2; ++i) {
-        if (!(raw.ValidMask & (1u << i))) continue;
-        const auto wire = sideband_slot(raw, i);
-        auto &slot = batch.slots[batch.count++];
-        slot.bus = wire.channel;
-        slot.frame.id = wire.id;
-        slot.frame.flags = wire.flags;
-        slot.frame.dlc = wire.dlc;
-        std::memcpy(slot.frame.data, wire.data, sizeof(wire.data));
+            decode_sideband(raw(image), b.CycleSeq, command.raw[0]);
     }
 }
 
@@ -408,7 +398,6 @@ void motor_control_clear_raw_input(void)
     } else if (publication.layout == 1) {
         *publication.raw = {};
         motor_pdo::store(publication.raw_tx, 0, *publication.raw);
-        publication.diagnostic_layout = false;
     } else if (publication.layout == 2) {
         for (const auto &slot : publication.channels) {
             if (!slot.raw_tx) continue;
@@ -416,6 +405,54 @@ void motor_control_clear_raw_input(void)
             motor_pdo::store(slot.raw_tx, 0, *slot.raw);
         }
     }
+}
+
+namespace {
+inline void publish_mixed(mc_classic_slot_t &slot, bool active)
+{
+    namespace gateway = dcu::app::gateway_application;
+    slot = {};
+    const auto bus = static_cast<unsigned>(dcu_profile_pdo::sideband_bus);
+    dcu_can_frame_t frame;
+    if (active && publication.wire.channel(true, bus) != pdo_layout::absent &&
+        gateway::take_raw_frame(bus, frame) &&
+        dcu_profile_pdo::fits_classic_slot(frame.id, frame.dlc, frame.flags)) {
+        slot.CanId = static_cast<uint16_t>(frame.id);
+        slot.Dlc = frame.dlc;
+        slot.Valid = 1;
+        memcpy(slot.Data, frame.data, slot.Dlc);
+    }
+    motor_pdo::store(publication.raw_tx, 0, slot);
+    publish_axes();
+}
+
+inline void publish_mixed(mc_sideband_t &raw, bool active)
+{
+    raw = {};
+    publish_axes();
+    if (active) {
+        raw.BatchSeq = ++publication.raw_batch;
+        raw.DropCount = publication.board->RxDropCount;
+        for (unsigned i = 0; i < 2; i++)
+            for (unsigned n = 0; n < ENCOS_CHANNEL_COUNT; n++) {
+                unsigned c = publication.round_robin;
+                publication.round_robin = (c + 1) % ENCOS_CHANNEL_COUNT;
+                dcu_can_frame_t f;
+                if (!dcu::app::gateway_application::take_raw_frame(c, f)) continue;
+                motor_pdo::SidebandSlot slot{};
+                slot.id = f.id;
+                slot.channel = c;
+                slot.flags = f.flags;
+                slot.dlc = f.dlc;
+                memcpy(slot.data, f.data, sizeof(slot.data));
+                motor_pdo::write_sideband_slot(raw, i, slot);
+                raw.ValidMask |= 1u << i;
+                raw.SlotCount++;
+                break;
+            }
+    }
+    motor_pdo::store(publication.raw_tx, 0, raw);
+}
 }
 
 DCU_FAST_CODE void motor_control_prepare_input(void)
@@ -448,27 +485,14 @@ DCU_FAST_CODE void motor_control_prepare_input(void)
     dcu::app::gateway_application::prepare_publication(snapshot);
     const unsigned profile = static_cast<unsigned>(snapshot.mode);
     latch_layout(profile);
-    const bool motor_only = publish_board_and_channels();
+    publish_board_and_channels();
     const bool raw_active = dcu::app::gateway_application::raw_state() == dcu::app::gateway_application::RawState::Active;
-    auto *raw = publication.raw;
-    uint8_t *diagnostic = nullptr;
-    if (!raw_active) motor_control_clear_raw_input();
-    if (profile == 1 && raw_active) {
-        if (motor_only) {
-            diagnostic = reinterpret_cast<uint8_t *>(raw);
-            if (!publication.diagnostic_layout) {
-                memset(raw, 0, sizeof(*raw));
-                memcpy(diagnostic, "T1R2", 4);
-                motor_pdo::store(publication.raw_tx, 0, *raw);
-                publication.diagnostic_layout = true;
-            }
-            diagnostic[4] = publication.raw_tx[4] = publication.diagnostic_page++ & 1u;
-        } else {
-            memset(raw, 0, sizeof(*raw));
-            publication.diagnostic_layout = false;
-        }
+    if (profile == 1) {
+        publish_mixed(*publication.raw, raw_active);
+        return;
     }
-    if (publication.motor_layout) publish_axes(diagnostic);
+    if (!raw_active) motor_control_clear_raw_input();
+    if (publication.motor_layout) publish_axes();
     if (profile == 2) {
         if (!raw_active) return;
         for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; c++) {
@@ -490,30 +514,6 @@ DCU_FAST_CODE void motor_control_prepare_input(void)
                 memcpy(raw->slot[i].data, f.data, sizeof(raw->slot[i].data));
             }
             motor_pdo::store(slot.raw_tx, 0, *raw);
-        }
-    } else {
-        if (profile == 1 && !motor_only && raw_active) {
-            raw->BatchSeq = ++publication.raw_batch;
-            raw->DropCount = publication.board->RxDropCount;
-            for (unsigned i = 0; i < 2; i++)
-                for (unsigned n = 0; n < ENCOS_CHANNEL_COUNT; n++) {
-                    unsigned c = publication.round_robin;
-                    publication.round_robin = (publication.round_robin + 1) % ENCOS_CHANNEL_COUNT;
-                    dcu_can_frame_t f;
-                    if (!dcu::app::gateway_application::take_raw_frame(c, f))
-                        continue;
-                    motor_pdo::SidebandSlot slot{};
-                    slot.id = f.id;
-                    slot.channel = c;
-                    slot.flags = f.flags;
-                    slot.dlc = f.dlc;
-                    memcpy(slot.data, f.data, sizeof(slot.data));
-                    motor_pdo::write_sideband_slot(*raw, i, slot);
-                    raw->ValidMask |= 1u << i;
-                    raw->SlotCount++;
-                    break;
-                }
-            motor_pdo::store(publication.raw_tx, 0, *raw);
         }
     }
 }

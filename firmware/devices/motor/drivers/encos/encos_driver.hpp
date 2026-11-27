@@ -12,8 +12,8 @@ public:
     static bool validate(const Routing &, const encos_settings_t &,
                          uint8_t frame_format) noexcept;
     bool configure(const Routing &, const encos_settings_t &,
-                   uint8_t frame_format, bool zero_mit_loopback = false) noexcept;
-    bool zero_mit_loopback() const override { return zero_mit_loopback_; }
+                   uint8_t frame_format) noexcept;
+    void configure_queries(const Routing &route) noexcept;
     const Capabilities &capabilities() const noexcept override { return capabilities_; }
     Result encode(const Command &, CanFrame &) const noexcept override;
     Result decode(const CanFrame &, Feedback &) const noexcept override;
@@ -33,7 +33,6 @@ private:
     Capabilities capabilities_{};
     detail::EncosSessionState queries_{};
     bool configured_{};
-    bool zero_mit_loopback_{};
 };
 
 }

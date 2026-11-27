@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SDK = ROOT / "third_party/hpm_sdk"
 GCC = ROOT / ".tools/hpm-gcc-13.2.0/bin"
 OPENOCD = ROOT / "scripts/openocd.sh"
-PRESETS = ("hpm-debug", "hpm-release", "hpm-release-five-axis")
+PRESETS = ("hpm-debug", "hpm-release")
 CONFIRMATION = "RESET_TARGET"
 
 
@@ -149,7 +149,15 @@ def tcl_quote(value):
     return '"' + value + '"'
 
 
-def transaction_script(elf, board, backup=None, flash=False, server=False, backup_before_reset=False):
+def transaction_script(elf, board, backup=None, flash=False, server=False, backup_before_reset=False,
+                       inspect_live=False):
+    if inspect_live:
+        if not server or flash or backup_before_reset:
+            raise ValueError("--inspect-live requires a non-programming debug server")
+        # Preserve a stalled hart and its trap context; the normal GDB attach hook resets it.
+        return "\n".join(["init", "poll", "halt", "reg pc", "reg mcause", "reg mepc", "reg mtval",
+                          f"verify_image {tcl_quote(elf)}", "hpm5e00.cpu0 configure -event gdb-attach {halt}",
+                          'echo "DCU_DEBUG_READY"', ""])
     if flash and backup is None:
         raise ValueError("A retained-data backup is mandatory before programming")
     if backup_before_reset and not flash:
@@ -213,7 +221,8 @@ def target_operation(args):
     backup = directory / "retained-eeprom.bin"
     script = directory / "transaction.cfg"
     script.write_text(transaction_script(snapshot, board, backup, flashing, args.action == "debug-server",
-                                         backup_before_reset=backup_before_reset))
+                                         backup_before_reset=backup_before_reset,
+                                         inspect_live=getattr(args, "inspect_live", False)))
     (directory / "image-check.json").write_text(json.dumps(report, indent=2) + "\n")
     environment = os.environ.copy()
     environment.update({
@@ -250,6 +259,8 @@ def main(argv=None):
                                      help="Halt and back up retained data before the first reset")
             if action == "debug-server":
                 command.add_argument("--flash-first", action="store_true", help="Program before starting the debug server")
+                command.add_argument("--inspect-live", action="store_true",
+                                     help="Halt without reset to inspect a live fault; motor power must be isolated")
     args = parser.parse_args(argv)
     try:
         if args.action == "bootstrap":

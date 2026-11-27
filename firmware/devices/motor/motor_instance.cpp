@@ -114,8 +114,7 @@ void MotorInstance::abort_neutral_mit(uint16_t fault)
 bool MotorInstance::query_ready(uint32_t now) const
 {
     return driver_ && driver_->query_ready(now) &&
-        (driver_->zero_mit_loopback() ||
-         within_magnitude(state_.feedback.sample.current_cA, int64_t{route_.current_limit_dA} * 10)) &&
+        within_magnitude(state_.feedback.sample.current_cA, int64_t{route_.current_limit_dA} * 10) &&
         !state_.feedback.sample.motor_fault && !state_.feedback.bridge_fault &&
         dcu_can_bus_state(bus_) != DCU_CAN_BUS_OFF;
 }
@@ -280,8 +279,7 @@ bool MotorInstance::consume_feedback(const CanFrame &frame, uint32_t stamp, uint
         x.feedback_ms = stamp;
         x.new_feedback = true;
         ++x.cyclic_feedback_count;
-        if (!driver_->zero_mit_loopback() &&
-            !within_magnitude(sample.current_cA, int64_t{route_.current_limit_dA} * 10)) stop(2);
+        if (!within_magnitude(sample.current_cA, int64_t{route_.current_limit_dA} * 10)) stop(2);
     } else {
         const auto result = driver_->observe(frame, stamp, now, active(), x.feedback.sample,
                                              history_.queried_position, history_.queried_velocity);

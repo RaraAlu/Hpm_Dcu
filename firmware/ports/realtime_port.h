@@ -21,7 +21,7 @@ void dcu_trace_neutral_consumed(uint32_t consumed_us);
 #endif
 bool dcu_tx_inhibited(void);
 bool dcu_cyclic_tx_window_current(uint32_t cutoff_us);
-void dcu_worker_wake_from_can_isr(void);
+void dcu_notify_ecat_can_from_isr(void);
 /* Caller serializes the one-shot with the CAN/gap IRQ threshold. */
 void dcu_can_arm_gap_at_us(uint32_t due_us);
 void dcu_tx_inhibit(void);

@@ -44,7 +44,8 @@ inline mc_channel_rx_t channel(const void *image, unsigned bus)
 { return load<mc_channel_rx_t>(image, layout::active().channel(false, bus)); }
 inline mc_axis_rx_t axis(const void *image, unsigned index)
 { return load<mc_axis_rx_t>(image, layout::active().axis(false, index)); }
-inline mc_sideband_t raw(const void *image) { return load<mc_sideband_t>(image, layout::active().sideband(false)); }
+inline layout::MappedSideband raw(const void *image)
+{ return load<layout::MappedSideband>(image, layout::active().sideband(false)); }
 inline canfd_bus_pdo_t raw_bus(const void *image, unsigned bus)
 { return load<canfd_bus_pdo_t>(image, layout::active().raw_bus(false, bus)); }
 inline SidebandSlot sideband_slot(const mc_sideband_t &raw, unsigned slot)
@@ -57,14 +58,12 @@ inline void write_channel(void *image, unsigned bus, const mc_channel_tx_t &valu
 { store(image, layout::active().channel(true, bus), value); }
 inline void write_axis(void *image, unsigned index, const mc_axis_tx_t &value)
 { store(image, layout::active().axis(true, index), value); }
-inline void write_raw(void *image, const mc_sideband_t &value) { store(image, layout::active().sideband(true), value); }
 inline void write_raw_bus(void *image, unsigned bus, const canfd_bus_pdo_t &value)
 { store(image, layout::active().raw_bus(true, bus), value); }
 
 unsigned mapping_indices(unsigned profile, bool input, uint16_t *indices);
 bool bind_publication(const dcu_production_profile_t &profile);
 void select_publication(const layout::Layout &wire);
-void decode_raw_sideband(const mc_sideband_t &raw, app::RawCanBatch &batch);
 void decode_raw_bus(const canfd_bus_pdo_t &raw, unsigned bus, app::RawCanBatch &batch);
 void decode_cycle(const void *image, app::gateway_application::OperatingMode mode,
                   app::gateway_application::CycleCommand &command);

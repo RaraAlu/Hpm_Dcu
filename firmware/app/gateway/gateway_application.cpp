@@ -42,6 +42,12 @@ bool newer(uint32_t a, uint32_t b)
     return d && d < 0x80000000u;
 }
 
+uint8_t initial_pure_raw_limit(unsigned bus, const ChannelConfiguration &channel)
+{
+    // The mixed PDO tail is not a grant to use the unrestricted pure-Raw layouts.
+    return static_cast<int>(bus) == dcu_profile_pdo::sideband_bus ? 0 : channel.raw_rate_limit;
+}
+
 motor::MotorConfiguration motor_configuration(const dcu_motor_device_profile_t &device)
 {
     motor::MotorConfiguration motor{};
@@ -55,7 +61,7 @@ motor::MotorConfiguration motor_configuration(const dcu_motor_device_profile_t &
     motor.status_reply_timeout_ms = device.status_reply_timeout_ms;
     motor.protocol = device.protocol;
     motor.neutral_mit_only = device.neutral_mit_only;
-    motor.zero_mit_loopback = device.zero_mit_loopback;
+    motor.motion_parameters_pending = device.motion_parameters_pending;
     motor.type = device.type;
     return motor;
 }
@@ -96,7 +102,7 @@ bool GatewayApplication::channel_active(unsigned c) const
 }
 bool GatewayApplication::command_permitted(uint32_t now) const
 {
-    return startup_.running() && state_.config_ready && state_.operational && state_.session_armed && state_.seen_cycle &&
+    return startup_.running() && state_.config_ready && state_.operational && state_.pdo_session == PDO_CYCLIC && state_.seen_cycle &&
         (state_.board_command.control_bits & 1) && !(state_.board_command.control_bits & 2) &&
         now - state_.last_command_ms < state_.board_command.lease_ms;
 }
@@ -111,7 +117,7 @@ void GatewayApplication::stop_all(uint16_t fault)
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; c++) {
         dcu_can_cancel(c);
     }
-    state_.session_armed = false;
+    state_.pdo_session = dcu_session_next(state_.pdo_session, PDO_REVOKE_SESSION, false);
 }
 
 void GatewayApplication::stop_neutral_run(bool fault)
@@ -255,7 +261,7 @@ void GatewayApplication::step_startup(uint32_t now)
     if (state_.operational && startup_.resume()) state_.owner = OWNER_PDO;
     uint64_t session_id;
     const auto after = startup_.current_state(&session_id);
-    if (state_.operational && (layout_.state == RawState::Active || layout_.switching) &&
+    if (state_.operational && (layout_.phase == PDO_ACTIVE || layout_.switching()) &&
         (session_id != layout_.session || after == DCU_GATEWAY_FAULT ||
          after == DCU_GATEWAY_HOLD || (before == DCU_GATEWAY_RUNNING && after != before)))
         layout_fault();
@@ -268,16 +274,23 @@ void GatewayApplication::step_startup(uint32_t now)
 void GatewayApplication::operational(bool op)
 {
     if (!op && state_.operational) {
+        if (observer_) observer_->stop();
         layout_.motor_owner = 0;
         // 计划内退 OP 不取消协商；其他退站视为旧透传会话终结。
-        if (!layout_.switching) layout_fault();
+        layout_fault(PDO_LEAVE_OP);
         raw_.discard_frames();
         startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, dcu_time_now_ms());
     } else if (op && !state_.operational) {
-        layout_.reset = false;
         layout_.running = false;
         layout_.started = true;
-        if (layout_.state == RawState::Armed) activate_layout();
+        const auto next = next_layout(PDO_ENTER_OP);
+        if (next == PDO_ACTIVE) {
+            layout_.session = readiness().session_id;
+            layout_.baseline = raw_drops();
+            if (observer_ && state_.mode == OperatingMode::MotorWithRaw && raw_channel(observer_->bus))
+                observer_->start(dcu_time_now_ms());
+        }
+        if (next != PDO_REFUSED) layout_.phase = next;
     }
     state_.operational = op;
     if (!op) revoke_business();
@@ -306,29 +319,32 @@ void GatewayApplication::check_timeouts(uint32_t now)
 }
 DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &candidate, uint32_t now, ProcessResult &result)
 {
+    const bool online = state_.operational && startup_.running();
     if (state_.mode == OperatingMode::SingleFd) {
         const auto &batch = candidate.raw[0];
-        // 无板级控制头：先用新的空批次建会话，再按 BatchSeq 续租。
-        if (!state_.operational || !startup_.running() || layout_.state != RawState::Active ||
+        const auto next = dcu_session_next(state_.pdo_session,
+            batch.sequence && !batch.count ? PDO_EMPTY_FD_BASELINE : PDO_OTHER_FRAME, online);
+        if (next == PDO_FRAME_REFUSED || layout_.phase != PDO_ACTIVE ||
             batch.kind != RawCanBatch::Kind::SingleFd || !batch.valid || batch.count > batch.capacity() ||
-            (!state_.session_armed && (!batch.sequence || batch.count)) ||
             (state_.seen_cycle && (!newer(batch.sequence, state_.last_cycle) ||
              now - state_.last_command_ms >= state_.config.max_command_lease_ms))) return false;
-        state_.seen_cycle = state_.session_armed = true;
+        state_.pdo_session = next;
+        state_.seen_cycle = true;
         state_.last_cycle = batch.sequence;
         state_.last_command_ms = now;
         state_.board_command.lease_ms = state_.config.max_command_lease_ms;
         return true;
     }
     const auto &b = candidate.board;
-    if (!state_.operational || !startup_.running()) return false;
-    // A stale enabled PDO must not establish the sequence baseline after reconnect.
-    if (!state_.session_armed &&
-        (!b.layout_valid || !b.sequence || !b.lease_ms || b.lease_ms > state_.config.max_command_lease_ms ||
-         (b.control_bits & ~6u) || b.enabled_channels || b.enabled_devices || b.unmapped_device_requested))
-        return false;
+    const bool stop = !(b.control_bits & 1) || (b.control_bits & 2);
+    auto event = stop && (b.enabled_devices || b.unmapped_device_requested) ? PDO_STOP_WITH_TARGETS : PDO_OTHER_FRAME;
+    if (state_.pdo_session == PDO_WAIT_BASELINE && b.layout_valid && b.sequence && b.lease_ms &&
+        b.lease_ms <= state_.config.max_command_lease_ms && !(b.control_bits & ~6u) &&
+        !b.enabled_channels && !b.enabled_devices && !b.unmapped_device_requested)
+        event = PDO_ZERO_ENABLE_BASELINE;
+    const auto next_session = dcu_session_next(state_.pdo_session, event, online);
+    if (next_session == PDO_FRAME_REFUSED) return false;
     /* Stop intent always wins, including duplicate sequence or malformed targets. */
-    bool stop = !(b.control_bits & 1) || (b.control_bits & 2);
     const bool next_cycle = state_.seen_cycle && b.sequence == state_.last_cycle + 1U;
     if (stop)
         stop_all(0);
@@ -358,14 +374,11 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
     }
     if (!state_.operational || (state_.seen_cycle && !newer(b.sequence, state_.last_cycle)))
         return false;
-    if (!state_.session_armed && !stop) {
-        stop_all(8);
-        return false;
-    }
-    if (stop && !b.enabled_devices && !b.unmapped_device_requested)
-        state_.session_armed = true;
-    if ((b.control_bits & 4) && !(state_.board_command.control_bits & 4) && stop)
+    state_.pdo_session = next_session;
+    if ((b.control_bits & 4) && !(state_.board_command.control_bits & 4) && stop) {
         state_.board_fault = 0;
+        for (auto &fault : state_.bus_fault) fault = 0;
+    }
     state_.last_cycle = b.sequence;
     state_.seen_cycle = true;
     state_.last_command_ms = now;
@@ -426,8 +439,10 @@ DCU_FAST_CODE bool GatewayApplication::accept_candidate(const CycleCommand &cand
     }
     return true;
 }
-bool GatewayApplication::initialize(const Configuration &configuration)
+bool GatewayApplication::initialize(const Configuration &configuration, const CyclicCanObserver *observer)
 {
+    if (observer && (observer->bus >= DCU_DEVICE_CAN_BUS_COUNT || !configuration.channels[observer->bus].enabled ||
+                     !observer->start || !observer->stop || !observer->receive || !observer->channel_status)) return false;
     const auto *b = &configuration.board;
     if (state_.config_ready || b->max_command_lease_ms < 2 || b->max_command_lease_ms > 10 ||
         b->feedback_timeout_ms < 5 || b->feedback_timeout_ms > 20)
@@ -447,10 +462,6 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         const unsigned bus = device.bus;
         if (bus >= DCU_DEVICE_CAN_BUS_COUNT || ++counts[bus] > DCU_MOTOR_DEVICES_PER_BUS)
             return false;
-        if (device.zero_mit_loopback) {
-            const auto *applied = dcu_can_channel_config(bus);
-            if (!applied || !applied->timestamp_eof) return false;
-        }
         if (device.neutral_mit_only) {
             const auto *applied = dcu_can_channel_config(bus);
             if ((neutral_bus != DCU_DEVICE_CAN_BUS_COUNT && bus != neutral_bus) || !applied || !applied->timestamp_eof ||
@@ -474,7 +485,7 @@ bool GatewayApplication::initialize(const Configuration &configuration)
     state_.config = *b;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
         state_.channels[c] = catalogue_channels_[c] = configuration.channels[c];
-        layout_.limits[c] = configuration.channels[c].raw_rate_limit;
+        layout_.limits[c] = initial_pure_raw_limit(c, configuration.channels[c]);
         schedule_[c].reset_budget(dcu_time_now_ms());
     }
     for (unsigned a = 0; a < configuration.device_count; ++a) {
@@ -491,18 +502,18 @@ bool GatewayApplication::initialize(const Configuration &configuration)
         const auto *channel = dcu_can_channel_config(device.bus);
         if (device.protocol == DCU_MOTOR_PROTOCOL_ENCOS && channel && channel->timestamp_eof)
             timestamped_encos_ |= 1U << a;
-        if (device.zero_mit_loopback) loopback_devices_ |= 1U << a;
         if (device.neutral_mit_only) neutral_run_.limit[a] = device.neutral_mit_frame_limit;
         else readiness_devices_ |= 1U << a;
         ++device_count_;
     }
+    observer_ = observer;
     state_.config_ready = true;
     return true;
 }
 
 bool GatewayApplication::commit_topology(const dcu_production_profile_t &catalogue, uint32_t buses, uint32_t enabled)
 {
-    if (!layout_.topology || !layout_.switching || device_count_ != catalogue.device_count ||
+    if (!layout_.topology || !layout_.switching() || device_count_ != catalogue.device_count ||
         (buses >> DCU_DEVICE_CAN_BUS_COUNT) || (enabled >> device_count_)) return false;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c)
         if ((buses & (1U << c)) && !catalogue_channels_[c].enabled) return false;
@@ -516,7 +527,7 @@ bool GatewayApplication::commit_topology(const dcu_production_profile_t &catalog
         auto &channel = state_.channels[c];
         channel = (buses & (1U << c)) ? catalogue_channels_[c] : ChannelConfiguration{};
         if (channel.role == 1) channel.role = 0;
-        layout_.limits[c] = channel.raw_rate_limit;
+        layout_.limits[c] = initial_pure_raw_limit(c, channel);
         bus_device_count_[c] = state_.query_cursor[c] = 0;
         schedule_[c].reset_budget(dcu_time_now_ms());
     }
@@ -535,6 +546,13 @@ bool GatewayApplication::commit_topology(const dcu_production_profile_t &catalog
         if (!d.neutral_mit_only) readiness_devices_ |= 1U << a;
         if (d.protocol == DCU_MOTOR_PROTOCOL_ENCOS && dcu_can_channel_config(d.bus)->timestamp_eof)
             timestamped_encos_ |= 1U << a;
+    }
+    // A first peripheral-only selection starts without a motor session. Retain
+    // lifetime counters; losses during the drain or later must still inhibit OP.
+    if (!enabled && !layout_.started && !state_.peripheral_rx_baselined) {
+        for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c)
+            if (buses & (1U << c)) state_.rx_fault_origin[c] = layout_.topology_request_rx[c];
+        state_.peripheral_rx_baselined = true;
     }
     startup_.invalidate(DCU_GATEWAY_REASON_MASTER_TIMEOUT, dcu_time_now_ms());
     return true;
@@ -614,14 +632,24 @@ DCU_FAST_CODE void GatewayApplication::collect_tx_events(unsigned c)
 }
 
 inline __attribute__((always_inline)) void GatewayApplication::route_raw_rx(
-    unsigned c, const dcu_can_frame_t &frame, bool routed, bool single_fd)
+    unsigned c, const dcu_can_frame_t &frame, uint32_t observed_ms, bool routed, bool single_fd)
 {
+    // PREOP drains passive traffic before a PDO consumer exists. Hardware FIFO
+    // overruns remain visible separately through dcu_can_rx_drops().
+    if (!state_.operational && layout_.switching()) return;
     const bool raw_enabled = raw_channel(c);
-    if (frame.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD && !single_fd) {
+    const bool classic_slot = state_.mode == OperatingMode::MotorWithRaw &&
+                              static_cast<int>(c) == dcu_profile_pdo::sideband_bus;
+    if ((frame.dlc > DCU_CAN_CLASSIC_MAX_PAYLOAD && !single_fd) ||
+        (classic_slot && !dcu_profile_pdo::fits_classic_slot(frame.id, frame.dlc, frame.flags))) {
         if (!routed || raw_enabled) ++state_.legacy_rx_drop[c];
     } else if (raw_enabled) {
-        if (layout_.state == RawState::Active) raw_.receive(c, frame);
-        else if (layout_.state == RawState::Draining || layout_.state == RawState::Requested)
+        if (layout_.phase == PDO_ACTIVE) {
+            if (observer_ && observer_->bus == c && state_.mode == OperatingMode::MotorWithRaw)
+                observer_->receive(frame, observed_ms);
+            raw_.receive(c, frame);
+        }
+        else if (layout_.switching())
             ++layout_.drops;
     }
 }
@@ -682,7 +710,7 @@ DCU_FAST_CODE void GatewayApplication::service_cyclic_feedback(uint32_t now, uin
             // A reply can arrive between the initial retirement check and this dequeue.
             collect_tx_events(c);
             const bool routed = consume_feedback(c, frame, stamp, now, dcu_time_now_us());
-            route_raw_rx(c, frame, routed, false);
+            route_raw_rx(c, frame, stamp.observed_ms, routed, false);
         }
     }
 }
@@ -705,14 +733,14 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
     uint32_t now = dcu_time_now_ms();
     step_startup(now);
     result.consumed = candidate != nullptr;
-    if (candidate && (layout_.state == RawState::Draining || layout_.state == RawState::Requested))
+    if (candidate && layout_.switching())
         reject_raw(*candidate);
     result.accepted = candidate && accept_candidate(*candidate, now, result);
     check_timeouts(now);
     if (cyclic_feedback_missing()) {
         const auto reserved_buses = cyclic_.buses;
         service_cyclic_feedback(now, dcu_time_now_us());
-        if (result.accepted && layout_.state == RawState::Active)
+        if (result.accepted && layout_.phase == PDO_ACTIVE)
             result.raw_mirrored = process_raw(*candidate, now, reserved_buses);
         return result;
     }
@@ -727,7 +755,7 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
         result.mirrored_devices = 0;
     }
     advance_layout(now);
-    if (result.accepted && startup_.running() && layout_.state == RawState::Active)
+    if (result.accepted && startup_.running() && layout_.phase == PDO_ACTIVE)
         result.raw_mirrored = process_raw(*candidate, now);
     return result;
 }
@@ -735,7 +763,7 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
 void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
 {
     const bool pure = raw_only(state_.mode);
-    const bool handed_off = layout_.switching && (layout_.pending_motor_owner & (1U << c));
+    const bool handed_off = layout_.switching() && (layout_.pending_motor_owner & (1U << c));
     const unsigned motors = pure || handed_off ? 0 : bus_device_count_[c];
     if (neutral_run_.active && c == neutral_run_.bus && (dcu_can_bus_state(c) != DCU_CAN_BUS_ERROR_ACTIVE || dcu_can_rx_drops(c)))
         stop_neutral_run(true);
@@ -751,11 +779,11 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
             collect_tx_events(c);
         const bool routed = !pure && consume_feedback(c, f, stamp, now, dcu_time_now_us());
         if (!routed && neutral_run_.active && c == neutral_run_.bus) stop_neutral_run(true);
-        route_raw_rx(c, f, routed, state_.mode == OperatingMode::SingleFd);
+        route_raw_rx(c, f, stamp.observed_ms, routed, state_.mode == OperatingMode::SingleFd);
     }
     if (!pure) service_neutral_run(c, now, n < 32);
     if (dcu_can_bus_state(c) == 3) {
-        state_.board_fault |= 8;
+        state_.bus_fault[c] |= 8;
         transactions_.cancel(c, RESULT_IO);
         for (unsigned j = 0; j < motors; ++j)
             devices_[devices_on_bus_[c][j]].stop(5);
@@ -773,7 +801,7 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
         dcu_can_cancel(c);
         ++state_.channel_tx_drop[c];
         ++state_.tx_total;
-        state_.board_fault |= 32;
+        state_.bus_fault[c] |= 32;
         for (unsigned j = 0; j < motors; ++j)
             if (auto &device = devices_[devices_on_bus_[c][j]]; device.active()) {
                 device.record_tx_drop();
@@ -784,7 +812,7 @@ void GatewayApplication::process_bus(unsigned c, uint32_t now, uint32_t now_us)
     // 纯透传仍消费终态事件并检查总线，但不创建电机控制、探测或参数事务。
     if (pure || handed_off) return;
     auto controls = controls_on_bus(c);
-    if (startup_.running() && state_.operational && state_.session_armed) {
+    if (startup_.running() && state_.operational && state_.pdo_session == PDO_CYCLIC) {
         unsigned cost = 2u * frame_us(c, 8);
         const int selected = schedule_[c].next_control(controls, now_us, cost, dcu_can_tx_serial_ready(c));
         if (selected >= 0) {
@@ -846,7 +874,7 @@ bool GatewayApplication::process_raw(const CycleCommand &candidate, uint32_t now
     if (mode == OperatingMode::Motor) return false;
     RawCanPolicy policy{};
     const bool single_fd = mode == OperatingMode::SingleFd;
-    policy.permitted = single_fd ? state_.session_armed && state_.operational && startup_.running() :
+    policy.permitted = single_fd ? state_.pdo_session == PDO_CYCLIC && state_.operational && startup_.running() :
                                    command_permitted(now);
     if (mode == OperatingMode::Raw && !policy.permitted) return false;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
@@ -932,7 +960,7 @@ dcu::app::gateway_application::detail::GatewayApplication application;
 
 namespace dcu::app::gateway_application {
 
-bool initialize_profile(const dcu_production_profile_t &profile)
+bool initialize_profile(const dcu_production_profile_t &profile, const CyclicCanObserver *observer)
 {
     if (!profile.channels || !profile.channel_count || profile.channel_count > DCU_DEVICE_CAN_BUS_COUNT ||
         profile.device_count > DCU_MOTOR_DEVICE_CAPACITY || (profile.device_count && !profile.devices) ||
@@ -952,14 +980,14 @@ bool initialize_profile(const dcu_production_profile_t &profile)
         config.channels[channel.bus].enabled = true;
         config.channels[channel.bus].frame_format = channel.fd;
         if (const auto limit = profile.raw_rate_limit[channel.bus]) {
-            if (profile.device_count || limit > 8) return false;
+            if (limit > 8) return false;
             config.channels[channel.bus].role = 2;
             config.channels[channel.bus].raw_rate_limit = limit;
         }
     }
     for (size_t i = 0; i < profile.device_count; ++i) {
         const unsigned bus = profile.devices[i].bus;
-        if (bus >= DCU_DEVICE_CAN_BUS_COUNT || !config.channels[bus].enabled)
+        if (bus >= DCU_DEVICE_CAN_BUS_COUNT || !config.channels[bus].enabled || config.channels[bus].raw_rate_limit)
             return false;
         config.channels[bus].role = 1;
     }
@@ -975,7 +1003,7 @@ bool initialize_profile(const dcu_production_profile_t &profile)
         if (registered_ids[device.bus] & bit) return false;
         registered_ids[device.bus] |= bit;
     }
-    return application.initialize(config);
+    return application.initialize(config, observer);
 }
 ChannelConfiguration channel_configuration(unsigned bus) { return application.channel_configuration(bus); }
 bool boot_startup(const dcu_gateway_profile_t &profile, uint64_t boot_id)
@@ -1005,7 +1033,7 @@ bool request_topology() { return application.request_topology(); }
 bool topology_pending() { return application.topology_pending(); }
 bool commit_topology(const dcu_production_profile_t &catalogue, uint32_t buses, uint32_t devices)
 { return application.commit_topology(catalogue, buses, devices); }
-void layout_fault() { application.layout_fault(); }
+void layout_fault(dcu_layout_event_t cause) { application.layout_fault(cause); }
 OperatingMode mode() { return application.mode(); }
 bool set_owner(Owner owner) { return application.set_owner(owner); }
 Owner owner() { return application.owner(); }

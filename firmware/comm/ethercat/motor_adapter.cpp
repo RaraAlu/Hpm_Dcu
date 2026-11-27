@@ -160,7 +160,7 @@ DCU_FAST_CODE bool motor_control_process(void)
         if (mirror & layout::active().command_axes & (1u << a))
             *object<mc_axis_rx_t>(0x7200 + a) = pdo::axis(input.wire, a);
     if (input.mode == application::OperatingMode::MotorWithRaw && result.raw_mirrored)
-        *object<mc_sideband_t>(0x7300) = pdo::raw(input.wire);
+        *object<pdo::layout::MappedSideband>(0x7300) = pdo::raw(input.wire);
     return true;
 }
 
@@ -193,6 +193,12 @@ void motor_control_cycle_fault(void)
 void motor_control_raw_link_lost(void)
 {
     application::layout_fault();
+    motor_control_clear_raw_input();
+}
+
+void motor_control_mailbox_stopped(void)
+{
+    application::layout_fault(dcu_profile_pdo::sideband_bus >= 0 ? PDO_FIXED_MAILBOX_STOP : PDO_ABORT);
     motor_control_clear_raw_input();
 }
 
@@ -249,7 +255,7 @@ void clear_layout_commands()
     }
     for (unsigned i = 0; i < device_count; ++i)
         *object<mc_axis_rx_t>(0x7200 + device_slots[i]) = {};
-    *object<mc_sideband_t>(0x7300) = {};
+    *object<pdo::layout::MappedSideband>(0x7300) = {};
     *object<mc_raw_t>(0x7301) = {};
 }
 

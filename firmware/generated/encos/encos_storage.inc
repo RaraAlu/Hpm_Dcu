@@ -11,8 +11,9 @@ static mc_channel_config_t od_2012 = {.Role = 0,.FrameFormat = 0,.NominalBitrate
 static mc_channel_config_t od_2013 = {.Role = 0,.FrameFormat = 0,.NominalBitrate = 0,.DataBitrate = 0,.ScheduleUs = 0,.RawRateLimit = 0,.MotorConfiguredMask = 0};
 static mc_profile_update_t od_2100 = {.Candidate = {0},.CommitRevision = 0,.Result = 0,.ProfileId = 0,.ActiveRevision = 0,.StagedRevision = 0,.ReadinessTtlMs = 0};
 static mc_raw_switch_t od_2101 = {.LayoutRequest = {0},.Action = 0,.State = 0,.Drops = 0,.PureRawLimits = 0,.MotorBusOwner = 0,.BusTxCompleted = 0,.RawTxCancelled = 0};
-static mc_layout_identity_t od_2102 = {.Sha256 = {250,4,34,28,100,165,119,123,198,14,146,80,177,114,24,253,234,74,107,112,238,113,85,0,133,98,214,238,65,143,74,174}};
+static mc_layout_identity_t od_2102 = {.Sha256 = {23,85,9,53,252,128,55,163,210,40,130,69,23,78,237,57,137,186,103,181,20,39,52,148,123,210,193,8,133,72,184,255}};
 static mc_topology_t od_2103 = {.Selection = {0},.Generation = 0,.Channels = 0,.Axes = 0,.BootId = {0},.CommitGeneration = 0};
+static mc_head_health_t od_2104 = {.Monitoring = 0,.HeartbeatSeen = 0,.Offline = 0,.FeedbackSeen = 0,.Stale = 0,.DeviceErrors = 0,.Board1Error = 0,.Board2Error = 0,.Board3Error = 0,.Board4Error = 0};
 static mc_sdo_command_t od_2200 = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0,.CommitSeq = 0,.LeaseMs = 0,.AcceptedSeq = 0,.CommandResult = 0};
 static mc_sdo_command_t od_2210 = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0,.CommitSeq = 0,.LeaseMs = 0,.AcceptedSeq = 0,.CommandResult = 0};
 static mc_sdo_command_t od_2220 = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0,.CommitSeq = 0,.LeaseMs = 0,.AcceptedSeq = 0,.CommandResult = 0};
@@ -355,7 +356,7 @@ static mc_axis_tx_t od_6219 = {.StatusWord = 0,.ModeDisplay = 0,.ValidFlags = 0,
 static mc_axis_tx_t od_621A = {.StatusWord = 0,.ModeDisplay = 0,.ValidFlags = 0,.ActualPosition = 0,.ActualVelocity = 0,.EstimatedTorque = 0,.ActualCurrent = 0,.MotorTemperature = 0,.MosTemperature = 0,.MotorFaultRaw = 0,.BridgeFaultCode = 0,.ActualPower = 0,.FeedbackAgeMs = 0,.PowerAgeMs = 0};
 static mc_axis_tx_t od_621B = {.StatusWord = 0,.ModeDisplay = 0,.ValidFlags = 0,.ActualPosition = 0,.ActualVelocity = 0,.EstimatedTorque = 0,.ActualCurrent = 0,.MotorTemperature = 0,.MosTemperature = 0,.MotorFaultRaw = 0,.BridgeFaultCode = 0,.ActualPower = 0,.FeedbackAgeMs = 0,.PowerAgeMs = 0};
 static mc_imu_t od_6300 = {.SampleSeq = 0,.Status = 0,.ValidFlags = 0,.TimestampNs = 0,.AccelX = 0,.AccelY = 0,.AccelZ = 0,.GyroX = 0,.GyroY = 0,.GyroZ = 0,.QuaternionW = 0,.QuaternionX = 0,.QuaternionY = 0,.QuaternionZ = 0,.Temperature = 0,.Reserved0 = 0,.Reserved1 = 0};
-static mc_sideband_t od_6400 = {.BatchSeq = 0,.ValidMask = 0,.SlotCount = 0,.Flags = 0,.DropCount = 0,.Reserved = 0,.CanId0 = 0,.Channel0 = 0,.Flags0 = 0,.Dlc0 = 0,.Reserved1 = 0,.Data0_0 = 0,.Data0_1 = 0,.Data0_2 = 0,.Data0_3 = 0,.Data0_4 = 0,.Data0_5 = 0,.Data0_6 = 0,.Data0_7 = 0,.CanId1 = 0,.Channel1 = 0,.Flags1 = 0,.Dlc1 = 0,.Reserved2 = 0,.Data1_0 = 0,.Data1_1 = 0,.Data1_2 = 0,.Data1_3 = 0,.Data1_4 = 0,.Data1_5 = 0,.Data1_6 = 0,.Data1_7 = 0};
+static mc_classic_slot_t od_6400 = {.CanId = 0,.Dlc = 0,.Valid = 0,.Data = {0}};
 static mc_raw_t od_6401 = {.BatchSeq = 0,.ValidMask = 0,.SlotCount = 0,.Flags = 0,.DropCount = 0,.Reserved = 0,.CanId = 0,.Channel = 0,.FrameFlags = 0,.Dlc = 0,.SlaveMatch = 0,.Data_0 = 0,.Data_1 = 0,.Data_2 = 0,.Data_3 = 0,.Data_4 = 0,.Data_5 = 0,.Data_6 = 0,.Data_7 = 0,.Data_8 = 0,.Data_9 = 0,.Data_10 = 0,.Data_11 = 0,.Data_12 = 0,.Data_13 = 0,.Data_14 = 0,.Data_15 = 0,.Data_16 = 0,.Data_17 = 0,.Data_18 = 0,.Data_19 = 0,.Data_20 = 0,.Data_21 = 0,.Data_22 = 0,.Data_23 = 0,.Data_24 = 0,.Data_25 = 0,.Data_26 = 0,.Data_27 = 0,.Data_28 = 0,.Data_29 = 0,.Data_30 = 0,.Data_31 = 0,.Data_32 = 0,.Data_33 = 0,.Data_34 = 0,.Data_35 = 0,.Data_36 = 0,.Data_37 = 0,.Data_38 = 0,.Data_39 = 0,.Data_40 = 0,.Data_41 = 0,.Data_42 = 0,.Data_43 = 0,.Data_44 = 0,.Data_45 = 0,.Data_46 = 0,.Data_47 = 0,.Data_48 = 0,.Data_49 = 0,.Data_50 = 0,.Data_51 = 0,.Data_52 = 0,.Data_53 = 0,.Data_54 = 0,.Data_55 = 0,.Data_56 = 0,.Data_57 = 0,.Data_58 = 0,.Data_59 = 0,.Data_60 = 0,.Data_61 = 0,.Data_62 = 0,.Data_63 = 0};
 static mc_full_t od_6500 = {.CycleSeq = 0,.ValidMask = 0,.Mode = 0,.DeadlineUs = 0,.BusState = 0,.Counter0 = 0,.Counter1 = 0,.CanId0 = 0,.Flags0 = 0,.Dlc0 = 0,.Seq0 = 0,.Data0_0 = 0,.Data0_1 = 0,.Data0_2 = 0,.Data0_3 = 0,.Data0_4 = 0,.Data0_5 = 0,.Data0_6 = 0,.Data0_7 = 0,.CanId1 = 0,.Flags1 = 0,.Dlc1 = 0,.Seq1 = 0,.Data1_0 = 0,.Data1_1 = 0,.Data1_2 = 0,.Data1_3 = 0,.Data1_4 = 0,.Data1_5 = 0,.Data1_6 = 0,.Data1_7 = 0,.CanId2 = 0,.Flags2 = 0,.Dlc2 = 0,.Seq2 = 0,.Data2_0 = 0,.Data2_1 = 0,.Data2_2 = 0,.Data2_3 = 0,.Data2_4 = 0,.Data2_5 = 0,.Data2_6 = 0,.Data2_7 = 0,.CanId3 = 0,.Flags3 = 0,.Dlc3 = 0,.Seq3 = 0,.Data3_0 = 0,.Data3_1 = 0,.Data3_2 = 0,.Data3_3 = 0,.Data3_4 = 0,.Data3_5 = 0,.Data3_6 = 0,.Data3_7 = 0,.CanId4 = 0,.Flags4 = 0,.Dlc4 = 0,.Seq4 = 0,.Data4_0 = 0,.Data4_1 = 0,.Data4_2 = 0,.Data4_3 = 0,.Data4_4 = 0,.Data4_5 = 0,.Data4_6 = 0,.Data4_7 = 0,.CanId5 = 0,.Flags5 = 0,.Dlc5 = 0,.Seq5 = 0,.Data5_0 = 0,.Data5_1 = 0,.Data5_2 = 0,.Data5_3 = 0,.Data5_4 = 0,.Data5_5 = 0,.Data5_6 = 0,.Data5_7 = 0,.CanId6 = 0,.Flags6 = 0,.Dlc6 = 0,.Seq6 = 0,.Data6_0 = 0,.Data6_1 = 0,.Data6_2 = 0,.Data6_3 = 0,.Data6_4 = 0,.Data6_5 = 0,.Data6_6 = 0,.Data6_7 = 0};
 static mc_full_t od_6510 = {.CycleSeq = 0,.ValidMask = 0,.Mode = 0,.DeadlineUs = 0,.BusState = 0,.Counter0 = 0,.Counter1 = 0,.CanId0 = 0,.Flags0 = 0,.Dlc0 = 0,.Seq0 = 0,.Data0_0 = 0,.Data0_1 = 0,.Data0_2 = 0,.Data0_3 = 0,.Data0_4 = 0,.Data0_5 = 0,.Data0_6 = 0,.Data0_7 = 0,.CanId1 = 0,.Flags1 = 0,.Dlc1 = 0,.Seq1 = 0,.Data1_0 = 0,.Data1_1 = 0,.Data1_2 = 0,.Data1_3 = 0,.Data1_4 = 0,.Data1_5 = 0,.Data1_6 = 0,.Data1_7 = 0,.CanId2 = 0,.Flags2 = 0,.Dlc2 = 0,.Seq2 = 0,.Data2_0 = 0,.Data2_1 = 0,.Data2_2 = 0,.Data2_3 = 0,.Data2_4 = 0,.Data2_5 = 0,.Data2_6 = 0,.Data2_7 = 0,.CanId3 = 0,.Flags3 = 0,.Dlc3 = 0,.Seq3 = 0,.Data3_0 = 0,.Data3_1 = 0,.Data3_2 = 0,.Data3_3 = 0,.Data3_4 = 0,.Data3_5 = 0,.Data3_6 = 0,.Data3_7 = 0,.CanId4 = 0,.Flags4 = 0,.Dlc4 = 0,.Seq4 = 0,.Data4_0 = 0,.Data4_1 = 0,.Data4_2 = 0,.Data4_3 = 0,.Data4_4 = 0,.Data4_5 = 0,.Data4_6 = 0,.Data4_7 = 0,.CanId5 = 0,.Flags5 = 0,.Dlc5 = 0,.Seq5 = 0,.Data5_0 = 0,.Data5_1 = 0,.Data5_2 = 0,.Data5_3 = 0,.Data5_4 = 0,.Data5_5 = 0,.Data5_6 = 0,.Data5_7 = 0,.CanId6 = 0,.Flags6 = 0,.Dlc6 = 0,.Seq6 = 0,.Data6_0 = 0,.Data6_1 = 0,.Data6_2 = 0,.Data6_3 = 0,.Data6_4 = 0,.Data6_5 = 0,.Data6_6 = 0,.Data6_7 = 0};
@@ -394,7 +395,7 @@ static mc_axis_rx_t od_7218 = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosi
 static mc_axis_rx_t od_7219 = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0};
 static mc_axis_rx_t od_721A = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0};
 static mc_axis_rx_t od_721B = {.ControlWord = 0,.Mode = 0,.Flags = 0,.TargetPosition = 0,.TargetVelocity = 0,.TargetTorque = 0,.TargetCurrent = 0,.Kp = 0,.Kd = 0,.CurrentLimit = 0};
-static mc_sideband_t od_7300 = {.BatchSeq = 0,.ValidMask = 0,.SlotCount = 0,.Flags = 0,.DropCount = 0,.Reserved = 0,.CanId0 = 0,.Channel0 = 0,.Flags0 = 0,.Dlc0 = 0,.Reserved1 = 0,.Data0_0 = 0,.Data0_1 = 0,.Data0_2 = 0,.Data0_3 = 0,.Data0_4 = 0,.Data0_5 = 0,.Data0_6 = 0,.Data0_7 = 0,.CanId1 = 0,.Channel1 = 0,.Flags1 = 0,.Dlc1 = 0,.Reserved2 = 0,.Data1_0 = 0,.Data1_1 = 0,.Data1_2 = 0,.Data1_3 = 0,.Data1_4 = 0,.Data1_5 = 0,.Data1_6 = 0,.Data1_7 = 0};
+static mc_classic_slot_t od_7300 = {.CanId = 0,.Dlc = 0,.Valid = 0,.Data = {0}};
 static mc_raw_t od_7301 = {.BatchSeq = 0,.ValidMask = 0,.SlotCount = 0,.Flags = 0,.DropCount = 0,.Reserved = 0,.CanId = 0,.Channel = 0,.FrameFlags = 0,.Dlc = 0,.SlaveMatch = 0,.Data_0 = 0,.Data_1 = 0,.Data_2 = 0,.Data_3 = 0,.Data_4 = 0,.Data_5 = 0,.Data_6 = 0,.Data_7 = 0,.Data_8 = 0,.Data_9 = 0,.Data_10 = 0,.Data_11 = 0,.Data_12 = 0,.Data_13 = 0,.Data_14 = 0,.Data_15 = 0,.Data_16 = 0,.Data_17 = 0,.Data_18 = 0,.Data_19 = 0,.Data_20 = 0,.Data_21 = 0,.Data_22 = 0,.Data_23 = 0,.Data_24 = 0,.Data_25 = 0,.Data_26 = 0,.Data_27 = 0,.Data_28 = 0,.Data_29 = 0,.Data_30 = 0,.Data_31 = 0,.Data_32 = 0,.Data_33 = 0,.Data_34 = 0,.Data_35 = 0,.Data_36 = 0,.Data_37 = 0,.Data_38 = 0,.Data_39 = 0,.Data_40 = 0,.Data_41 = 0,.Data_42 = 0,.Data_43 = 0,.Data_44 = 0,.Data_45 = 0,.Data_46 = 0,.Data_47 = 0,.Data_48 = 0,.Data_49 = 0,.Data_50 = 0,.Data_51 = 0,.Data_52 = 0,.Data_53 = 0,.Data_54 = 0,.Data_55 = 0,.Data_56 = 0,.Data_57 = 0,.Data_58 = 0,.Data_59 = 0,.Data_60 = 0,.Data_61 = 0,.Data_62 = 0,.Data_63 = 0};
 static mc_full_t od_7400 = {.CycleSeq = 0,.ValidMask = 0,.Mode = 0,.DeadlineUs = 0,.BusState = 0,.Counter0 = 0,.Counter1 = 0,.CanId0 = 0,.Flags0 = 0,.Dlc0 = 0,.Seq0 = 0,.Data0_0 = 0,.Data0_1 = 0,.Data0_2 = 0,.Data0_3 = 0,.Data0_4 = 0,.Data0_5 = 0,.Data0_6 = 0,.Data0_7 = 0,.CanId1 = 0,.Flags1 = 0,.Dlc1 = 0,.Seq1 = 0,.Data1_0 = 0,.Data1_1 = 0,.Data1_2 = 0,.Data1_3 = 0,.Data1_4 = 0,.Data1_5 = 0,.Data1_6 = 0,.Data1_7 = 0,.CanId2 = 0,.Flags2 = 0,.Dlc2 = 0,.Seq2 = 0,.Data2_0 = 0,.Data2_1 = 0,.Data2_2 = 0,.Data2_3 = 0,.Data2_4 = 0,.Data2_5 = 0,.Data2_6 = 0,.Data2_7 = 0,.CanId3 = 0,.Flags3 = 0,.Dlc3 = 0,.Seq3 = 0,.Data3_0 = 0,.Data3_1 = 0,.Data3_2 = 0,.Data3_3 = 0,.Data3_4 = 0,.Data3_5 = 0,.Data3_6 = 0,.Data3_7 = 0,.CanId4 = 0,.Flags4 = 0,.Dlc4 = 0,.Seq4 = 0,.Data4_0 = 0,.Data4_1 = 0,.Data4_2 = 0,.Data4_3 = 0,.Data4_4 = 0,.Data4_5 = 0,.Data4_6 = 0,.Data4_7 = 0,.CanId5 = 0,.Flags5 = 0,.Dlc5 = 0,.Seq5 = 0,.Data5_0 = 0,.Data5_1 = 0,.Data5_2 = 0,.Data5_3 = 0,.Data5_4 = 0,.Data5_5 = 0,.Data5_6 = 0,.Data5_7 = 0,.CanId6 = 0,.Flags6 = 0,.Dlc6 = 0,.Seq6 = 0,.Data6_0 = 0,.Data6_1 = 0,.Data6_2 = 0,.Data6_3 = 0,.Data6_4 = 0,.Data6_5 = 0,.Data6_6 = 0,.Data6_7 = 0};
 static mc_full_t od_7410 = {.CycleSeq = 0,.ValidMask = 0,.Mode = 0,.DeadlineUs = 0,.BusState = 0,.Counter0 = 0,.Counter1 = 0,.CanId0 = 0,.Flags0 = 0,.Dlc0 = 0,.Seq0 = 0,.Data0_0 = 0,.Data0_1 = 0,.Data0_2 = 0,.Data0_3 = 0,.Data0_4 = 0,.Data0_5 = 0,.Data0_6 = 0,.Data0_7 = 0,.CanId1 = 0,.Flags1 = 0,.Dlc1 = 0,.Seq1 = 0,.Data1_0 = 0,.Data1_1 = 0,.Data1_2 = 0,.Data1_3 = 0,.Data1_4 = 0,.Data1_5 = 0,.Data1_6 = 0,.Data1_7 = 0,.CanId2 = 0,.Flags2 = 0,.Dlc2 = 0,.Seq2 = 0,.Data2_0 = 0,.Data2_1 = 0,.Data2_2 = 0,.Data2_3 = 0,.Data2_4 = 0,.Data2_5 = 0,.Data2_6 = 0,.Data2_7 = 0,.CanId3 = 0,.Flags3 = 0,.Dlc3 = 0,.Seq3 = 0,.Data3_0 = 0,.Data3_1 = 0,.Data3_2 = 0,.Data3_3 = 0,.Data3_4 = 0,.Data3_5 = 0,.Data3_6 = 0,.Data3_7 = 0,.CanId4 = 0,.Flags4 = 0,.Dlc4 = 0,.Seq4 = 0,.Data4_0 = 0,.Data4_1 = 0,.Data4_2 = 0,.Data4_3 = 0,.Data4_4 = 0,.Data4_5 = 0,.Data4_6 = 0,.Data4_7 = 0,.CanId5 = 0,.Flags5 = 0,.Dlc5 = 0,.Seq5 = 0,.Data5_0 = 0,.Data5_1 = 0,.Data5_2 = 0,.Data5_3 = 0,.Data5_4 = 0,.Data5_5 = 0,.Data5_6 = 0,.Data5_7 = 0,.CanId6 = 0,.Flags6 = 0,.Dlc6 = 0,.Seq6 = 0,.Data6_0 = 0,.Data6_1 = 0,.Data6_2 = 0,.Data6_3 = 0,.Data6_4 = 0,.Data6_5 = 0,.Data6_6 = 0,.Data6_7 = 0};
@@ -414,6 +415,7 @@ mc_object_t mc_objects[] = {
 {0x2101,60,8,(uint8_t *)&od_2101},
 {0x2102,32,1,(uint8_t *)&od_2102},
 {0x2103,112,6,(uint8_t *)&od_2103},
+{0x2104,24,10,(uint8_t *)&od_2104},
 {0x2200,36,14,(uint8_t *)&od_2200},
 {0x2210,36,14,(uint8_t *)&od_2210},
 {0x2220,36,14,(uint8_t *)&od_2220},
@@ -756,7 +758,7 @@ mc_object_t mc_objects[] = {
 {0x621A,32,14,(uint8_t *)&od_621A},
 {0x621B,32,14,(uint8_t *)&od_621B},
 {0x6300,64,17,(uint8_t *)&od_6300},
-{0x6400,48,32,(uint8_t *)&od_6400},
+{0x6400,12,4,(uint8_t *)&od_6400},
 {0x6401,88,75,(uint8_t *)&od_6401},
 {0x6500,128,91,(uint8_t *)&od_6500},
 {0x6510,128,91,(uint8_t *)&od_6510},
@@ -795,7 +797,7 @@ mc_object_t mc_objects[] = {
 {0x7219,24,10,(uint8_t *)&od_7219},
 {0x721A,24,10,(uint8_t *)&od_721A},
 {0x721B,24,10,(uint8_t *)&od_721B},
-{0x7300,48,32,(uint8_t *)&od_7300},
+{0x7300,12,4,(uint8_t *)&od_7300},
 {0x7301,88,75,(uint8_t *)&od_7301},
 {0x7400,128,91,(uint8_t *)&od_7400},
 {0x7410,128,91,(uint8_t *)&od_7410},
@@ -872,6 +874,16 @@ const mc_field_t mc_fields[] = {
 {0x2103,4,4,1,96},
 {0x2103,5,8,1,100},
 {0x2103,6,4,2,108},
+{0x2104,1,1,1,0},
+{0x2104,2,1,1,1},
+{0x2104,3,1,1,2},
+{0x2104,4,2,1,3},
+{0x2104,5,2,1,5},
+{0x2104,6,1,1,7},
+{0x2104,7,4,1,8},
+{0x2104,8,4,1,12},
+{0x2104,9,4,1,16},
+{0x2104,10,4,1,20},
 {0x2200,1,2,3,0},
 {0x2200,2,1,3,2},
 {0x2200,3,1,3,3},
@@ -4167,38 +4179,10 @@ const mc_field_t mc_fields[] = {
 {0x6300,15,2,1,56},
 {0x6300,16,2,1,58},
 {0x6300,17,4,1,60},
-{0x6400,1,4,1,0},
-{0x6400,2,1,1,4},
-{0x6400,3,1,1,5},
-{0x6400,4,2,1,6},
-{0x6400,5,4,1,8},
-{0x6400,6,4,1,12},
-{0x6400,7,4,1,16},
-{0x6400,8,1,1,20},
-{0x6400,9,1,1,21},
-{0x6400,10,1,1,22},
-{0x6400,11,1,1,23},
-{0x6400,12,1,1,24},
-{0x6400,13,1,1,25},
-{0x6400,14,1,1,26},
-{0x6400,15,1,1,27},
-{0x6400,16,1,1,28},
-{0x6400,17,1,1,29},
-{0x6400,18,1,1,30},
-{0x6400,19,1,1,31},
-{0x6400,20,4,1,32},
-{0x6400,21,1,1,36},
-{0x6400,22,1,1,37},
-{0x6400,23,1,1,38},
-{0x6400,24,1,1,39},
-{0x6400,25,1,1,40},
-{0x6400,26,1,1,41},
-{0x6400,27,1,1,42},
-{0x6400,28,1,1,43},
-{0x6400,29,1,1,44},
-{0x6400,30,1,1,45},
-{0x6400,31,1,1,46},
-{0x6400,32,1,1,47},
+{0x6400,1,2,1,0},
+{0x6400,2,1,1,2},
+{0x6400,3,1,1,3},
+{0x6400,4,8,1,4},
 {0x6401,1,4,1,0},
 {0x6401,2,1,1,4},
 {0x6401,3,1,1,5},
@@ -4945,38 +4929,10 @@ const mc_field_t mc_fields[] = {
 {0x721B,8,2,3,18},
 {0x721B,9,2,3,20},
 {0x721B,10,2,3,22},
-{0x7300,1,4,3,0},
-{0x7300,2,1,3,4},
-{0x7300,3,1,3,5},
-{0x7300,4,2,3,6},
-{0x7300,5,4,3,8},
-{0x7300,6,4,3,12},
-{0x7300,7,4,3,16},
-{0x7300,8,1,3,20},
-{0x7300,9,1,3,21},
-{0x7300,10,1,3,22},
-{0x7300,11,1,3,23},
-{0x7300,12,1,3,24},
-{0x7300,13,1,3,25},
-{0x7300,14,1,3,26},
-{0x7300,15,1,3,27},
-{0x7300,16,1,3,28},
-{0x7300,17,1,3,29},
-{0x7300,18,1,3,30},
-{0x7300,19,1,3,31},
-{0x7300,20,4,3,32},
-{0x7300,21,1,3,36},
-{0x7300,22,1,3,37},
-{0x7300,23,1,3,38},
-{0x7300,24,1,3,39},
-{0x7300,25,1,3,40},
-{0x7300,26,1,3,41},
-{0x7300,27,1,3,42},
-{0x7300,28,1,3,43},
-{0x7300,29,1,3,44},
-{0x7300,30,1,3,45},
-{0x7300,31,1,3,46},
-{0x7300,32,1,3,47},
+{0x7300,1,2,3,0},
+{0x7300,2,1,3,2},
+{0x7300,3,1,3,3},
+{0x7300,4,8,3,4},
 {0x7301,1,4,3,0},
 {0x7301,2,1,3,4},
 {0x7301,3,1,3,5},

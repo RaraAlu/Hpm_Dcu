@@ -1,16 +1,15 @@
 #include "ethercat_can_task.h"
-#include "detail/ethercat_can_task_state.h"
 #include "ethercat_cycle.h"
+#include "gateway_flow.h"
+#include "cfg/ethercat_can_task_config.h"
 #include "cycle_timers.h"
 #include "cfg/cycle_timer_map.h"
-#include "cfg/ethercat_can_task_config.h"
 #include "cycle_config.h"
 #include "can_transport.h"
 #include "realtime_port.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
-static dcu_ethercat_can_task_state_t worker_task;
 static volatile dcu_rtos_diagnostics_t rtos_diagnostics;
 
 void dcu_rtos_read_diagnostics(dcu_rtos_diagnostics_t *snapshot)
@@ -18,17 +17,139 @@ void dcu_rtos_read_diagnostics(dcu_rtos_diagnostics_t *snapshot)
     *snapshot = rtos_diagnostics;
 }
 
-_Static_assert(DCU_WORKER_TASK_PRIORITY < configMAX_PRIORITIES,
-               "Worker task priority exceeds the FreeRTOS ready lists");
 _Static_assert(configMAX_SYSCALL_INTERRUPT_PRIORITY == DCU_IRQ_KERNEL_PRIORITY,
                "Kernel and cycle IRQ masks must use the same threshold");
 
-void dcu_worker_wake_from_can_isr(void)
+void ecat_can_task(void *argument)
 {
-    BaseType_t wake = pdFALSE;
-    vTaskNotifyGiveFromISR(worker_task.handle, &wake);
-    portYIELD_FROM_ISR(wake);
+    (void)argument;
+    uint32_t last_stack_check_ms = 0;
+    dcu_worker_timer_start();
+    for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        const uint32_t start_us = dcu_time_now_us();
+        /* PDO/CAN and SSC deliver gateway, layout and session events on this same task. */
+        if (dcu_cycle_service_pdo_can(start_us) == DCU_CYCLE_ALLOW_SSC)
+            dcu_cycle_service_ethercat_al();
+        dcu_cycle_record_worker_duration(start_us);
+
+        const uint32_t now_ms = dcu_time_now_ms();
+        if (now_ms - last_stack_check_ms >= DCU_STACK_CHECK_PERIOD_MS) {
+            last_stack_check_ms = now_ms;
+            rtos_diagnostics.worker_stack_free_words = uxTaskGetStackHighWaterMark(NULL);
+        }
+    }
 }
+
+dcu_gateway_state_t dcu_gateway_next(dcu_gateway_state_t state, dcu_gateway_event_t event,
+                                     dcu_gateway_reason_t reason)
+{
+    const bool lost = event == GW_AUTHORIZATION_LOST &&
+                      (reason == DCU_GATEWAY_REASON_CAN_OFFLINE || reason == DCU_GATEWAY_REASON_FEEDBACK_TIMEOUT ||
+                       reason == DCU_GATEWAY_REASON_MASTER_TIMEOUT || reason == DCU_GATEWAY_REASON_PROTOCOL_MISMATCH);
+    if (event == GW_FATAL) return DCU_GATEWAY_FAULT;
+    switch (state) {
+    case DCU_GATEWAY_BOOT:
+        if (event == GW_BOOT_VALID) return DCU_GATEWAY_PREPARING;
+        break;
+    case DCU_GATEWAY_PREPARING:
+        if (lost) return DCU_GATEWAY_HOLD;
+        if (event == GW_FRESH_FEEDBACK) return DCU_GATEWAY_READY;
+        break;
+    case DCU_GATEWAY_READY:
+        if (lost) return DCU_GATEWAY_HOLD;
+        if (event == GW_POLICY_APPLIED) return DCU_GATEWAY_PREPARING;
+        if (event == GW_OP_READY || event == GW_EXPLICIT_RUN) return DCU_GATEWAY_RUNNING;
+        break;
+    case DCU_GATEWAY_RUNNING:
+        if (lost) return DCU_GATEWAY_HOLD;
+        break;
+    case DCU_GATEWAY_HOLD:
+        if (event == GW_CAN_HEALTHY || event == GW_POLICY_APPLIED) return DCU_GATEWAY_PREPARING;
+        break;
+    case DCU_GATEWAY_FAULT:
+        break;
+    }
+    return state;
+}
+
+dcu_layout_phase_t dcu_layout_next(dcu_layout_phase_t phase, dcu_layout_event_t event,
+                                   dcu_pdo_mode_t mode, bool topology_pending, bool operational)
+{
+    const bool request = (event == PDO_SDO_2101_01_REQUEST && !topology_pending) ||
+                         (event == PDO_SDO_2103_01_SELECT && !operational);
+    const bool confirm = event == PDO_SDO_2101_02_CONFIRM && !operational;
+    const bool map = event == PDO_PREOP_MAPPING && !topology_pending && !operational;
+    const bool commit_topology = event == PDO_SDO_2103_06_COMMIT && topology_pending && !operational;
+    const dcu_layout_phase_t mapped = mode == DCU_PDO_MOTOR ? PDO_DISABLED : PDO_WAIT_OP;
+    /* IgH rebuilds mailboxes via INIT before OP. A mapped fixed PDO is not
+     * an active session; never preserve a negotiation or a debug lease. */
+    if (event == PDO_FIXED_MAILBOX_STOP && phase == PDO_WAIT_OP &&
+        mode == DCU_PDO_MOTOR_WITH_RAW && !topology_pending && !operational) return PDO_WAIT_OP;
+    if (event == PDO_ABORT || event == PDO_FIXED_MAILBOX_STOP)
+        return phase == PDO_DISABLED ? PDO_DISABLED : PDO_FAULTED;
+    switch (phase) {
+    case PDO_DISABLED:
+    case PDO_WAIT_OP:
+    case PDO_ACTIVE:
+        if (request) return PDO_DRAINING;
+        if (map) return mapped;
+        if (event == PDO_ENTER_OP && phase == PDO_WAIT_OP) return PDO_ACTIVE;
+        if (event == PDO_DROP_LIMIT && phase == PDO_ACTIVE) return PDO_FAULTED;
+        if (event == PDO_LEAVE_OP) return phase == PDO_DISABLED ? PDO_DISABLED : PDO_FAULTED;
+        break;
+    case PDO_DRAINING:
+    case PDO_DRAINING_CONFIRMED:
+        if (event == PDO_DRAIN_TIMEOUT || event == PDO_DROP_LIMIT) return PDO_FAULTED;
+        if (event == PDO_CAN_DRAINED)
+            return phase == PDO_DRAINING_CONFIRMED ? PDO_WAIT_COMMIT : PDO_WAIT_CONFIRM;
+        if (event == PDO_LEAVE_OP) return phase;
+        if (event == PDO_ENTER_OP) return PDO_DRAINING;
+        break;
+    case PDO_WAIT_CONFIRM:
+        if (event == PDO_TOPOLOGY_TIMEOUT || event == PDO_DROP_LIMIT) return PDO_FAULTED;
+        if (event == PDO_LEAVE_OP) return phase;
+        if (confirm) return PDO_WAIT_COMMIT;
+        break;
+    case PDO_WAIT_COMMIT:
+        if (event == PDO_TOPOLOGY_TIMEOUT || event == PDO_DROP_LIMIT) return PDO_FAULTED;
+        if (confirm) return PDO_WAIT_COMMIT;
+        if (event == PDO_LEAVE_OP) return phase;
+        if (event == PDO_ENTER_OP) return PDO_WAIT_CONFIRM;
+        if (map || commit_topology) return mapped;
+        break;
+    case PDO_FAULTED:
+    case PDO_RECOVERY_PERMITTED:
+        if (confirm) return PDO_RECOVERY_PERMITTED;
+        if (phase == PDO_RECOVERY_PERMITTED && request && !operational) return PDO_DRAINING_CONFIRMED;
+        if (event == PDO_ENTER_OP) return PDO_FAULTED;
+        if (map) return phase; /* Re-map old motor layout without granting raw access. */
+        if (event == PDO_LEAVE_OP) return PDO_FAULTED;
+        break;
+    case PDO_REFUSED:
+        break;
+    }
+    return PDO_REFUSED;
+}
+
+DCU_FAST_CODE dcu_session_phase_t dcu_session_next(dcu_session_phase_t phase, dcu_session_event_t event,
+                                                   bool operational_and_gateway_running)
+{
+    if (event == PDO_REVOKE_SESSION) return PDO_WAIT_BASELINE;
+    if (!operational_and_gateway_running) return PDO_FRAME_REFUSED;
+    switch (phase) {
+    case PDO_WAIT_BASELINE:
+        if (event == PDO_ZERO_ENABLE_BASELINE || event == PDO_EMPTY_FD_BASELINE) return PDO_CYCLIC;
+        break;
+    case PDO_CYCLIC:
+        if (event == PDO_STOP_WITH_TARGETS) return PDO_WAIT_BASELINE;
+        return PDO_CYCLIC;
+    case PDO_FRAME_REFUSED:
+        break;
+    }
+    return PDO_FRAME_REFUSED;
+}
+
 SDK_DECLARE_EXT_ISR_M(DCU_WORKER_TIMER_IRQ, dcu_worker_timer_isr)
 void dcu_worker_timer_isr(void)
 {
@@ -38,29 +159,7 @@ void dcu_worker_timer_isr(void)
     if (gap) dcu_can_gap_elapsed_isr();
     portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
     if (periodic) dcu_cycle_watchdog_isr();
-    if (periodic) dcu_worker_wake_from_can_isr();
-}
-static void worker(void *argument)
-{
-    (void)argument;
-    dcu_worker_timer_start();
-    for (;;) {
-        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        dcu_cycle_step();
-        uint32_t now = dcu_time_now_ms();
-        if ((uint32_t)(now - worker_task.last_stack_check_ms) >= DCU_STACK_CHECK_PERIOD_MS) {
-            worker_task.last_stack_check_ms = now;
-            rtos_diagnostics.worker_stack_free_words = uxTaskGetStackHighWaterMark(NULL);
-        }
-    }
-}
-void dcu_rtos_start(void)
-{
-    worker_task.handle = xTaskCreateStatic(worker, "ecat-can", DCU_WORKER_STACK_WORDS, NULL,
-                                          DCU_WORKER_TASK_PRIORITY, worker_task.stack, &worker_task.tcb);
-    configASSERT(worker_task.handle != NULL);
-    vTaskStartScheduler();
-    dcu_rtos_assert(__FILE__, __LINE__);
+    if (periodic) dcu_notify_ecat_can_from_isr();
 }
 void dcu_rtos_assert(const char *file, unsigned long line)
 {

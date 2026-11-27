@@ -10,6 +10,18 @@
     "MC_STATUS_ARMED_QUERY_ONLY": "0x2000u"
   },
   "types": {
+    "mc_head_health_t": [
+      {"name":"Monitoring","type":"uint8_t","label":"Head monitor active","access":"ro","default":0},
+      {"name":"HeartbeatSeen","type":"uint8_t","label":"Heartbeat seen board mask","access":"ro","default":0},
+      {"name":"Offline","type":"uint8_t","label":"Heartbeat timeout board mask","access":"ro","default":0},
+      {"name":"FeedbackSeen","type":"uint16_t","label":"Feedback seen group mask","access":"ro","default":0},
+      {"name":"Stale","type":"uint16_t","label":"Feedback timeout group mask","access":"ro","default":0},
+      {"name":"DeviceErrors","type":"uint8_t","label":"Session device error board mask","access":"ro","default":0},
+      {"name":"Board1Error","type":"uint32_t","label":"Board 1 last error ID stage code","access":"ro","default":0},
+      {"name":"Board2Error","type":"uint32_t","label":"Board 2 last error ID stage code","access":"ro","default":0},
+      {"name":"Board3Error","type":"uint32_t","label":"Board 3 last error ID stage code","access":"ro","default":0},
+      {"name":"Board4Error","type":"uint32_t","label":"Board 4 last error ID stage code","access":"ro","default":0}
+    ],
     "mc_topology_t": [
       {"name":"Selection","type":"uint8_t","count":88,"label":"Stage profile selection","access":"wo","default":0},
       {"name":"Generation","type":"uint32_t","label":"Applied topology generation","access":"ro","default":0},
@@ -550,6 +562,12 @@
         "access": "ro",
         "default": 0
       }
+    ],
+    "mc_classic_slot_t": [
+      {"name": "CanId", "type": "uint16_t", "label": "Standard CAN ID", "access": "ro", "default": 0},
+      {"name": "Dlc", "type": "uint8_t", "label": "DLC", "access": "ro", "default": 0},
+      {"name": "Valid", "type": "uint8_t", "label": "Valid", "access": "ro", "default": 0},
+      {"name": "Data", "type": "uint8_t", "count": 8, "label": "CAN data", "access": "ro", "default": 0}
     ],
     "mc_sideband_t": [
       {
@@ -2941,6 +2959,13 @@
       "stride": 0
     },
     {
+      "index": "0x2104",
+      "type": "mc_head_health_t",
+      "name": "Head.Health",
+      "count": 1,
+      "stride": 0
+    },
+    {
       "index": "0x2200",
       "type": "mc_sdo_command_t",
       "name": "CAN{bus}.Motor{motor}.SdoCommand",
@@ -3072,6 +3097,8 @@
     {
       "index": "0x6400",
       "type": "mc_sideband_t",
+      "cyclic_sideband_type": "mc_classic_slot_t",
+      "cyclic_sideband_name": "HeadHand.Inputs",
       "name": "SharedRaw.Inputs",
       "count": 1,
       "stride": 0,
@@ -3137,6 +3164,8 @@
     {
       "index": "0x7300",
       "type": "mc_sideband_t",
+      "cyclic_sideband_type": "mc_classic_slot_t",
+      "cyclic_sideband_name": "HeadHand.Outputs",
       "name": "SharedRaw.Outputs",
       "count": 1,
       "stride": 0,

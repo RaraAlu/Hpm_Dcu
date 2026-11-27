@@ -15,7 +15,7 @@ namespace dcu::app::gateway_application::detail {
 // MainLoop and SDO callbacks share one task; only the C/C++ entry points own this object.
 class GatewayApplication {
 public:
-    bool initialize(const Configuration &profile);
+    bool initialize(const Configuration &profile, const CyclicCanObserver *observer = nullptr);
     ChannelConfiguration channel_configuration(unsigned bus) const {
         return bus < DCU_DEVICE_CAN_BUS_COUNT ? state_.channels[bus] : ChannelConfiguration{};
     }
@@ -29,7 +29,14 @@ public:
     bool preop_access_allowed() const;
     bool owner_change_allowed() const;
     bool select_mode(OperatingMode mode);
-    RawState raw_state() const { return layout_.state; }
+    RawState raw_state() const {
+        switch (layout_.phase) {
+        case PDO_WAIT_COMMIT: return RawState::Requested;
+        case PDO_RECOVERY_PERMITTED: return RawState::Faulted;
+        case PDO_DRAINING_CONFIRMED: return RawState::Draining;
+        default: return static_cast<RawState>(layout_.phase);
+        }
+    }
     bool request_layout(OperatingMode target, uint32_t profile, uint32_t revision,
                         const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES]);
     bool map_layout(OperatingMode mode);
@@ -37,7 +44,7 @@ public:
     bool request_topology();
     bool topology_pending() const { return layout_.topology; }
     bool commit_topology(const dcu_production_profile_t &, uint32_t buses, uint32_t devices);
-    void layout_fault();
+    void layout_fault(dcu_layout_event_t cause = PDO_ABORT);
     uint32_t raw_drops() const;
     uint32_t pure_raw_limits() const;
     bool set_pure_raw_limits(uint32_t packed);
@@ -68,24 +75,32 @@ private:
     bool begin_layout(OperatingMode, uint32_t, uint32_t, const uint8_t (&)[DCU_GATEWAY_DIGEST_BYTES], bool);
     bool finish_layout(OperatingMode, bool topology);
     bool raw_channel(unsigned bus) const;
-    void route_raw_rx(unsigned bus, const dcu_can_frame_t &frame, bool routed, bool single_fd);
+    void route_raw_rx(unsigned bus, const dcu_can_frame_t &frame, uint32_t observed_ms, bool routed, bool single_fd);
     bool raw_motor_bus_idle(uint8_t buses) const;
     void checkpoint_raw_losses();
     uint32_t channel_losses(unsigned bus) const;
     void clear_layout_business();
     void advance_layout(uint32_t now);
-    void activate_layout();
     void reject_raw(const CycleCommand &candidate);
     struct RawLayout {
-        RawState state{};
+        dcu_layout_phase_t phase{PDO_DISABLED};
         OperatingMode target{};
-        bool selected{}, started{}, reset{}, switching{}, running{}, topology{};
+        bool selected{}, started{}, running{}, topology{};
+        bool switching() const {
+            return phase == PDO_DRAINING || phase == PDO_DRAINING_CONFIRMED ||
+                   phase == PDO_WAIT_CONFIRM || phase == PDO_WAIT_COMMIT;
+        }
         uint32_t drain_ms{}, drops{}, baseline{}, revision{};
         uint64_t session{};
         uint8_t limits[DCU_DEVICE_CAN_BUS_COUNT]{};
         uint8_t pending_motor_owner{}, motor_owner{};
         uint32_t loss_origin[DCU_DEVICE_CAN_BUS_COUNT]{};
+        uint32_t topology_request_rx[DCU_DEVICE_CAN_BUS_COUNT]{};
     } layout_{};
+    dcu_layout_phase_t next_layout(dcu_layout_event_t event, OperatingMode mode = OperatingMode::Motor) const {
+        return dcu_layout_next(layout_.phase, event, static_cast<dcu_pdo_mode_t>(mode),
+                               layout_.topology, state_.operational);
+    }
     unsigned frame_us(unsigned bus, unsigned bytes) const;
     ControlSet controls_on_bus(unsigned bus) const;
     bool any_active() const;
@@ -112,11 +127,12 @@ private:
     uint8_t bus_device_count_[DCU_DEVICE_CAN_BUS_COUNT]{};
     ChannelConfiguration catalogue_channels_[DCU_DEVICE_CAN_BUS_COUNT]{};
     RawCanGateway raw_{};
+    const CyclicCanObserver *observer_{};
     BusScheduler schedule_[DCU_DEVICE_CAN_BUS_COUNT]{};
     CanTransactions transactions_{};
     ProductionStartup startup_{};
     uint32_t readiness_devices_{};
-    uint32_t timestamped_encos_{}, loopback_devices_{};
+    uint32_t timestamped_encos_{};
     struct {
         uint32_t mask{}, sequence{};
         uint32_t encoded_us[DCU_MOTOR_DEVICE_CAPACITY]{};
@@ -141,11 +157,15 @@ private:
         ChannelCommand channel_command[DCU_DEVICE_CAN_BUS_COUNT]{};
         OperatingMode mode{};
         Owner owner{};
-        bool operational{}, session_armed{};
+        bool operational{};
+        dcu_session_phase_t pdo_session{PDO_WAIT_BASELINE};
         bool seen_cycle{}, config_ready{};
         uint32_t last_command_ms{}, last_cycle{}, tx_total{}, last_process_us{};
         uint8_t query_cursor[DCU_DEVICE_CAN_BUS_COUNT]{};
         uint16_t board_fault{};
+        uint8_t bus_fault[DCU_DEVICE_CAN_BUS_COUNT]{};
+        bool peripheral_rx_baselined{};
+        uint32_t rx_fault_origin[DCU_DEVICE_CAN_BUS_COUNT]{};
         uint32_t channel_tx_drop[DCU_DEVICE_CAN_BUS_COUNT]{};
         uint32_t legacy_rx_drop[DCU_DEVICE_CAN_BUS_COUNT]{};
         uint32_t publication_sequence{};

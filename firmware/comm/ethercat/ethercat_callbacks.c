@@ -36,6 +36,19 @@
 
 /* Fixed SSC process image; the ESC destination is still selected by SM3. */
 extern UINT16 aPdInputData[MAX_PD_INPUT_SIZE >> 1];
+extern TOBJECT OBJMEM ApplicationObjDic[];
+
+bool dcu_ssc_bind_sdo_write(uint16_t index, dcu_sdo_write_fn *write)
+{
+    /* MainInit links these same entries into the SSC dictionary after startup wiring. */
+    for (TOBJECT *entry = ApplicationObjDic; entry->Index != 0xffff; ++entry) {
+        if (entry->Index != index) continue;
+        if (!write || entry->pPrev || entry->pNext || entry->Write != MC_OD_Write) return false;
+        entry->Write = write;
+        return true;
+    }
+    return false;
+}
 
 void *dcu_ssc_txpdo_buffer(uint16_t *capacity)
 {
@@ -119,7 +132,7 @@ UINT16 APPL_StartMailboxHandler(void)
 
 UINT16 APPL_StopMailboxHandler(void)
 {
-    motor_control_raw_link_lost();
+    motor_control_mailbox_stopped();
     motor_control_discard_profile();
     return ALSTATUSCODE_NOERROR;
 }

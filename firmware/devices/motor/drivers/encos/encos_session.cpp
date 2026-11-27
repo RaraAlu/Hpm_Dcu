@@ -39,7 +39,7 @@ bool EncosMotorDriver::query_ready(uint32_t now) const
 bool EncosMotorDriver::prepare_start(const Command &command, uint32_t now, Command &first)
 {
     const bool no_effort = impedance_without_effort(command);
-    if (!query_ready(now) || (!zero_mit_loopback_ && std::fabs(double(queries_.velocity)) > 20000.0) ||
+    if (!query_ready(now) || std::fabs(double(queries_.velocity)) > 20000.0 ||
         (!no_effort && (command.mode == ControlMode::Position || command.mode == ControlMode::Impedance) &&
          std::fabs(double(command.position_urad) - queries_.position) > 100000.0))
         return false;
