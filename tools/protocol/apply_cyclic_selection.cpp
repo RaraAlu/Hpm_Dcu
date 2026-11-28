@@ -47,11 +47,14 @@ int main(int argc, char **argv)
     }
     uint32_t gen{}, current_buses{}, current_axes{};
     uint8_t boot[8];
-    if (!wire::read_exact(m, 0, 0x2103, 5, boot, sizeof(boot)) ||
-        !wire::sdo_value(m, 0, 0x2103, 2, gen, 4) || !wire::sdo_value(m, 0, 0x2103, 3, current_buses, 4) ||
+    if (!wire::sdo_value(m, 0, 0x2103, 2, gen, 4) || !wire::sdo_value(m, 0, 0x2103, 3, current_buses, 4) ||
         !wire::sdo_value(m, 0, 0x2103, 4, current_axes, 4)) return 1;
-    std::printf("HPM boot=0x");
-    for (unsigned i = 8; i; --i) std::printf("%02x", boot[i-1]);
+    if (wire::read_exact(m, 0, 0x2103, 5, boot, sizeof(boot))) {
+        std::printf("HPM boot=0x");
+        for (unsigned i = 8; i; --i) std::printf("%02x", boot[i-1]);
+    } else {
+        std::printf("HPM boot=unavailable");
+    }
     std::printf(" generation=%u buses=0x%x axes=0x%x AL=PREOP\n", gen, current_buses, current_axes);
     if (check && (buses != current_buses || mask != current_axes)) {
         std::fprintf(stderr, "Live selection does not match the requested Profile\n"); return 1;

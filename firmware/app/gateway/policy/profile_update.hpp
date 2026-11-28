@@ -17,7 +17,6 @@ struct Policy {
 };
 
 struct Candidate {
-    uint64_t boot_id;
     uint32_t profile_id, base_revision, revision;
     Policy policy;
 };

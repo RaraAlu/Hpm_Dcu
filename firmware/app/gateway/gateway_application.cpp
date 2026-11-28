@@ -259,11 +259,10 @@ void GatewayApplication::step_startup(uint32_t now)
     // A neutral-only profile gates local transport, not readiness to move.
     startup_.step(now, raw_only(state_.mode) ? 0 : readiness_devices_, healthy);
     if (state_.operational && startup_.resume()) state_.owner = OWNER_PDO;
-    uint64_t session_id;
-    const auto after = startup_.current_state(&session_id);
+    const auto after = startup_.current_state();
     if (state_.operational && (layout_.phase == PDO_ACTIVE || layout_.switching()) &&
-        (session_id != layout_.session || after == DCU_GATEWAY_FAULT ||
-         after == DCU_GATEWAY_HOLD || (before == DCU_GATEWAY_RUNNING && after != before)))
+        (after == DCU_GATEWAY_FAULT || after == DCU_GATEWAY_HOLD ||
+         (before == DCU_GATEWAY_RUNNING && after != before)))
         layout_fault();
     layout_.running = state_.operational && after == DCU_GATEWAY_RUNNING;
     if ((state_.owner != OWNER_NONE && after != DCU_GATEWAY_RUNNING) ||
@@ -285,7 +284,7 @@ void GatewayApplication::operational(bool op)
         layout_.started = true;
         const auto next = next_layout(PDO_ENTER_OP);
         if (next == PDO_ACTIVE) {
-            layout_.session = readiness().session_id;
+            startup_.tick();
             layout_.baseline = raw_drops();
             if (observer_ && state_.mode == OperatingMode::MotorWithRaw && raw_channel(observer_->bus))
                 observer_->start(dcu_time_now_ms());

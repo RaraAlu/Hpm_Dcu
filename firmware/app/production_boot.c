@@ -29,8 +29,8 @@ bool dcu_production_boot(dcu_pdo_mode_t boot_mode)
 {
     const dcu_production_profile_t *profile = dcu_production_profile();
     if (!init_board_and_buses(profile)) return false;
-    if (!dcu_motor_axes_init(profile)) {
-        printf("Init motor axes failed!\n");
+    if (!dcu_gateway_profile_init(profile)) {
+        printf("Init gateway Profile failed!\n");
         return false;
     }
     if (!dcu_pdo_layout_init(profile, boot_mode) || !motor_control_verify_contract()) {
@@ -43,6 +43,8 @@ bool dcu_production_boot(dcu_pdo_mode_t boot_mode)
         return false;
     }
     const uint64_t boot_id = dcu_gateway_ids_boot(dcu_gateway_flash_storage());
+    if (!boot_id)
+        printf("Gateway boot ID unavailable; continuing startup\n");
     if (!dcu_gateway_readiness_boot(&profile->readiness, boot_id))
         printf("Gateway startup fault: business transmission inhibited\n");
 

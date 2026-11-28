@@ -20,8 +20,6 @@ const dcu_gateway_id_storage_t *dcu_gateway_flash_storage(void);
 /* Single owner. Boot reserves and verifies a durable epoch before returning it.
  * Zero means no ID can be used; an erased journal is never auto-provisioned. */
 uint64_t dcu_gateway_ids_boot(const dcu_gateway_id_storage_t *storage);
-/* Allocate an ID in the reserved boot epoch without touching storage. */
-uint64_t dcu_gateway_ids_next(void);
 
 #ifdef __cplusplus
 }

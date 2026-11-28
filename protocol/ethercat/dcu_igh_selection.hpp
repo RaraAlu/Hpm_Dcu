@@ -103,13 +103,15 @@ inline bool assign_image(ec_master_t *m, unsigned slave, uint16_t ix, const Sele
 inline const char *apply_selection(ec_master_t *m, unsigned slave, const Selection &s, uint32_t &generation)
 {
     ec_slave_info_t info{};
-    uint8_t request[88]{}, boot[8]{};
+    uint8_t request[88]{};
     uint32_t rev{}, state{}, gen{};
     if (!s.channels || ecrt_master_get_slave(m, slave, &info) || info.al_state != 2) return "not in PREOP";
-    if (!catalogue_matches(m, slave) || !read_exact(m, slave, 0x2103, 5, request, 8) ||
+    if (!catalogue_matches(m, slave) ||
         !sdo_value(m, slave, 0x2100, 5, rev, 4) || !sdo_value(m, slave, 0x2103, 2, gen, 4) ||
         gen == UINT32_MAX || !sdo_value(m, slave, 0x2101, 3, state, 1)) return "catalogue or context";
     if (state == 5 && !write_value(m, slave, 0x2101, 2, 1, 1)) return "fault reset";
+    // Populate the legacy field when available for older firmware.
+    if (!read_exact(m, slave, 0x2103, 5, request, 8)) std::memset(request, 0, 8);
     put32(request + 8, rev); put32(request + 12, gen);
     put32(request + 16, s.channels); put32(request + 20, s.axes);
     std::memcpy(request + 24, digest, 32);
@@ -126,8 +128,7 @@ inline const char *apply_selection(ec_master_t *m, unsigned slave, const Selecti
         !live_image(m, slave, 2, s.rx) || !live_image(m, slave, 3, s.tx)) return "live PDO mapping";
     if (!write_value(m, slave, 0x2103, 6, gen + 1, 4)) return "commit rejected";
     uint32_t buses{}, axes{};
-    if (!read_exact(m, slave, 0x2103, 5, boot, 8) || std::memcmp(boot, request, 8) ||
-        !sdo_value(m, slave, 0x2103, 2, generation, 4) || generation != gen + 1 ||
+    if (!sdo_value(m, slave, 0x2103, 2, generation, 4) || generation != gen + 1 ||
         !sdo_value(m, slave, 0x2103, 3, buses, 4) || buses != s.channels ||
         !sdo_value(m, slave, 0x2103, 4, axes, 4) || axes != s.axes) return "commit readback";
     return nullptr;

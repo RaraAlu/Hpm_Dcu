@@ -14,8 +14,8 @@ uint32_t staged_at_ms{};
 bool matches_active(const Candidate &candidate)
 {
     const auto active = application::readiness();
-    return active.boot_id && candidate.boot_id == active.boot_id &&
-           candidate.profile_id == active.profile_id && candidate.base_revision == active.revision &&
+    return active.profile_id && candidate.profile_id == active.profile_id &&
+           candidate.base_revision == active.revision &&
            candidate.revision > active.revision;
 }
 

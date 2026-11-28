@@ -5,7 +5,7 @@
 
 namespace gateway = dcu::app::gateway_application;
 
-bool dcu_motor_axes_init(const dcu_production_profile_t *profile)
+bool dcu_gateway_profile_init(const dcu_production_profile_t *profile)
 {
     return gateway::initialize_profile(*profile, dcu::head::profile_observer());
 }

@@ -48,8 +48,8 @@ bool stage_profile_candidate(const void *data, size_t bytes)
     if (!p || bytes != candidate_bytes || load_le(p, 2) != 1 || load_le(p + 2, 2) != bytes ||
         crc32(p, candidate_bytes - 4) != load_le(p + 32, 4))
         return profile_update::stage(nullptr);
+    // Bytes 16..23 are the legacy Boot ID; still covered by the wire CRC.
     const profile_update::Candidate next{
-        uint64_t{load_le(p + 20, 4)} << 32 | load_le(p + 16, 4),
         load_le(p + 4, 4), load_le(p + 8, 4), load_le(p + 12, 4),
         {static_cast<uint16_t>(load_le(p + 24, 2)),
          static_cast<uint16_t>(load_le(p + 26, 2)), load_le(p + 28, 4)}};
@@ -255,9 +255,9 @@ UINT8 dcu_pdo_topology_sdo_write(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *
     if (sub == 6) return motor_control_commit_topology(load_le(p, 4)) ? 0 : ABORTIDX_VALUE_EXCEEDED;
     if (sub != 1) return ABORTIDX_SUBINDEX_NOT_EXISTING;
     const auto active = readiness();
-    const uint64_t boot = uint64_t{load_le(p + 4, 4)} << 32 | load_le(p, 4);
     const auto *identity = object<mc_layout_identity_t>(0x2102);
-    if (!boot || boot != active.boot_id || load_le(p + 8, 4) != active.revision ||
+    // The first eight bytes are the legacy Boot ID, not a selection precondition.
+    if (load_le(p + 8, 4) != active.revision ||
         memcmp(p + 24, identity->Sha256, sizeof(identity->Sha256)) || memcmp(p + 56, active.digest, sizeof(active.digest)) ||
         !adapter::stage_selection(load_le(p + 16, 4), load_le(p + 20, 4), load_le(p + 12, 4)))
         return ABORTIDX_VALUE_EXCEEDED;

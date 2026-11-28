@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Compile production CAN and device Profiles into immutable C++ tables."""
 
 import argparse
@@ -169,7 +168,8 @@ def header(profile):
     profile_id = bounded(startup["profile_id"], 1, 0xFFFFFFFF, "profile_id")
     revision = bounded(startup["revision"], 1, 0xFFFFFFFF, "revision")
     ttl = bounded(startup["readiness_ttl_ms"], 100, 10000, "readiness_ttl_ms")
-    wait = bounded(startup["activation_wait_s"], 1, 60, "activation_wait_s")
+    # Part of the schema-v3 Profile digest, not a production readiness deadline.
+    bounded(startup["activation_wait_s"], 1, 60, "activation_wait_s")
     digest = profile_digest(profile)
     digest_bytes = ", ".join(f"0x{byte:02x}" for byte in digest)
     safety = profile["safety"]
@@ -261,9 +261,9 @@ def header(profile):
     if passthrough:
         lines.append("};")
     lines += ["static constexpr dcu_production_profile_t dcu_profile = {",
-              f"    dcu_can_profile_channels, {len(channels)}U, "
-              f"{'dcu_profile_devices' if devices else 'nullptr'}, {len(devices)}U, {lease}U, {feedback}U,",
-              f"    {{ {profile_id}U, {revision}U, {{ {digest_bytes} }}, {ttl}U, {wait}U }},",
+              (f"    dcu_can_profile_channels, {len(channels)}U, "
+               f"{'dcu_profile_devices' if devices else 'nullptr'}, {len(devices)}U, {lease}U, {feedback}U,"),
+              f"    {{ {profile_id}U, {revision}U, {{ {digest_bytes} }}, {ttl}U }},",
               "    { " + ", ".join(f"{limit}U" for limit in raw_limits) + " },",
               f"    {'dcu_profile_passthrough' if passthrough else 'nullptr'}, {len(passthrough)}U,",
               "};", "#endif", ""]

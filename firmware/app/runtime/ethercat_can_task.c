@@ -59,7 +59,7 @@ dcu_gateway_state_t dcu_gateway_next(dcu_gateway_state_t state, dcu_gateway_even
     case DCU_GATEWAY_READY:
         if (lost) return DCU_GATEWAY_HOLD;
         if (event == GW_POLICY_APPLIED) return DCU_GATEWAY_PREPARING;
-        if (event == GW_OP_READY || event == GW_EXPLICIT_RUN) return DCU_GATEWAY_RUNNING;
+        if (event == GW_OP_READY) return DCU_GATEWAY_RUNNING;
         break;
     case DCU_GATEWAY_RUNNING:
         if (lost) return DCU_GATEWAY_HOLD;

@@ -4,16 +4,16 @@
 
 ## 下发与生效
 
-1. 读 `0x2002:01` 取得启动代次；读 `0x2100:04/05` 取得活动 Profile ID/版本。若三个策略值与期望一致，跳过下载。
-2. 用[候选 YAML](../../tools/protocol/cfg/动态策略验证配置.yaml)与[编码器](../../tools/protocol/encode_profile_update.py)生成 36 字节二进制：`python3 tools/protocol/encode_profile_update.py 配置.yaml --boot-epoch 21 --output candidate.bin`。实际启动代次读自目标，不写死。
+1. 读 `0x2100:04/05` 取得活动 Profile ID/版本。若三个策略值与期望一致，跳过下载。
+2. 用[候选 YAML](../../tools/protocol/cfg/动态策略验证配置.yaml)与[编码器](../../tools/protocol/encode_profile_update.py)生成 36 字节二进制：`python3 tools/protocol/encode_profile_update.py 配置.yaml --output candidate.bin`。仅在旧固件要求匹配启动代次时，才读取 `0x2002:01` 并传入 `--boot-epoch`。
 3. 在 PREOP 向 `0x2100:01` 下载候选，核对结果为 Staged 和待提交版本；此时旧策略仍有效。在 5 秒内向 `0x2100:02` 写候选版本进行一次提交。相同的已提交版本可重试，不重复准备。
 4. 提交成功后读取活动版本及策略，并等 MCU 用新策略自检到 READY。再进入 OP，沿用普通零使能 PDO 启动。提交时不允许业务运行，也不产生设备使能。
 
 | 现有或新增对象 | 用途 |
 | --- | --- |
-| `0x2100:01` | 候选二进制，36 字节，只写。字段依次为 u16 schema/长度、u32 Profile ID/基版本/新版本、u64 Boot ID、u16 租约/反馈超时、u32 就绪 TTL/CRC32，小端。CRC 覆盖前 32 字节，Boot ID 为启动代次左移 32 位。 |
+| `0x2100:01` | 候选二进制，36 字节，只写。字段依次为 u16 schema/长度、u32 Profile ID/基版本/新版本、u64 旧版 Boot ID、u16 租约/反馈超时、u32 就绪 TTL/CRC32，小端。Boot ID 默认填零，不参与校验，但仍计入前 32 字节的 CRC。 |
 | `0x2100:02` | 待提交版本，u32，只写。 |
-| `0x2100:03` | 最近事务结果，u16：0 空闲、1 已暂存、2 已提交、3 无效、4 版本或启动上下文过期、5 无变化、6 已取消。 |
+| `0x2100:03` | 最近事务结果，u16：0 空闲、1 已暂存、2 已提交、3 无效、4 Profile ID 或版本不匹配、5 无变化、6 已取消。 |
 | `0x2100:04–07` | Profile ID、活动版本、暂存版本、活动就绪 TTL，均 u32 只读；无候选时暂存版本为 0。 |
 | `0x2001:02/03` | 活动租约上限和反馈超时；仍为原只读字段。 |
 

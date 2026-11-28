@@ -8,7 +8,7 @@ typedef enum {
 } dcu_pdo_mode_t;
 
 typedef enum {
-    GW_BOOT_VALID, GW_FRESH_FEEDBACK, GW_OP_READY, GW_EXPLICIT_RUN,
+    GW_BOOT_VALID, GW_FRESH_FEEDBACK, GW_OP_READY,
     GW_AUTHORIZATION_LOST, GW_CAN_HEALTHY, GW_POLICY_APPLIED, GW_FATAL
 } dcu_gateway_event_t;
 

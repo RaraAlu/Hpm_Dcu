@@ -9,7 +9,6 @@ _Static_assert(DCU_ID_SECTOR_BYTES % DCU_ID_PAGE_BYTES == 0 && DCU_ID_RECORD_BYT
                DCU_ID_RECORD_BYTES <= DCU_ID_PAGE_BYTES, "Invalid journal geometry");
 
 static uint64_t s_boot_id;
-static uint32_t s_ordinal;
 
 static uint32_t slot_offset(unsigned sector, unsigned slot)
 {
@@ -104,10 +103,4 @@ uint64_t dcu_gateway_ids_boot(const dcu_gateway_id_storage_t *storage)
         return 0;
     s_boot_id = (uint64_t)epoch << 32;
     return s_boot_id;
-}
-
-uint64_t dcu_gateway_ids_next(void)
-{
-    if (!s_boot_id || s_ordinal == UINT32_MAX) return 0;
-    return s_boot_id | ++s_ordinal;
 }

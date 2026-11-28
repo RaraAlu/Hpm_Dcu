@@ -10,7 +10,6 @@ typedef struct {
     uint32_t revision;
     uint8_t digest[DCU_GATEWAY_DIGEST_BYTES];
     uint32_t readiness_ttl_ms;
-    uint32_t activation_wait_s; /* Only the explicit-session diagnostic uses this deadline. */
 } dcu_gateway_profile_t;
 
 #endif

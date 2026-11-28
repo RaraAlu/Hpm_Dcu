@@ -34,9 +34,6 @@ typedef struct {
     uint8_t digest[DCU_GATEWAY_DIGEST_BYTES];
     uint64_t boot_id;
     uint32_t ready_generation;
-    uint32_t active_request_id;
-    uint64_t session_id;
-    uint32_t client_tag;
     uint32_t feedback_age_us;
 } dcu_gateway_readiness_t;
 
@@ -45,7 +42,7 @@ extern "C" {
 #endif
 
 /* Single task owner, not ISR-safe. Native values only; none are wire structs.
- * Boot once per reset with a unique, nonzero boot_id. */
+ * Boot once per reset. boot_id is diagnostic; zero means unavailable. */
 bool dcu_gateway_boot_static(const dcu_gateway_profile_t *profile, uint64_t boot_id, uint64_t now_us);
 void dcu_gateway_tick(uint64_t now_us);
 
@@ -59,8 +56,8 @@ bool dcu_gateway_retry_preparation(uint64_t now_us);
 bool dcu_gateway_resume_static(uint64_t now_us);
 bool dcu_gateway_apply_policy(uint32_t profile_id, uint32_t base_revision, uint32_t revision,
                               uint32_t ttl_ms, uint64_t now_us);
-/* Tick first, then read the state and optional session ID without building a snapshot. */
-dcu_gateway_state_t dcu_gateway_current_state(uint64_t now_us, uint64_t *session_id);
+/* Tick first, then read the state without building a snapshot. */
+dcu_gateway_state_t dcu_gateway_current_state(uint64_t now_us);
 dcu_gateway_readiness_t dcu_gateway_readiness(uint64_t now_us);
 
 #ifdef __cplusplus

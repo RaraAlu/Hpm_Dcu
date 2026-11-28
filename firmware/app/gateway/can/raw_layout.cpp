@@ -115,14 +115,13 @@ bool GatewayApplication::begin_layout(OperatingMode target, uint32_t profile, ui
     const auto active = readiness();
     const auto next = next_layout(topology ? PDO_SDO_2103_01_SELECT : PDO_SDO_2101_01_REQUEST);
     if (target > OperatingMode::SingleFd || (raw_only(target) && device_count_ && state_.operational) ||
-        next == PDO_REFUSED || !active.boot_id ||
+        next == PDO_REFUSED ||
         !profile || profile != active.profile_id || revision != active.revision ||
         std::memcmp(active.digest, digest, sizeof(digest))) return false;
     layout_.target = target;
     if (observer_) observer_->stop();
     layout_.pending_motor_owner = 0;
     layout_.phase = next;
-    layout_.session = active.session_id;
     layout_.revision = revision;
     layout_.drain_ms = dcu_time_now_ms();
     layout_.baseline = raw_drops();

@@ -1,20 +1,19 @@
-#!/usr/bin/env python3
 """Encode the static-topology Profile policy snapshot for CoE 0x2100:01."""
 
 import argparse
-from pathlib import Path
 import struct
 import zlib
+from pathlib import Path
 
-from profile_yaml import keys, load_yaml, require
 from generate_can_profile import bounded
+from profile_yaml import keys, load_yaml, require
 
 
-def encode(document, boot_epoch):
+def encode(document, boot_epoch=0):
     keys(document, {"schema_version", "profile_id", "base_revision", "revision", "policy"}, "candidate")
     require(type(document["schema_version"]) is int and document["schema_version"] == 1,
             "candidate.schema_version must be 1")
-    boot_epoch = bounded(boot_epoch, 1, 0xffffffff, "boot_epoch")
+    boot_epoch = bounded(boot_epoch, 0, 0xffffffff, "boot_epoch")
     profile_id = bounded(document["profile_id"], 1, 0xffffffff, "profile_id")
     base = bounded(document["base_revision"], 1, 0xffffffff, "base_revision")
     revision = bounded(document["revision"], base + 1, 0xffffffff, "revision")
@@ -30,7 +29,8 @@ def encode(document, boot_epoch):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("profile", type=Path)
-    parser.add_argument("--boot-epoch", type=lambda value: int(value, 0), required=True)
+    parser.add_argument("--boot-epoch", type=lambda value: int(value, 0), default=0,
+                        help="legacy firmware boot epoch (default: 0)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
