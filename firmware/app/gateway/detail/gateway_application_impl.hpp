@@ -151,7 +151,7 @@ private:
     void revoke_business();
     bool accept_candidate(const CycleCommand &candidate, uint32_t now_ms, ProcessResult &result);
     bool process_raw(const CycleCommand &candidate, uint32_t now_ms, uint8_t reserved_buses = 0);
-    void collect_tx_events(unsigned bus, unsigned budget = ~0U);
+    void collect_tx_events(unsigned bus, unsigned budget = ~0U, unsigned until_axis = DCU_MOTOR_DEVICE_CAPACITY);
     void submit_cyclic_batches(unsigned buses, uint32_t now_ms, uint32_t now_us);
     void service_cyclic_feedback(uint32_t now_ms, uint32_t now_us);
     bool consume_feedback(unsigned bus, const dcu_can_frame_t &frame,

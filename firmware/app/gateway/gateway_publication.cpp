@@ -74,7 +74,7 @@ DCU_FAST_CODE void GatewayApplication::prepare_header(Publication &snapshot, uin
             if (drops != state_.rx_fault_origin[c]) snapshot.board_status |= 16;
         }
         const auto members = routes_[c].members;
-        ch->status = (state_.config_ready ? 1 : 0) | ((members & active) ? 2 : 0) | (dcu_can_bus_state(c) == 3 ? 4 : 0) | (drops ? 8 : 0) | (state_.channel_tx_drop[c] ? 16 : 0);
+        ch->status = (state_.config_ready ? 1 : 0) | ((members & active) ? 2 : 0) | (dcu_can_is_bus_off_fast(c) ? 4 : 0) | (drops ? 8 : 0) | (state_.channel_tx_drop[c] ? 16 : 0);
         if (observer_ && observer_->bus == c) ch->status |= observer_->channel_status(now);
         ch->rx_drops = drops;
         ch->tx_drops = state_.channel_tx_drop[c];

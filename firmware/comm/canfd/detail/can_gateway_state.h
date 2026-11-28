@@ -1,6 +1,7 @@
 #ifndef DCU_CAN_GATEWAY_STATE_H
 #define DCU_CAN_GATEWAY_STATE_H
 
+#include <stdatomic.h>
 #include <stdint.h>
 #include "can_transport.h"
 #include "cfg/can_bus_config.h"
@@ -16,7 +17,7 @@ typedef struct {
 
 typedef struct {
     rx_item_t item[32];
-    volatile uint8_t read, write;
+    atomic_uint read, write;
 } rx_queue_t;
 
 typedef struct {

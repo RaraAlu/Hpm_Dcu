@@ -661,7 +661,7 @@ DCU_FAST_CODE bool GatewayApplication::consume_feedback(unsigned c, const dcu_ca
     return false;
 }
 
-DCU_FAST_CODE void GatewayApplication::collect_tx_events(unsigned c, unsigned budget)
+DCU_FAST_CODE void GatewayApplication::collect_tx_events(unsigned c, unsigned budget, unsigned until_axis)
 {
     dcu_can_tx_event_t event;
     while (budget-- && dcu_can_take_tx_event(c, &event)) {
@@ -676,6 +676,7 @@ DCU_FAST_CODE void GatewayApplication::collect_tx_events(unsigned c, unsigned bu
                 cyclic_.tx_eof[a] = event.eof;
                 if (event.eof.valid) DCU_BATCH_SAMPLE(a, tx_eof_us = event.eof.us);
             }
+            if (a == until_axis) return;
             break;
         }
     }
@@ -774,7 +775,7 @@ DCU_FAST_CODE void GatewayApplication::service_cyclic_feedback(uint32_t now, uin
     const bool tx_open = static_cast<int32_t>(cyclic_.deadline_us - now_us) > 0;
     unsigned live = 0, pending = 0;
     for (unsigned c = 0; c < DCU_DEVICE_CAN_BUS_COUNT; ++c) {
-        if (!(cyclic_.buses & (1U << c)) || dcu_can_bus_state(c) == DCU_CAN_BUS_OFF) continue;
+        if (!(cyclic_.buses & (1U << c)) || dcu_can_is_bus_off_fast(c)) continue;
         live |= 1U << c;
         if (cyclic_.queued[c]) {
             collect_tx_events(c);
@@ -784,25 +785,35 @@ DCU_FAST_CODE void GatewayApplication::service_cyclic_feedback(uint32_t now, uin
     if (tx_open && pending) submit_cyclic_batches(pending, now, now_us);
     if (tx_open && neutral_run_.active && !(cyclic_.buses & (1U << neutral_run_.bus)))
         process_bus(neutral_run_.bus, now, now_us);
-    // One dequeue per participating bus per pass while CAN continues transmitting.
-    for (unsigned n = 0; live && n < DCU_MOTOR_DEVICES_PER_BUS; ++n) {
-        for (unsigned mask = live; mask; mask &= mask - 1U) {
-            const unsigned c = __builtin_ctz(mask);
-#if defined(CONFIG_CAN_BATCH_SAMPLE)
-            collect_begin_us = dcu_time_now_us();
-#endif
-            // Give a waiting reply its turn before retiring later transmissions.
-            collect_tx_events(c, 1);
-            dcu_can_frame_t frame;
-            dcu_can_rx_stamp_t stamp;
-            if (!dcu_can_receive(c, &frame, &stamp)) {
-                live &= ~(1U << c);
-                continue;
-            }
-            const bool routed = consume_feedback(c, frame, stamp, dcu_time_now_ms(), dcu_time_now_us());
-            route_raw_rx(c, frame, stamp.observed_ms, routed, false);
-            if (!cyclic_feedback_missing()) return;
+    for (unsigned n = 0; live && n < DCU_MOTOR_DEVICE_CAPACITY; ++n) {
+        const uint32_t scan_us = dcu_time_now_us();
+        if (static_cast<int32_t>(cyclic_.deadline_us - scan_us) <= 0) return;
+        uint32_t wire_id;
+        const unsigned c = dcu_can_oldest_rx_head(live, scan_us, &wire_id);
+        if (c == DCU_CAN_BUS_COUNT) {
+            // TX can finish even when no reply arrives.
+            for (unsigned mask = live; mask; mask &= mask - 1U)
+                collect_tx_events(__builtin_ctz(mask), 1);
+            return;
         }
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+        collect_begin_us = dcu_time_now_us();
+#endif
+        const unsigned a = routes_[c].find(wire_id);
+        if (a < device_count_ && (cyclic_.submitted & (1U << a))) {
+            if (!cyclic_.tx_eof[a].valid) {
+                collect_tx_events(c, DCU_MOTOR_DEVICES_PER_BUS, a);
+                if (!cyclic_.tx_eof[a].valid) return; // Keep the oldest head until its own TX is known.
+            }
+        } else {
+            collect_tx_events(c, 1);
+        }
+        dcu_can_frame_t frame;
+        dcu_can_rx_stamp_t stamp;
+        if (!dcu_can_receive(c, &frame, &stamp)) return;
+        const bool routed = consume_feedback(c, frame, stamp, dcu_time_now_ms(), dcu_time_now_us());
+        route_raw_rx(c, frame, stamp.observed_ms, routed, false);
+        if (!cyclic_feedback_missing()) return;
     }
 }
 ProcessResult GatewayApplication::process(const CycleCommand *candidate)
@@ -818,7 +829,7 @@ ProcessResult GatewayApplication::process(const CycleCommand *candidate)
         service_cyclic_feedback(dcu_time_now_ms(), now_us);
         return result;
     }
-    if ((uint32_t)(now_us - state_.last_process_us) < policy::process_period_us)
+    if (!candidate && (uint32_t)(now_us - state_.last_process_us) < policy::process_period_us)
         return result;
     state_.last_process_us = now_us;
     uint32_t now = dcu_time_now_ms();

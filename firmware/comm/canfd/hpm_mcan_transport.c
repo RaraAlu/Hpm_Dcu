@@ -66,6 +66,15 @@ ATTR_PLACE_AT(".ahb_sram") static uint32_t s_mcan_ram[DCU_CAN_BUS_COUNT][MCAN_MS
 
 /* One ISR producer and one worker consumer per bus. */
 static rx_queue_t s_rx[DCU_CAN_BUS_COUNT];
+/* The FIFO layouts do not change after mcan_init. Access message RAM as aligned words. */
+static const volatile uint32_t *s_rx_fifo0[DCU_CAN_BUS_COUNT];
+static const volatile uint32_t *s_tx_events[DCU_CAN_BUS_COUNT];
+_Static_assert(offsetof(mcan_rx_message_t, data_8) == 2 * sizeof(uint32_t) &&
+               sizeof(mcan_rx_message_t) == 2 * sizeof(uint32_t) + DCU_CAN_MAX_PAYLOAD,
+               "RX FIFO0 must use two header words and a 64-byte element payload");
+_Static_assert(sizeof(mcan_tx_event_fifo_elem_t) == 2 * sizeof(uint32_t), "TX event stride");
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "MCAN ISR requires lock-free queue indices and bus state");
+static atomic_uint s_bus_off[DCU_CAN_BUS_COUNT];
 #if defined(CONFIG_CAN_BATCH_SAMPLE)
 /* Same-priority CAN IRQ handlers on this core do not nest each other. */
 static volatile uint32_t can_irq_total_us;
@@ -187,35 +196,44 @@ static bool is_protocol_error_code(uint32_t code)
     return code > 0U && code < 7U;
 }
 
-static DCU_FAST_CODE uint32_t read_bus_psr(unsigned bus)
+/* Serialize PSR reads with the BO interrupt so an older sample cannot replace a recovery. */
+static DCU_FAST_CODE uint32_t read_bus_psr_locked(unsigned bus, uint32_t before, canfd_fault_source_t source)
 {
     MCAN_Type *base = s_mcan[bus];
-    if (s_first_fault[bus].valid) return sample_psr(bus);
-
-    /* PSR consumes the error code. Keep any sample taken before the IRQ can run. */
-    taskENTER_CRITICAL();
-    const uint32_t before = mcan_get_interrupt_flags(base);
     uint32_t psr = sample_psr(bus);
     if (!s_first_fault[bus].valid) {
         const bool lec = is_protocol_error_code(MCAN_PSR_LEC_GET(psr));
         const bool dlec = is_protocol_error_code(MCAN_PSR_DLEC_GET(psr));
         if (before & s_protocol_errors) {
-            latch_protocol_fault(bus, CANFD_FAULT_FROM_STATE_READ, before, psr);
+            latch_protocol_fault(bus, source, before, psr);
         } else {
             const uint32_t after = mcan_get_interrupt_flags(base);
             if (after & s_protocol_errors) {
                 if (!((lec && (after & MCAN_INT_PROTOCOL_ERR_IN_ARB_PHASE)) ||
                       (dlec && (after & MCAN_INT_PROTOCOL_ERR_IN_DATA_PHASE))))
                     psr = sample_psr(bus);
-                latch_protocol_fault(bus, CANFD_FAULT_FROM_STATE_READ, after, psr);
+                latch_protocol_fault(bus, source, after, psr);
             } else if (lec || dlec) {
                 /* Keep the code even if the event flag was not observed with this PSR read. */
-                latch_protocol_fault(bus, CANFD_FAULT_FROM_STATE_READ, after, psr);
+                latch_protocol_fault(bus, source, after, psr);
             }
         }
     }
+    atomic_store_explicit(&s_bus_off[bus], psr & MCAN_PSR_BO_MASK, memory_order_relaxed);
+    return psr;
+}
+
+static DCU_FAST_CODE uint32_t read_bus_psr(unsigned bus)
+{
+    taskENTER_CRITICAL();
+    const uint32_t psr = read_bus_psr_locked(bus, mcan_get_interrupt_flags(s_mcan[bus]), CANFD_FAULT_FROM_STATE_READ);
     taskEXIT_CRITICAL();
     return psr;
+}
+
+DCU_FAST_CODE bool dcu_can_is_bus_off_fast(unsigned bus)
+{
+    return bus < DCU_CAN_BUS_COUNT && atomic_load_explicit(&s_bus_off[bus], memory_order_relaxed) != 0;
 }
 
 uint16_t dcu_can_bus_state(uint32_t bus)
@@ -242,6 +260,30 @@ static DCU_FAST_CODE dcu_can_eof_t read_eof(unsigned bus, bool captured, unsigne
     return eof;
 }
 
+/* Bytes beyond DLC remain zero when a shorter frame reuses this SPSC slot.
+ * Never cast frame.data (not word aligned) to a uint32_t pointer. */
+static DCU_FAST_CODE void copy_rx_payload(dcu_can_frame_t *frame, const volatile uint32_t *src, unsigned bytes)
+{
+    const unsigned previous = dcu_can_dlc_to_bytes(frame->dlc, (frame->flags & DCU_CAN_FLAG_FD) != 0);
+    unsigned pos = 0;
+    for (; pos + sizeof(uint32_t) <= bytes; pos += sizeof(uint32_t)) {
+        const uint32_t word = *src++;
+        frame->data[pos] = (uint8_t)word;
+        frame->data[pos + 1U] = (uint8_t)(word >> 8);
+        frame->data[pos + 2U] = (uint8_t)(word >> 16);
+        frame->data[pos + 3U] = (uint8_t)(word >> 24);
+    }
+    if (pos < bytes) {
+        uint32_t word = *src;
+        while (pos < bytes) {
+            frame->data[pos++] = (uint8_t)word;
+            word >>= 8;
+        }
+    }
+    const unsigned used = previous <= sizeof(frame->data) ? previous : sizeof(frame->data);
+    if (used > bytes) memset(frame->data + bytes, 0, used - bytes);
+}
+
 static DCU_FAST_CODE void receive_isr(uint32_t bus)
 {
 #if defined(CONFIG_CAN_BATCH_SAMPLE)
@@ -250,52 +292,64 @@ static DCU_FAST_CODE void receive_isr(uint32_t bus)
     const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
     if (!channel) return;
     MCAN_Type *base=s_mcan[bus]; uint32_t flags=mcan_get_interrupt_flags(base);
-    if ((flags & s_protocol_errors) && !s_first_fault[bus].valid) {
+    if ((flags & MCAN_INT_BUS_OFF_STATUS) || ((flags & s_protocol_errors) && !s_first_fault[bus].valid)) {
         const UBaseType_t saved = portSET_INTERRUPT_MASK_FROM_ISR();
-        if (!s_first_fault[bus].valid)
-            latch_protocol_fault(bus, CANFD_FAULT_FROM_IRQ, flags, sample_psr(bus));
+        /* Ack BO first: a later transition must remain pending after this sample. */
+        if (flags & MCAN_INT_BUS_OFF_STATUS) mcan_clear_interrupt_flags(base, MCAN_INT_BUS_OFF_STATUS);
+        (void)read_bus_psr_locked(bus, flags, CANFD_FAULT_FROM_IRQ);
         portCLEAR_INTERRUPT_MASK_FROM_ISR(saved);
     }
 #if defined(CONFIG_PDO_PHASE_TRACE)
     else if (flags & s_protocol_errors) (void)sample_psr(bus);
 #endif
-    mcan_clear_interrupt_flags(base,flags);
+    mcan_clear_interrupt_flags(base, flags & ~MCAN_INT_BUS_OFF_STATUS);
     if ((flags & MCAN_INT_TX_EVT_FIFO_NEW_ENTRY) && channel->timestamp_eof) {
         const UBaseType_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
         collect_tx_eofs(bus, base);
         portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
     }
-    while ((flags & MCAN_INT_RXFIFO0_NEW_MSG) && mcan_get_rxfifo_fill_level(base, 0U)) {
-        mcan_rx_message_t f;
-        /* FIFO0 is configured for 64-byte elements and this ISR is its only reader. */
-        mcan_read_rxfifo_unchecked(base, 0, &f);
+    while (flags & MCAN_INT_RXFIFO0_NEW_MSG) {
+        const uint32_t status = base->RXF0S;
+        if (!MCAN_RXF0S_F0FL_GET(status)) break;
+        const unsigned index = MCAN_RXF0S_F0GI_GET(status);
+        const volatile uint32_t *element = s_rx_fifo0[bus] + index * (sizeof(mcan_rx_message_t) / sizeof(uint32_t));
+        union { uint32_t words[2]; mcan_rx_message_t header; } rx;
+        rx.words[0] = element[0];
+        rx.words[1] = element[1];
+        const mcan_rx_message_t *f = &rx.header;
         dcu_can_eof_t eof = {0};
         if (channel->timestamp_eof)
-            eof = read_eof(bus, f.rx_timestamp_captured, f.rx_timestamp_pointer);
+            eof = read_eof(bus, f->rx_timestamp_captured, f->rx_timestamp_pointer);
         led_pulse(bus,CANFD_LED_RX);
-        rx_queue_t *q=&s_rx[bus]; uint8_t next=(q->write+1)&31;
-        const uint8_t bytes = dcu_can_dlc_to_bytes(f.dlc, f.canfd_frame);
-        if (bytes > DCU_CAN_MAX_PAYLOAD || f.rtr || (f.canfd_frame && !channel->fd) ||
-            (f.bitrate_switch && !f.canfd_frame) || next == q->read) {
+        rx_queue_t *q = &s_rx[bus];
+        const unsigned write = atomic_load_explicit(&q->write, memory_order_relaxed);
+        const unsigned next = (write + 1U) % ARRAY_SIZE(q->item);
+        const uint8_t bytes = dcu_can_dlc_to_bytes(f->dlc, f->canfd_frame);
+        if (bytes > DCU_CAN_MAX_PAYLOAD || f->rtr || (f->canfd_frame && !channel->fd) ||
+            (f->bitrate_switch && !f->canfd_frame) || next == atomic_load_explicit(&q->read, memory_order_acquire)) {
+            base->RXF0A = MCAN_RXF0A_F0AI_SET(index);
             ++s_rx_lost[bus];
             led_pulse(bus, CANFD_LED_ERR);
             continue;
         }
-        rx_item_t *item=&q->item[q->write];
-        item->frame=(dcu_can_frame_t){.id=f.use_ext_id?f.ext_id:f.std_id,.dlc=f.dlc,
-            .flags=(f.use_ext_id ? DCU_CAN_FLAG_EXTENDED : 0) |
-                   (f.canfd_frame ? DCU_CAN_FLAG_FD : 0) | (f.bitrate_switch ? DCU_CAN_FLAG_BRS : 0)};
-        memcpy(item->frame.data, f.data_8, bytes);
+        rx_item_t *item = &q->item[write];
+        copy_rx_payload(&item->frame, element + 2, bytes);
+        fenceiorw();
+        base->RXF0A = MCAN_RXF0A_F0AI_SET(index);
+        item->frame.id = f->use_ext_id ? f->ext_id : f->std_id;
+        item->frame.dlc = f->dlc;
+        item->frame.flags = (f->use_ext_id ? DCU_CAN_FLAG_EXTENDED : 0) |
+            (f->canfd_frame ? DCU_CAN_FLAG_FD : 0) | (f->bitrate_switch ? DCU_CAN_FLAG_BRS : 0);
         item->stamp = (dcu_can_rx_stamp_t){.observed_ms = dcu_time_now_ms(), .eof = eof};
+        item->stamp.enqueued_us = dcu_time_now_us();
 #if defined(CONFIG_CAN_BATCH_SAMPLE)
         item->stamp.irq_us = irq_us;
-        item->stamp.enqueued_us = dcu_time_now_us();
         item->stamp.can_irq_us = can_irq_total_us + (item->stamp.enqueued_us - irq_us);
 #endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
         item->observed_us = dcu_time_now_us();
 #endif
-        __asm__ volatile("" ::: "memory");q->write=next;
+        atomic_store_explicit(&q->write, next, memory_order_release);
     }
     if (flags & (MCAN_EVENT_TRANSMIT | MCAN_INT_TX_EVT_FIFO_NEW_ENTRY)) led_pulse(bus,CANFD_LED_TX);
     if(flags&MCAN_EVENT_ERROR)led_pulse(bus,CANFD_LED_ERR);
@@ -430,7 +484,12 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
                                     MCAN_TSCFG_TBCS_MASK | MCAN_TSCFG_EN64_MASK)) != MCAN_TSCFG_TSUE_MASK)))
             return status_fail;
         mcan_interrupt_line_select(s_mcan[bus], config.interrupt_mask, 0U);
+        if (MCAN_RXESC_F0DS_GET(s_mcan[bus]->RXESC) != MCAN_DATA_FIELD_SIZE_64BYTES ||
+            MCAN_RXF0C_F0OM_GET(s_mcan[bus]->RXF0C)) return status_fail;
+        s_rx_fifo0[bus] = (const volatile uint32_t *)mcan_get_rxfifo0_base(s_mcan[bus]);
         if (channel->timestamp_eof) {
+            const uint32_t event_offset = s_mcan[bus]->TXEFC & MCAN_TXEFC_EFSA_MASK;
+            s_tx_events[bus] = (const volatile uint32_t *)(mcan_get_ram_base(s_mcan[bus]) + event_offset);
             /* HPM5E31 ATB uses the AHB timebase, not the CAN bit-timing clock. */
             const uint32_t tsu_clock_hz = clock_get_frequency(clock_ahb0);
             if (!tsu_clock_hz) return status_fail;
@@ -441,6 +500,8 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
             s_feedback_stats[bus].hz = s_tsu_hz[bus];
         }
         s_channels[bus] = *channel;
+        /* No MCAN IRQ owns this bus yet; seed the snapshot before enabling the line. */
+        (void)read_bus_psr_locked(bus, mcan_get_interrupt_flags(s_mcan[bus]), CANFD_FAULT_FROM_STATE_READ);
     }
     s_active_mask = requested;
     for (size_t i = 0; i < count; ++i) {
@@ -453,39 +514,53 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
 
 
 uint32_t dcu_can_rx_drops(unsigned bus) { return dcu_can_channel_config(bus) ? s_rx_lost[bus] : 0; }
+DCU_FAST_CODE unsigned dcu_can_oldest_rx_head(uint32_t buses, uint32_t before_us, uint32_t *wire_id)
+{
+    unsigned oldest = DCU_CAN_BUS_COUNT;
+    uint32_t oldest_us = before_us;
+    // A head published during this scan belongs to the next snapshot. Ties keep the lower bus.
+    for (unsigned mask = buses & s_active_mask; mask; mask &= mask - 1U) {
+        const unsigned bus = __builtin_ctz(mask);
+        const rx_queue_t *q = &s_rx[bus];
+        const unsigned read = atomic_load_explicit(&q->read, memory_order_relaxed);
+        if (read == atomic_load_explicit(&q->write, memory_order_acquire)) continue;
+        const rx_item_t *head = &q->item[read];
+        if ((int32_t)(head->stamp.enqueued_us - oldest_us) < 0) {
+            oldest = bus;
+            oldest_us = head->stamp.enqueued_us;
+            *wire_id = head->frame.id;
+        }
+    }
+    return oldest;
+}
+
 DCU_FAST_CODE bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, dcu_can_rx_stamp_t *stamp)
 {
+    if (!dcu_can_channel_config(bus) || !f || !stamp) return false;
+    rx_queue_t *q = &s_rx[bus];
+    const unsigned read = atomic_load_explicit(&q->read, memory_order_relaxed);
+    if (read == atomic_load_explicit(&q->write, memory_order_acquire)) return false;
 #if defined(CONFIG_CAN_BATCH_SAMPLE)
     const uint32_t begin_us = dcu_time_now_us();
 #endif
-    if (!dcu_can_channel_config(bus) || !f || !stamp) return false;
-    rx_queue_t *q=&s_rx[bus];intc_m_disable_irq(s_irq[bus]);
-    bool available=q->read!=q->write;
-    if (available && (int32_t)(s_chain[bus].cutoff_us - dcu_time_now_us()) > 0) {
+    const rx_item_t *item = &q->item[read];
+    if ((int32_t)(s_chain[bus].cutoff_us - dcu_time_now_us()) > 0) {
         for (unsigned i = 0; i < s_chain[bus].count; ++i) {
             const tx_slot_t *slot = &s_tx[bus][i];
-            if (slot->feedback && slot->wire_id == q->item[q->read].frame.id) {
-                available = false; /* Deliver this request's terminal event before its reply. */
-                break;
-            }
+            if (slot->feedback && slot->wire_id == item->frame.id &&
+                __atomic_load_n(&slot->launched, __ATOMIC_RELAXED))
+                return false; /* Deliver this request's terminal event before its reply. */
         }
     }
-    if (available) {
-        *f = q->item[q->read].frame;
-        *stamp = q->item[q->read].stamp;
+    *f = item->frame;
+    *stamp = item->stamp;
+    atomic_store_explicit(&q->read, (read + 1U) % ARRAY_SIZE(q->item), memory_order_release);
 #if defined(CONFIG_CAN_BATCH_SAMPLE)
-        stamp->dequeue_us = begin_us;
+    stamp->dequeue_us = begin_us;
+    stamp->dequeued_us = dcu_time_now_us();
+    stamp->can_irq_us = can_irq_total_us - stamp->can_irq_us;
 #endif
-        q->read = (q->read + 1) & 31;
-    }
-    intc_m_enable_irq(s_irq[bus]);
-#if defined(CONFIG_CAN_BATCH_SAMPLE)
-    if (available) {
-        stamp->dequeued_us = dcu_time_now_us();
-        stamp->can_irq_us = can_irq_total_us - stamp->can_irq_us;
-    }
-#endif
-    return available;
+    return true;
 }
 bool dcu_can_pending(unsigned bus, unsigned device)
 {
@@ -536,7 +611,7 @@ static DCU_FAST_CODE bool launch_paced(unsigned bus)
     const bool ok = !slot->revoked && !dcu_tx_inhibited() && !(base->CCCR & MCAN_CCCR_INIT_MASK) &&
         dcu_cyclic_tx_window_current(b->cutoff_us) && (int32_t)(b->cutoff_us - dcu_time_now_us()) > 0;
     if (ok) {
-        slot->launched = true;
+        __atomic_store_n(&slot->launched, true, __ATOMIC_RELAXED);
         ++b->next;
         const uint32_t before = base->ATB;
         fenceiorw();
@@ -581,8 +656,16 @@ DCU_FAST_CODE void dcu_can_gap_elapsed_isr(void)
 
 static DCU_FAST_CODE void collect_tx_eofs(unsigned bus, MCAN_Type *base)
 {
-    mcan_tx_event_fifo_elem_t event;
-    for (unsigned n = 0; n < CANFD_TX_FIFO_DEPTH && mcan_read_tx_evt_fifo(base, &event) == status_success; ++n) {
+    for (unsigned n = 0; n < CANFD_TX_FIFO_DEPTH; ++n) {
+        const uint32_t status = base->TXEFS;
+        if (!MCAN_TXEFS_EFFL_GET(status)) break;
+        const unsigned index = MCAN_TXEFS_EFGI_GET(status);
+        const volatile uint32_t *element = s_tx_events[bus] + 2U * index;
+        mcan_tx_event_fifo_elem_t event;
+        event.words[0] = element[0];
+        event.words[1] = element[1];
+        fenceiorw();
+        base->TXEFA = MCAN_TXEFA_EFAI_SET(index);
         const dcu_can_eof_t eof = read_eof(bus, event.tx_timestamp_captured, event.tx_timestamp_pointer);
         // ET=2 can report transmission despite cancellation; slot retirement also checks revocation.
         if (!eof.valid || (event.event_type != 1 && event.event_type != 2)) continue;
@@ -813,8 +896,8 @@ DCU_FAST_CODE void dcu_can_submit_batches(dcu_can_bus_batch_t batches[DCU_CAN_BU
 
     /* Only first requests share this short IRQ window. Each bus paces its own tail. */
     taskENTER_CRITICAL();
-    for (unsigned mask = staged; mask; mask &= mask - 1U) {
-        const unsigned bus = __builtin_ctz(mask);
+    for (; staged; staged &= staged - 1U) {
+        const unsigned bus = __builtin_ctz(staged);
         dcu_can_bus_batch_t *b = &batches[bus];
 #if defined(CONFIG_CAN_BATCH_SAMPLE)
         b->submit_us = dcu_time_now_us();
@@ -822,17 +905,12 @@ DCU_FAST_CODE void dcu_can_submit_batches(dcu_can_bus_batch_t batches[DCU_CAN_BU
         if (launch_paced(bus)) {
             b->first_id = s_tx_serial[bus] + 1U;
             s_tx_serial[bus] += b->count;
-            staged &= ~(1U << bus);
+        } else {
+            memset(s_tx[bus], 0, b->count * sizeof(tx_slot_t));
+            s_chain[bus] = (paced_tx_t){0};
         }
     }
     taskEXIT_CRITICAL();
-    for (; staged; staged &= staged - 1U) {
-        const unsigned bus = __builtin_ctz(staged);
-        taskENTER_CRITICAL();
-        memset(s_tx[bus], 0, batches[bus].count * sizeof(tx_slot_t));
-        s_chain[bus] = (paced_tx_t){0};
-        taskEXIT_CRITICAL();
-    }
 }
 
 DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit_batch(unsigned bus, const dcu_can_batch_item_t *items,

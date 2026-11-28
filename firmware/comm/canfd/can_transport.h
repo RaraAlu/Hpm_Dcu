@@ -12,7 +12,7 @@ enum {
     DCU_CAN_BUS_ERROR_PASSIVE = 2,
     DCU_CAN_BUS_OFF = 3,
     DCU_CAN_BUS_DISABLED = 4,
-    DCU_CAN_TX_EOF_GAP_US = 50,
+    DCU_CAN_TX_EOF_GAP_US = 100,
 };
 
 typedef struct {
@@ -46,8 +46,9 @@ typedef struct {
 typedef struct {
     uint32_t observed_ms;
     dcu_can_eof_t eof;
+    uint32_t enqueued_us;
 #if defined(CONFIG_CAN_BATCH_SAMPLE)
-    uint32_t irq_us, enqueued_us, dequeue_us, dequeued_us;
+    uint32_t irq_us, dequeue_us, dequeued_us;
     uint32_t can_irq_us; /* Time inside CAN IRQ handlers between enqueue and successful dequeue. */
 #endif
 } dcu_can_rx_stamp_t;
@@ -74,6 +75,9 @@ extern "C" {
 uint32_t dcu_can_rx_drops(unsigned bus);
 const dcu_can_channel_config_t *dcu_can_channel_config(unsigned bus);
 uint16_t dcu_can_bus_state(uint32_t bus);
+bool dcu_can_is_bus_off_fast(unsigned bus);
+/* Worker-only peek; returns DCU_CAN_BUS_COUNT if no head predates before_us. */
+unsigned dcu_can_oldest_rx_head(uint32_t buses, uint32_t before_us, uint32_t *wire_id);
 bool dcu_can_receive(unsigned bus, dcu_can_frame_t *frame, dcu_can_rx_stamp_t *stamp);
 /* Includes terminal results not yet consumed by the worker. */
 /* Raw frames have no motor owner and exclude all devices until retired.

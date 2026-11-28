@@ -7,6 +7,12 @@ namespace dcu::motor {
 using detail::MotorPhase;
 
 namespace {
+bool feedback_limits_ok(const MotorFeedback &feedback, uint32_t current_limit_dA)
+{
+    return within_magnitude(feedback.sample.current_cA, int64_t{current_limit_dA} * 10) &&
+        !feedback.sample.motor_fault && !feedback.bridge_fault;
+}
+
 bool same_command(const Command &a, const Command &b)
 {
     return a.mode == b.mode && a.control_bits == b.control_bits && a.reserved_flags == b.reserved_flags &&
@@ -124,8 +130,7 @@ bool MotorInstance::is_zero_pdo(const Command &cmd) const
 
 bool MotorInstance::local_limits_ok() const
 {
-    return within_magnitude(state_.feedback.sample.current_cA, int64_t{route_.current_limit_dA} * 10) &&
-        !state_.feedback.sample.motor_fault && !state_.feedback.bridge_fault &&
+    return feedback_limits_ok(state_.feedback, route_.current_limit_dA) &&
         dcu_can_bus_state(bus_) != DCU_CAN_BUS_OFF;
 }
 bool MotorInstance::query_ready(uint32_t now) const
@@ -344,8 +349,9 @@ MotorPublication MotorInstance::read_feedback(uint32_t now, uint16_t feedback_ti
         feedback.feedback_age_ms = query.feedback_age_ms;
         stale = (query.valid_fields & (Position | Velocity | Current)) != (Position | Velocity | Current);
     }
-    const bool ready = running ? (!stale && !feedback.bridge_fault && !feedback.sample.motor_fault &&
-                                  dcu_can_bus_state(bus_) != DCU_CAN_BUS_OFF) : query_ready(now);
+    const bool feedback_ready = running ? (!stale && !feedback.bridge_fault && !feedback.sample.motor_fault) :
+        (driver_ && driver_->query_ready(now) && feedback_limits_ok(state_.feedback, route_.current_limit_dA));
+    const bool ready = feedback_ready && !dcu_can_is_bus_off_fast(bus_);
     feedback.status_word = (feedback.status_word & 0x320) | (configured() ? 1 : 0) |
         (online ? 2 : 0) | (ready ? 4 : 0) | (running ? 8 : 0) | (x.new_feedback ? 16 : 0) |
         (feedback.bridge_fault ? 32 : 0) | (feedback.sample.motor_fault ? 64 : 0) | (stale ? 128 : 0) |
