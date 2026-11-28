@@ -5,7 +5,6 @@ import contextlib
 import fcntl
 import hashlib
 import json
-from pathlib import Path
 import re
 import shlex
 import struct
@@ -13,6 +12,7 @@ import subprocess as sp
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 SCRIPTS = Path(__file__).resolve().parent
@@ -49,11 +49,11 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def log_command(path, args, timeout, stdin=None):
+def log_command(path, args, timeout, stdin=None, cwd=ROOT):
     print(f"{path.name}: {shlex.join(map(str, args))}", flush=True)
     with path.open("wb") as out:
         return sp.run(args, input=stdin, stdout=out, stderr=sp.STDOUT,
-                      cwd=ROOT, timeout=timeout, check=False).returncode
+                      cwd=cwd, timeout=timeout, check=False).returncode
 
 
 def remote(args, path, mode, manifest, timeout):
@@ -117,14 +117,14 @@ def gdb(image, log, commands):
            "-ex", "set pagination off", "-ex", "target remote localhost:3333"]
     for action in [*commands, "disconnect"]:
         cmd.extend(("-ex", action))
-    return log_command(log, cmd, 35)
+    return log_command(log, cmd, 35, cwd=log.parent)
 
 
 def snapshot(image, symbols, run):
     # RK is already Idle/PREOP. Halt only for a coherent dump, without resetting.
     commands = ["monitor halt"]
     for name, (addr, size) in symbols.items():
-        commands.append(f'dump binary memory "{run / (name + ".bin")}" {addr:#x} {addr + size:#x}')
+        commands.append(f"dump binary memory {name}.bin {addr:#x} {addr + size:#x}")
     try:
         require(gdb(image, run / "hpm-snapshot.log", commands) == 0, "HPM evidence dump failed")
     finally:
@@ -150,6 +150,7 @@ def report(run, layout_file):
     batches, n1, sequence, accepted, requested, fresh = [int(s, 0) for s in matches[0]]
     require(requested == required_mask, "RK requested axis mask differs from the contract")
     publications = evidence_value(log, "application_publications")
+    process_exit = evidence_value(log, "process_exit")
     initial, final = (evidence_value(log, k) for k in ("preop_epoch", "final_epoch"))
     before, after = (evidence_value(log, k) for k in ("before", "after"))
     require(len(before) == len(after) == len(axes), "RK counter inventory differs from the contract")
@@ -162,7 +163,8 @@ def report(run, layout_file):
     rows = list(SAMPLES.iter_unpack(raw["batch-sample"]))[:len(axes)]
     pipeline = PIPELINE_FIELDS.unpack_from(raw["pipeline"], len(raw["pipeline"]) - PIPELINE_FIELDS.size)
     period, advance = pipeline[15:17]
-    require(period == 2000 and advance < period, "invalid HPM period or advance")
+    require(pipeline[14] == 2_000_000 and period == 2000 and advance < period,
+            "invalid HPM period or advance")
     cutoff = period - max(advance, 400)
     require(cutoff > 0 and all(row[0] == sequence and row[2] == rows[0][2] for row in rows),
             "HPM samples are not bound to the same RK command")
@@ -176,15 +178,18 @@ def report(run, layout_file):
         values = dict(zip(("tx_eof", "rx_eof", "enqueued", "dequeue_begin", "dequeue_end",
                            "decode_begin", "decoded", "staged"),
                           [relative(row[i]) for i in (4, 5, 9, 11, 12, 13, 14, 6)]))
-        tx, rx, staged = (values[key] for key in ("tx_eof", "rx_eof", "staged"))
-        valid = tx is not None and rx is not None and staged is not None and 0 <= tx < rx <= staged < cutoff
+        tx, rx, decoded, staged = (values[key] for key in ("tx_eof", "rx_eof", "decoded", "staged"))
+        valid = (all(t is not None for t in (tx, rx, decoded, staged))
+                 and 0 <= tx < rx <= decoded <= staged < cutoff)
         samples.append({"bus": axis["bus"], "can_id": axis["can_id"], **values, "on_time": valid})
     latency = LATENCY_FIELDS.unpack(raw["cyclic_latency"])
     end = relative(latency[7])
-    publish_ok = (latency[1] == 1 and latency[4] == latency[5] == pipeline[9]
-                  and latency[6] == sync and end is not None and end <= cutoff)
     on_time = sum(row["on_time"] for row in samples)
-    passed = (publications == batches == n1 == 1 and initial == final and bool(initial[0])
+    publish_ok = (on_time == len(axes) and latency[1] == 1 and latency[4] == latency[5] == pipeline[9]
+                  and latency[6] == sync and end is not None
+                  and max(row["staged"] for row in samples) <= end <= cutoff)
+    passed = (process_exit == 0 and publications == batches == n1 == 1
+              and initial == final and bool(initial[0])
               and accepted == sequence and fresh == required_mask and deltas == [1] * len(axes)
               and on_time == len(axes) and publish_ok and pipeline[12] == 0)
     result = {

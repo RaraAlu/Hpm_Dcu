@@ -5,7 +5,6 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import subprocess as sp
@@ -13,6 +12,7 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 CLI = "/opt/etherlab/bin/ethercat"
 CFG = Path("src/module/driver_module/cfg/wg3.yaml")
@@ -53,6 +53,18 @@ def slave_al():
     require(re.match(r"^0\s+\d+:\d+\s+\w+\s+\+\s+HPM_28AXIS(?:\s|$)", state),
             f"unexpected EtherCAT slave: {state}")
     return state.split()[2]
+
+
+def wait_preop():
+    until = time.monotonic() + 12
+    while time.monotonic() < until:
+        try:
+            if slave_al() == "PREOP":
+                return
+        except (RuntimeError, sp.SubprocessError):
+            pass  # Read-only polling during the AL transition.
+        time.sleep(0.25)
+    raise RuntimeError("slave did not reach PREOP")
 
 
 def upload(index, subindex, kind):
@@ -99,7 +111,7 @@ def verify_preop(layout):
     def number(element, label):
         return int(element.findtext(label).replace("#x", "0x"), 0)
 
-    require(slave_al() == "PREOP", "slave must be in PREOP")
+    wait_preop()
     actual = [upload(0x2100, 4, "uint32"), upload(0x2100, 5, "uint32"),
               upload(0x2102, 1, "octet_string")]
     require(actual == [layout["profile_id"], layout["profile_revision"], layout["sha256"]],
@@ -145,8 +157,12 @@ def publish_one(node, proc, cfg, routes, run, shot):
     command_topic = cfg["topics"]["motor_command"]
     pub = node.create_publisher(JointCommand, command_topic, 1)
     states = []
+
+    def observe(msg):
+        states[:] = [msg]
+
     sub = node.create_subscription(
-        MotorStates, cfg["topics"]["motor_states"], lambda msg: states.__setitem__(slice(None), [msg]),
+        MotorStates, cfg["topics"]["motor_states"], observe,
         QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
     )
     command = JointCommand()
@@ -223,7 +239,7 @@ def shot(cfg, layout, routes):
                     if "Motor MIT:" in line or "PDO timing:" in line:
                         print(line.rstrip(), flush=True)
     require_idle()
-    require(slave_al() == "PREOP", "slave did not return to PREOP")
+    wait_preop()
     after = counters(axes)
     emit("after", after)
     emit("final_epoch", epoch())
@@ -236,10 +252,16 @@ def interrupted(signum, _frame):
 
 def main():
     mode, manifest = sys.argv[1:]
+    require(mode in ("check", "shot", "state"), "unknown RK one-shot action")
     for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, interrupted)
     with Path("build/.dcu-board-one-shot.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if mode == "state":
+            require_idle()
+            wait_preop()
+            emit("final_al_state", "PREOP")
+            return
         cfg, layout, routes = preflight(json.loads(manifest))
         if mode == "shot":
             shot(cfg, layout, routes)
