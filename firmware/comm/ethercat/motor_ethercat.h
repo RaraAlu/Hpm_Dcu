@@ -20,12 +20,15 @@ void motor_control_output(const void *data);
 bool motor_control_preview_supported(void);
 void motor_control_preview(const void *data);
 bool motor_control_event_pdo(void);
+uint16_t motor_control_event_bytes(void);
+bool motor_control_prepare_event_input(bool allow_empty, bool *has_frame);
 uint32_t motor_control_event_lease_us(void);
 
 uint16_t motor_control_mapping(uint16_t *input_size, uint16_t *output_size);
 bool motor_control_commit_topology(uint32_t generation);
 bool motor_control_verify_contract(void);
 void motor_control_prepare_input(void);
+bool motor_control_prepare_cyclic_input(void);
 void motor_control_clear_raw_input(void);
 bool motor_control_neutral_feedback_pending(void);
 void motor_control_set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us);

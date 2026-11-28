@@ -143,7 +143,7 @@ static DCU_FAST_CODE void raw_pdo_fault(void)
 
 static DCU_FAST_CODE uint32_t *raw_pdo_reserve(uint16_t size, uint32_t *write)
 {
-    if (!read_handoff(&raw_pdo.enabled) || size != DCU_SINGLE_FD_PDO_BYTES) return NULL;
+    if (!read_handoff(&raw_pdo.enabled) || size != raw_pdo.bytes) return NULL;
     *write = read_handoff(&raw_pdo.write);
     if (*write - read_handoff(&raw_pdo.read) >= DCU_RAW_PDO_QUEUE_DEPTH) {
         raw_pdo_fault();
@@ -206,6 +206,8 @@ void dcu_cycle_init(void)
     (void)pdo_pipeline_configure(&pipeline, 0, 0, 0);
 }
 
+bool dcu_cycle_event_enabled(void) { return read_handoff(&raw_pdo.enabled) != 0; }
+
 uint16_t dcu_cycle_configure(void)
 {
     if (runtime.outputs_running)
@@ -214,13 +216,11 @@ uint16_t dcu_cycle_configure(void)
     raw_pdo.configured = false;
     const bool sm2 = sm2_sync_selected();
     const bool single_fd = motor_control_event_pdo();
-    if (single_fd && (nPdOutputSize != DCU_SINGLE_FD_PDO_BYTES || nPdInputSize != DCU_SINGLE_FD_PDO_BYTES))
-        return ALSTATUSCODE_SYNCHRONNOTSUPPORTED;
-    /* Only an explicitly SM-synchronous master uses the legacy event queue.
-     * SingleFd with DC uses the same latch, watchdog and cutoff as motor PDOs. */
-    if (single_fd && sm2) {
-        if (!sm2_configuration_matches())
+    if (single_fd) {
+        if (!sm2_configuration_matches() || nPdOutputSize != motor_control_event_bytes() ||
+            nPdOutputSize > sizeof(raw_pdo.image[0]) || nPdOutputSize != nPdInputSize)
             return ALSTATUSCODE_SYNCHRONNOTSUPPORTED;
+        raw_pdo.bytes = nPdOutputSize;
         write_handoff(&handoff.sm2_cycles, 0U);
         raw_pdo.configured = runtime.configured = true;
         raw_pdo.published = false;
@@ -271,6 +271,8 @@ uint16_t dcu_cycle_start_outputs(void)
         runtime.outputs_running = true;
         motor_control_set_neutral_window(0, 0);
         dcu_tx_allow();
+        /* Only the event-mode PDI may wake the RTOS worker directly. */
+        intc_set_irq_priority(IRQn_ESC, DCU_IRQ_KERNEL_PRIORITY);
         write_handoff(&raw_pdo.enabled, 1);
         return ALSTATUSCODE_NOERROR;
     }
@@ -337,6 +339,7 @@ uint16_t dcu_cycle_start_outputs(void)
 void dcu_cycle_stop_outputs(void)
 {
     write_handoff(&raw_pdo.enabled, 0);
+    if (raw_pdo.configured) intc_set_irq_priority(IRQn_ESC, DCU_IRQ_PDI_PRIORITY);
     raw_pdo.published = false;
     pdo_pipeline_enable(&pipeline, false);
     if (runtime.outputs_running && !raw_pdo.configured) {
@@ -422,7 +425,7 @@ void dcu_cycle_stage(const void *data)
         uint32_t write;
         uint32_t *destination = raw_pdo_reserve(nPdOutputSize, &write);
         if (destination) {
-            memcpy(destination, data, DCU_SINGLE_FD_PDO_BYTES);
+            memcpy(destination, data, raw_pdo.bytes);
             write_handoff(&raw_pdo.write, write + 1U);
         }
         return;
@@ -562,7 +565,15 @@ static void publish_due(void)
 #if defined(CONFIG_PDO_PHASE_TRACE)
     if (sample) sample->publish_begin_us = now_us;
 #endif
-    motor_control_prepare_input();
+    if (cyclic) {
+        if (!motor_control_prepare_cyclic_input()) {
+            pdo_pipeline_fault(&pipeline, PDO_PIPELINE_CAN_FEEDBACK_MISSING);
+            (void)check_faults(dcu_time_now_us());
+            return;
+        }
+    } else {
+        motor_control_prepare_input();
+    }
     uint32_t packed_us = dcu_time_now_us();
 #if defined(CONFIG_PDO_PHASE_TRACE)
     if (sample) sample->pack_end_us = packed_us;
@@ -635,12 +646,13 @@ static void raw_pdo_step(void)
     }
     if (motor_control_process()) runtime.command_pending = false;
     write_handoff(&raw_pdo.worker_us, dcu_time_now_us());
-    /* The previous image may contain a CAN frame. Retire it only after SM3 was read. */
-    if (bEcatInputUpdateRunning &&
-        (!raw_pdo.published || (SWAPWORD(HW_GetALEventRegister()) & PROCESS_INPUT_EVENT))) {
-        motor_control_prepare_input();
-        PDO_InputMapping();
-        raw_pdo.published = true;
+    if (bEcatInputUpdateRunning) {
+        const bool free = !raw_pdo.published || (SWAPWORD(HW_GetALEventRegister()) & PROCESS_INPUT_EVENT);
+        /* A real RX can replace an unread heartbeat, never an unread CAN frame. */
+        if ((free || !raw_pdo.has_frame) && motor_control_prepare_event_input(free, &raw_pdo.has_frame)) {
+            PDO_InputMapping();
+            raw_pdo.published = true;
+        }
     }
 }
 
@@ -792,7 +804,7 @@ DCU_FAST_CODE bool dcu_cyclic_tx_window_current(uint32_t cutoff_us)
            pdo_pipeline_cyclic_deadline(&pipeline, read_handoff(&pipeline.sync_us)) == cutoff_us;
 }
 
-void dcu_cycle_watchdog_isr(void)
+DCU_FAST_CODE void dcu_cycle_watchdog_isr(void)
 {
     /* Independent of task progress; never mutate SSC or motor objects here. */
     const uint32_t now_us = dcu_time_now_us();

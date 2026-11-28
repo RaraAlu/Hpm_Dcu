@@ -11,6 +11,10 @@
 #include "task.h"
 
 static volatile dcu_rtos_diagnostics_t rtos_diagnostics;
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+static uint32_t last_wake_us;
+uint32_t dcu_worker_wake_us(void) { return last_wake_us; }
+#endif
 
 void dcu_rtos_read_diagnostics(dcu_rtos_diagnostics_t *snapshot)
 {
@@ -28,9 +32,16 @@ void ecat_can_task(void *argument)
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         const uint32_t start_us = dcu_time_now_us();
-        /* PDO/CAN and SSC deliver gateway, layout and session events on this same task. */
-        if (dcu_cycle_service_pdo_can(start_us) == DCU_CYCLE_ALLOW_SSC)
-            dcu_cycle_service_ethercat_al();
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+        last_wake_us = start_us;
+#endif
+        uint32_t pass_us = start_us;
+        while (dcu_cycle_service_pdo_can(pass_us) == DCU_CYCLE_WAIT_CAN_FEEDBACK) {
+            /* While this image is open, stay on CAN. Each pass checks the
+             * absolute cutoff; CAN pacing and the independent watchdog remain IRQ-driven. */
+            pass_us = dcu_time_now_us();
+        }
+        dcu_cycle_service_ethercat_al();
         dcu_cycle_record_worker_duration(start_us);
 
         const uint32_t now_ms = dcu_time_now_ms();

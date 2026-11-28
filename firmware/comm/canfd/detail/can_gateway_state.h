@@ -28,7 +28,7 @@ typedef struct {
 } tx_slot_t;
 
 typedef struct {
-    unsigned next, count;
+    unsigned next, count, unretired;
     uint32_t cutoff_us, eof_tick;
     bool armed;
 } paced_tx_t;

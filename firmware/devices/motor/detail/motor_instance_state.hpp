@@ -17,7 +17,7 @@ enum class MotorPhase : uint8_t {
 struct MotorState {
     Command command{}, startup_command{};
     MotorFeedback feedback{};
-    uint32_t feedback_ms{}, online_ms{}, active_ms{}, lease_ms{}, commit_ms{};
+    uint32_t feedback_ms{}, online_ms{}, active_ms{};
     uint32_t cyclic_feedback_count{};
     uint16_t previous_control{};
     MotorPhase phase{MotorPhase::Stopped};

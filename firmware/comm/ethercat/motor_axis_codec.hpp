@@ -10,19 +10,11 @@ static_assert(motor::Arm == MC_AXIS_ARM && motor::Stop == MC_AXIS_STOP &&
               motor::ResetFault == MC_AXIS_RESET && motor::StartMotion == MC_AXIS_START_MOTION);
 static_assert(motor::QuerySource == MC_STATUS_QUERY_SOURCE && motor::ArmedQueryOnly == MC_STATUS_ARMED_QUERY_ONLY);
 
-// PDO and SDO carry the same command fields, but have distinct wire layouts.
-template <typename Wire> motor::Command command(const Wire &wire)
+inline motor::Command command(const mc_axis_rx_t &wire)
 {
     return {static_cast<motor::ControlMode>(wire.Mode), wire.ControlWord, wire.Flags,
         wire.TargetPosition, wire.TargetVelocity, wire.TargetTorque, wire.TargetCurrent,
         wire.CurrentLimit, wire.Kp, wire.Kd};
-}
-
-inline mc_axis_rx_t command(const motor::Command &value)
-{
-    return {value.control_bits, static_cast<uint8_t>(value.mode), value.reserved_flags,
-        value.position_urad, value.velocity_urad_s, value.torque_mNm, static_cast<int16_t>(value.current_cA),
-        value.kp_centi, value.kd_milli, value.current_limit_dA};
 }
 
 inline void sample(const motor::Feedback &value, mc_axis_tx_t &wire)

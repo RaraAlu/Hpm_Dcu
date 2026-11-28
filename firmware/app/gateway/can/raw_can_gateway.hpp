@@ -39,11 +39,11 @@ struct RawCanDrops {
 
 struct RawCanSubmit {
     void *context{};
-    // Returns true only after the caller's budget check and successful submission.
+    // Returns true only after successful submission.
     bool (*frame)(void *context, unsigned bus, const dcu_can_frame_t &frame, bool fd_response){};
 };
 
-// Owns raw FIFO, batch deduplication and rate limits; borrows submission per call.
+// Owns raw FIFO, batch deduplication and legacy rate limits.
 class RawCanGateway {
 public:
     // Discard sequence tracking; retain RX FIFO and rate history.
@@ -60,7 +60,7 @@ public:
 
 private:
     bool accept_sequence(const RawCanBatch &batch);
-    bool send(unsigned bus, const dcu_can_frame_t &frame, bool protect_ids, uint32_t now_ms,
+    bool send(unsigned bus, const dcu_can_frame_t &frame, RawCanBatch::Kind kind, uint32_t now_ms,
               const RawCanPolicy &policy, RawCanSubmit submit);
     struct Queue {
         dcu_can_frame_t frames[config::raw_can::queue_capacity]{};

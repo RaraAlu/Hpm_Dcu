@@ -54,6 +54,12 @@ bool CanTransactions::awaiting_tx(unsigned bus) const
     return parameters::inspect(bus).awaiting_tx;
 }
 
+bool CanTransactions::external_service_busy(unsigned bus) const
+{
+    const auto service = parameters::inspect(bus);
+    return service.busy && !service.internal;
+}
+
 bool CanTransactions::raw_send_allowed(unsigned bus, uint32_t now) const
 {
     for (const auto &poll : polls_[bus]) if (poll.tx_id) return false;

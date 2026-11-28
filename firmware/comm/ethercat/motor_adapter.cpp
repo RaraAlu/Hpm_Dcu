@@ -21,11 +21,11 @@ namespace {
 const dcu_motor_device_profile_t *slot_profiles[ENCOS_AXIS_COUNT];
 const dcu_production_profile_t *bound_profile;
 uint8_t device_slots[DCU_MOTOR_DEVICE_CAPACITY];
+mc_axis_rx_t *command_mirrors[DCU_MOTOR_DEVICE_CAPACITY];
 unsigned device_count;
 uint32_t configured_slots;
 layout::Layout catalogue_wire, requested_wire;
 uint32_t generation;
-uint8_t configured_motors[ENCOS_CHANNEL_COUNT];
 adapter::detail::InputState input;
 bool bind_slots(const dcu_production_profile_t &profile)
 {
@@ -37,6 +37,8 @@ bool bind_slots(const dcu_production_profile_t &profile)
         const unsigned bus = profile.devices[i].bus;
         if (bus >= ENCOS_CHANNEL_COUNT || counts[bus] >= ENCOS_MOTORS_PER_CHANNEL) return false;
         slots[i] = bus * ENCOS_MOTORS_PER_CHANNEL + counts[bus]++;
+        command_mirrors[i] = object<mc_axis_rx_t>(0x7200 + slots[i]);
+        if (!command_mirrors[i]) return false;
     }
     bound_profile = &profile;
     device_count = profile.device_count;
@@ -46,8 +48,6 @@ bool bind_slots(const dcu_production_profile_t &profile)
         slot_profiles[slot] = &profile.devices[i];
         configured_slots |= 1U << slot;
     }
-    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
-        configured_motors[c] = (1U << counts[c]) - 1U;
     return true;
 }
 
@@ -63,7 +63,7 @@ void publish_profile()
         const auto config = application::channel_configuration(c);
         const auto *active = config.enabled ? dcu_can_channel_config(c) : nullptr;
         channel.Role = config.role;
-        channel.MotorConfiguredMask = configured_motors[c];
+        channel.MotorConfiguredMask = (configured_slots >> (ENCOS_MOTORS_PER_CHANNEL * c)) & 0x7f;
         channel.FrameFormat = config.frame_format;
         channel.NominalBitrate = active ? active->nominal_bitrate_bps : 0;
         channel.DataBitrate = active ? active->data_bitrate_bps : 0;
@@ -91,12 +91,13 @@ bool adapter::initialize(const dcu_production_profile_t &profile)
 
 bool motor_control_event_pdo(void)
 {
-    static_assert(sizeof(mc_raw_t) == DCU_SINGLE_FD_PDO_BYTES);
+    static_assert(sizeof(mc_event_header_t) == dcu_can_event::header_bytes && sizeof(mc_event_data_t) == dcu_can_event::data_bytes);
     return application::mode() == application::OperatingMode::SingleFd;
 }
 
 uint32_t motor_control_event_lease_us(void)
 { return uint32_t{application::profile_policy().max_command_lease_ms} * 1000U; }
+uint16_t motor_control_event_bytes(void) { return layout::event_layout().bytes(3, false); }
 
 bool motor_control_preview_supported(void)
 {
@@ -113,14 +114,15 @@ void motor_control_preview(const void *data)
     while (slots) {
         const unsigned slot = __builtin_ctz(slots);
         slots &= slots - 1;
-        application::preview_axis(adapter::device_for_slot(slot), axis_codec::command(pdo::axis(data, slot)));
+        application::preview_control(adapter::device_for_slot(slot), axis_codec::command(pdo::axis(data, slot)));
     }
 }
 
 void motor_control_output(const void *data)
 {
     input.mode = application::mode();
-    const size_t bytes = layout::active().bytes(static_cast<unsigned>(input.mode), false);
+    const size_t bytes = motor_control_event_pdo() ? motor_control_event_bytes() :
+        layout::active().bytes(static_cast<unsigned>(input.mode), false);
     std::memcpy(input.wire, data, bytes);
     pdo::decode_cycle(input.wire, input.mode, input.command);
     input.pending = true;
@@ -139,8 +141,13 @@ DCU_FAST_CODE bool motor_control_process(void)
     if (result.consumed) input.pending = false;
     if (!result.accepted) return !input.pending;
     if (input.mode == application::OperatingMode::SingleFd) {
-        if (result.raw_mirrored)
-            *object<mc_raw_t>(0x7301) = pdo::load<mc_raw_t>(input.wire, 0);
+        if (result.raw_mirrored) {
+            *object<mc_event_header_t>(0x7305) = pdo::load<mc_event_header_t>(input.wire, 0);
+            const auto mask = layout::event_layout().buses;
+            for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
+                if (mask & (1U << c)) *object<mc_event_data_t>(0x7301 + c) =
+                    pdo::load<mc_event_data_t>(input.wire, dcu_can_event::offset(mask, c));
+        }
         return true;
     }
     *object<mc_board_rx_t>(0x7000) = pdo::board(input.wire);
@@ -155,10 +162,12 @@ DCU_FAST_CODE bool motor_control_process(void)
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
         if (layout::active().buses & (1U << c))
             *object<mc_channel_rx_t>(0x7100 + c) = pdo::channel(input.wire, c);
-    const uint32_t mirror = adapter::slots_for_devices(result.mirrored_devices);
-    for (unsigned a = 0; a < ENCOS_AXIS_COUNT; ++a)
-        if (mirror & layout::active().command_axes & (1u << a))
-            *object<mc_axis_rx_t>(0x7200 + a) = pdo::axis(input.wire, a);
+    for (auto mask = result.mirrored_devices; mask; mask &= mask - 1U) {
+        const unsigned device = __builtin_ctz(mask);
+        const unsigned binding = device_slots[device];
+        if (layout::active().command_axes & (1U << binding))
+            *command_mirrors[device] = pdo::axis(input.wire, binding);
+    }
     if (input.mode == application::OperatingMode::MotorWithRaw && result.raw_mirrored)
         *object<pdo::layout::MappedSideband>(0x7300) = pdo::raw(input.wire);
     return true;
@@ -228,8 +237,6 @@ bool commit_selection()
         if (requested_wire.feedback_axes & (1U << device_slots[i])) devices |= 1U << i;
     if (!application::commit_topology(*bound_profile, requested_wire.buses, devices)) return false;
     configured_slots = requested_wire.feedback_axes;
-    for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c)
-        configured_motors[c] = (configured_slots >> (ENCOS_MOTORS_PER_CHANNEL * c)) & 0x7f;
     clear_layout_commands();
     for (unsigned i = 0; i < device_count; ++i) {
         const unsigned a = device_slots[i];
@@ -251,12 +258,13 @@ void clear_layout_commands()
     *object<mc_board_rx_t>(0x7000) = {};
     for (unsigned c = 0; c < ENCOS_CHANNEL_COUNT; ++c) {
         *object<mc_channel_rx_t>(0x7100 + c) = {};
+        *object<mc_event_data_t>(0x7301 + c) = {};
         *object<canfd_bus_pdo_t>(0x7400 + 16 * c) = {};
     }
     for (unsigned i = 0; i < device_count; ++i)
         *object<mc_axis_rx_t>(0x7200 + device_slots[i]) = {};
     *object<pdo::layout::MappedSideband>(0x7300) = {};
-    *object<mc_raw_t>(0x7301) = {};
+    *object<mc_event_header_t>(0x7305) = {};
 }
 
 const dcu_motor_device_profile_t *configured_device(unsigned slot)
@@ -297,10 +305,8 @@ void commit_sdo_command(unsigned axis, uint32_t now)
 {
     if (axis >= ENCOS_AXIS_COUNT) return;
     auto &wire = *object<mc_sdo_command_t>(0x2200 + 16 * axis);
-    const application::SdoCommand command{axis_codec::command(wire), wire.CommitSeq, wire.LeaseMs};
-    const auto result = application::commit_sdo_command(device_for_slot(axis), command, now);
-    wire.AcceptedSeq = result.accepted_sequence;
+    const auto result = application::commit_sdo_command(device_for_slot(axis), wire.CommitSeq, now);
+    wire.AcceptedSeq = 0; // Production never grants SDO motion ownership.
     if (result.changed) wire.CommandResult = result.result;
-    if (result.mirror_command) *object<mc_axis_rx_t>(0x7200 + axis) = axis_codec::command(command.command);
 }
 }

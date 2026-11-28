@@ -9,6 +9,9 @@ extern "C" {
 #endif
 
 uint32_t dcu_time_now_us(void);
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+uint32_t dcu_worker_wake_us(void);
+#endif
 /* Low machine timer word for sub-microsecond intervals shorter than one wrap. */
 uint32_t dcu_time_ticks(void);
 uint32_t dcu_time_tick_hz(void);

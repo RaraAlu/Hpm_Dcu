@@ -51,13 +51,15 @@ bool RawCanGateway::take(unsigned c, dcu_can_frame_t &frame)
 }
 
 
-bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, bool protect_ids, uint32_t now,
+bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, RawCanBatch::Kind kind, uint32_t now,
                          const RawCanPolicy &policy, RawCanSubmit submit)
 {
-    if (c >= raw_cfg::bus_capacity || !policy.buses[c].can_send)
+    if (c >= raw_cfg::bus_capacity || !policy.buses[c].can_send || !submit.frame)
         return false;
+    if (kind == RawCanBatch::Kind::SingleFd)
+        return submit.frame(submit.context, c, frame, false);
     const auto &bus = policy.buses[c];
-    if (protect_ids || bus.protect_full_bus) {
+    if (kind == RawCanBatch::Kind::Sideband || bus.protect_full_bus) {
         if (bus.protected_count > raw_cfg::protected_id_capacity)
             return false;
         for (unsigned i = 0; i < bus.protected_count; ++i)
@@ -71,7 +73,7 @@ bool RawCanGateway::send(unsigned c, const dcu_can_frame_t &frame, bool protect_
     if (budget_[c] >= bus.rate_limit) {
         return false;
     }
-    if (!submit.frame || !submit.frame(submit.context, c, frame, bus.fd_response))
+    if (!submit.frame(submit.context, c, frame, bus.fd_response))
         return false;
     ++budget_[c];
     return true;
@@ -113,7 +115,7 @@ RawCanDrops RawCanGateway::process(const RawCanBatch &batch, const RawCanPolicy 
     for (unsigned i = 0; i < batch.count; ++i) {
         const auto &slot = batch.slots[i];
         const unsigned c = sideband ? slot.bus : batch.bus;
-        if (!send(c, slot.frame, sideband, now, policy, submit)) {
+        if (!send(c, slot.frame, batch.kind, now, policy, submit)) {
             ++drops.total;
             if (c < raw_cfg::bus_capacity)
                 ++drops.channel[c];

@@ -46,7 +46,7 @@ bool dcu_timebase_init(void)
     machine_time_origin = machine_time();
     return true;
 }
-uint32_t dcu_time_now_ms(void)
+DCU_FAST_CODE uint32_t dcu_time_now_ms(void)
 {
     return (uint32_t)((machine_time() - machine_time_origin) / (DCU_MACHINE_TIMER_HZ / 1000U));
 }
@@ -72,7 +72,7 @@ void dcu_worker_timer_start(void)
     intc_m_enable_irq_with_priority(DCU_WORKER_TIMER_IRQ, DCU_IRQ_WORKER_PRIORITY);
     gptmr_start_counter(DCU_WORKER_TIMER, DCU_WORKER_TIMER_CHANNEL);
 }
-bool dcu_worker_timer_ack(void)
+DCU_FAST_CODE bool dcu_worker_timer_ack(void)
 {
     uint32_t mask = GPTMR_CH_RLD_STAT_MASK(DCU_WORKER_TIMER_CHANNEL);
     if (!gptmr_check_status(DCU_WORKER_TIMER, mask)) return false;
@@ -96,7 +96,7 @@ DCU_FAST_CODE void dcu_can_arm_gap_at_us(uint32_t due_us)
     }
 }
 
-bool dcu_can_wake_timer_ack(void)
+DCU_FAST_CODE bool dcu_can_wake_timer_ack(void)
 {
     const uint32_t mask = GPTMR_CH_RLD_STAT_MASK(DCU_CAN_WAKE_CHANNEL);
     if (!gptmr_check_status(DCU_WORKER_TIMER, mask)) return false;

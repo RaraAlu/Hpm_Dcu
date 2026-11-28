@@ -4,6 +4,7 @@
 #include "detail/can_gateway_state.h"
 #include "realtime_port.h"
 #include "cycle_config.h"
+#include "ethercat_cycle.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -65,6 +66,10 @@ ATTR_PLACE_AT(".ahb_sram") static uint32_t s_mcan_ram[DCU_CAN_BUS_COUNT][MCAN_MS
 
 /* One ISR producer and one worker consumer per bus. */
 static rx_queue_t s_rx[DCU_CAN_BUS_COUNT];
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+/* Same-priority CAN IRQ handlers on this core do not nest each other. */
+static volatile uint32_t can_irq_total_us;
+#endif
 static volatile uint32_t s_rx_lost[DCU_CAN_BUS_COUNT];
 static uint32_t s_tx_progress[DCU_CAN_BUS_COUNT];
 static tx_slot_t s_tx[DCU_CAN_BUS_COUNT][CANFD_TX_SLOTS];
@@ -182,7 +187,7 @@ static bool is_protocol_error_code(uint32_t code)
     return code > 0U && code < 7U;
 }
 
-static uint32_t read_bus_psr(unsigned bus)
+static DCU_FAST_CODE uint32_t read_bus_psr(unsigned bus)
 {
     MCAN_Type *base = s_mcan[bus];
     if (s_first_fault[bus].valid) return sample_psr(bus);
@@ -223,7 +228,7 @@ uint16_t dcu_can_bus_state(uint32_t bus)
     return DCU_CAN_BUS_ERROR_ACTIVE;
 }
 
-static dcu_can_eof_t read_eof(unsigned bus, bool captured, unsigned slot)
+static DCU_FAST_CODE dcu_can_eof_t read_eof(unsigned bus, bool captured, unsigned slot)
 {
     MCAN_Type *base = s_mcan[bus];
     if (!captured || !mcan_is_tsu_timestamp_available(base, slot))
@@ -237,8 +242,11 @@ static dcu_can_eof_t read_eof(unsigned bus, bool captured, unsigned slot)
     return eof;
 }
 
-static void receive_isr(uint32_t bus)
+static DCU_FAST_CODE void receive_isr(uint32_t bus)
 {
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+    const uint32_t irq_us = dcu_time_now_us();
+#endif
     const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
     if (!channel) return;
     MCAN_Type *base=s_mcan[bus]; uint32_t flags=mcan_get_interrupt_flags(base);
@@ -277,7 +285,12 @@ static void receive_isr(uint32_t bus)
             .flags=(f.use_ext_id ? DCU_CAN_FLAG_EXTENDED : 0) |
                    (f.canfd_frame ? DCU_CAN_FLAG_FD : 0) | (f.bitrate_switch ? DCU_CAN_FLAG_BRS : 0)};
         memcpy(item->frame.data, f.data_8, bytes);
-        item->stamp = (dcu_can_rx_stamp_t){dcu_time_now_ms(), eof};
+        item->stamp = (dcu_can_rx_stamp_t){.observed_ms = dcu_time_now_ms(), .eof = eof};
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+        item->stamp.irq_us = irq_us;
+        item->stamp.enqueued_us = dcu_time_now_us();
+        item->stamp.can_irq_us = can_irq_total_us + (item->stamp.enqueued_us - irq_us);
+#endif
 #if defined(CONFIG_PDO_PHASE_TRACE)
         item->observed_us = dcu_time_now_us();
 #endif
@@ -286,9 +299,14 @@ static void receive_isr(uint32_t bus)
     if (flags & MCAN_EVENT_TRANSMIT) led_pulse(bus, CANFD_LED_TX);
     if(flags&MCAN_EVENT_ERROR)led_pulse(bus,CANFD_LED_ERR);
     const uint32_t left = s_chain[bus].cutoff_us - dcu_time_now_us();
-    if (s_chain[bus].cutoff_us && left && left <= DCU_SYNC_MAX_PERIOD_NS / 1000U &&
-        (flags & (MCAN_INT_TX_EVT_FIFO_NEW_ENTRY | MCAN_INT_RXFIFO0_NEW_MSG | MCAN_EVENT_TRANSMIT)))
+    /* Paced TX events advance the next frame here, not on the worker.
+     * RX wakes the consumer; the independent periodic tick covers a silent peer. */
+    if ((flags & MCAN_INT_RXFIFO0_NEW_MSG) && (dcu_cycle_event_enabled() ||
+        (s_chain[bus].cutoff_us && left && left <= DCU_SYNC_MAX_PERIOD_NS / 1000U)))
         dcu_notify_ecat_can_from_isr();
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+    can_irq_total_us += dcu_time_now_us() - irq_us;
+#endif
 }
 
 static void mcan0_isr(void) { receive_isr(0U); }
@@ -439,6 +457,9 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
 uint32_t dcu_can_rx_drops(unsigned bus) { return dcu_can_channel_config(bus) ? s_rx_lost[bus] : 0; }
 DCU_FAST_CODE bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, dcu_can_rx_stamp_t *stamp)
 {
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+    const uint32_t begin_us = dcu_time_now_us();
+#endif
     if (!dcu_can_channel_config(bus) || !f || !stamp) return false;
     rx_queue_t *q=&s_rx[bus];intc_m_disable_irq(s_irq[bus]);
     bool available=q->read!=q->write;
@@ -451,8 +472,22 @@ DCU_FAST_CODE bool dcu_can_receive(unsigned bus, dcu_can_frame_t *f, dcu_can_rx_
             }
         }
     }
-    if(available){*f=q->item[q->read].frame;*stamp=q->item[q->read].stamp;q->read=(q->read+1)&31;}
-    intc_m_enable_irq(s_irq[bus]);return available;
+    if (available) {
+        *f = q->item[q->read].frame;
+        *stamp = q->item[q->read].stamp;
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+        stamp->dequeue_us = begin_us;
+#endif
+        q->read = (q->read + 1) & 31;
+    }
+    intc_m_enable_irq(s_irq[bus]);
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+    if (available) {
+        stamp->dequeued_us = dcu_time_now_us();
+        stamp->can_irq_us = can_irq_total_us - stamp->can_irq_us;
+    }
+#endif
+    return available;
 }
 bool dcu_can_pending(unsigned bus, unsigned device)
 {
@@ -493,9 +528,13 @@ static DCU_FAST_CODE bool launch_paced(unsigned bus)
 {
     paced_tx_t *b = &s_chain[bus];
     MCAN_Type *base = s_mcan[bus];
-    const unsigned i = b->next;
-    tx_slot_t *slot = &s_tx[bus][i];
     const uint32_t irq = disable_global_irq(CSR_MSTATUS_MIE_MASK);
+    const unsigned i = b->next;
+    if (i >= b->count) {
+        restore_global_irq(irq & CSR_MSTATUS_MIE_MASK);
+        return false;
+    }
+    tx_slot_t *slot = &s_tx[bus][i];
     const bool ok = !slot->revoked && !dcu_tx_inhibited() && !(base->CCCR & MCAN_CCCR_INIT_MASK) &&
         dcu_cyclic_tx_window_current(b->cutoff_us) && (int32_t)(b->cutoff_us - dcu_time_now_us()) > 0;
     if (ok) {
@@ -542,7 +581,7 @@ DCU_FAST_CODE void dcu_can_gap_elapsed_isr(void)
     for (unsigned bus = 0; bus < DCU_CAN_BUS_COUNT; ++bus) service_gap(bus);
 }
 
-static void collect_tx_eofs(unsigned bus, MCAN_Type *base)
+static DCU_FAST_CODE void collect_tx_eofs(unsigned bus, MCAN_Type *base)
 {
     mcan_tx_event_fifo_elem_t event;
     for (unsigned n = 0; n < CANFD_TX_FIFO_DEPTH && mcan_read_tx_evt_fifo(base, &event) == status_success; ++n) {
@@ -571,7 +610,9 @@ static void collect_tx_eofs(unsigned bus, MCAN_Type *base)
 DCU_FAST_CODE bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event)
 {
     const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
-    if (!channel || !event || !dcu_can_pending(bus, DCU_CAN_DEVICE_ANY)) return false;
+    if (!channel || !event) return false;
+    const unsigned batch = s_chain[bus].unretired;
+    if (!batch && !dcu_can_pending(bus, DCU_CAN_DEVICE_ANY)) return false;
     MCAN_Type *base = s_mcan[bus];
     bool found = false;
     taskENTER_CRITICAL();
@@ -581,7 +622,8 @@ DCU_FAST_CODE bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event
     const uint32_t cancelled = base->TXBCF;
     const uint32_t terminal = (completed | cancelled) & ~pending;
     if (channel->timestamp_eof && !s_chain[bus].count) collect_tx_eofs(bus, base);
-    for (unsigned i = 0; i < CANFD_TX_SLOTS; ++i) {
+    for (unsigned mask = batch ? batch : (1U << CANFD_TX_SLOTS) - 1U; mask; mask &= mask - 1U) {
+        const unsigned i = __builtin_ctz(mask);
         tx_slot_t *slot = &s_tx[bus][i];
         if (!slot->id || (slot->launched ? !(terminal & (1U << i)) : !slot->revoked)) continue;
         const bool sent = slot->launched && !slot->revoked && (completed & (1U << i));
@@ -595,7 +637,8 @@ DCU_FAST_CODE bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event
                 if (!slot->eof.valid) ++s_feedback_stats[bus].completed_without_eof;
             }
         }
-        *event = (dcu_can_tx_event_t){.id = slot->id, .status = sent ? DCU_CAN_TX_COMPLETED : DCU_CAN_TX_CANCELLED};
+        *event = (dcu_can_tx_event_t){.id = slot->id, .status = sent ? DCU_CAN_TX_COMPLETED : DCU_CAN_TX_CANCELLED,
+                                     .batch_owner_plus_one = slot->feedback ? slot->in_flight_device + 1U : 0U};
         if (sent) event->eof = slot->eof;
         // Raw slots may retire out of order; observing the drain bounds all of them.
         if (slot->launched) s_tx_retirement[bus] = (tx_retirement_t){
@@ -605,7 +648,10 @@ DCU_FAST_CODE bool dcu_can_take_tx_event(unsigned bus, dcu_can_tx_event_t *event
         if (sent) ++s_tx_progress[bus];
         else if (slot->in_flight_device == DCU_CAN_DEVICE_RAW) ++s_raw_tx_cancelled[bus];
         *slot = (tx_slot_t){0};
-        if (s_chain[bus].count && !dcu_can_pending(bus, DCU_CAN_DEVICE_ANY)) s_chain[bus].count = 0;
+        if (batch) {
+            s_chain[bus].unretired &= ~(1U << i);
+            if (!s_chain[bus].unretired) s_chain[bus].count = 0;
+        }
         found = true;
         break;
     }
@@ -728,35 +774,76 @@ DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, cons
     return id;
 }
 
-DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit_batch(unsigned bus, const dcu_can_batch_item_t *items,
-                                                   unsigned count, uint32_t cutoff_us)
+static DCU_FAST_CODE bool stage_paced_batch(unsigned bus, const dcu_can_batch_item_t *items,
+                                            unsigned count, uint32_t cutoff_us)
 {
     const dcu_can_channel_config_t *channel = dcu_can_channel_config(bus);
     if (!channel || !channel->timestamp_eof || !items || !count || count > CANFD_PACED_SLOTS ||
         s_tx_serial[bus] > UINT64_MAX - count || !dcu_can_tx_serial_ready(bus) || dcu_tx_inhibited() ||
-        dcu_can_bus_state(bus) == DCU_CAN_BUS_OFF) return 0;
+        dcu_can_bus_state(bus) == DCU_CAN_BUS_OFF) return false;
     const dcu_can_tx_id_t first = s_tx_serial[bus] + 1U;
     unsigned owners = 0;
     for (unsigned i = 0; i < count; ++i) {
         const dcu_can_frame_t *f = items[i].frame;
         const unsigned owner = items[i].owner;
         if (!f || owner >= CANFD_PACED_SLOTS || (owners & (1U << owner)) || !dcu_can_frame_valid(f) ||
-            (!channel->fd && (f->flags & DCU_CAN_FLAG_FD))) return 0;
+            (!channel->fd && (f->flags & DCU_CAN_FLAG_FD))) return false;
         owners |= 1U << owner;
         mcan_tx_frame_t tx = format_tx(f, true, (uint8_t)(first + i));
-        if (mcan_write_txbuf(s_mcan[bus], i, &tx) != status_success) return 0;
+        if (mcan_write_txbuf(s_mcan[bus], i, &tx) != status_success) return false;
     }
     taskENTER_CRITICAL();
-    s_chain[bus] = (paced_tx_t){.cutoff_us = cutoff_us, .count = count};
+    s_chain[bus] = (paced_tx_t){.cutoff_us = cutoff_us, .count = count, .unretired = (1U << count) - 1U};
     for (unsigned i = 0; i < count; ++i)
         s_tx[bus][i] = (tx_slot_t){.id = first + i, .in_flight_device = items[i].owner,
                                    .feedback = true, .wire_id = items[i].frame->id};
-    const bool ok = launch_paced(bus);
-    if (ok) s_tx_serial[bus] += count;
-    else {
-        memset(s_tx[bus], 0, count * sizeof(tx_slot_t));
-        s_chain[bus] = (paced_tx_t){0};
+    taskEXIT_CRITICAL();
+    return true;
+}
+
+DCU_FAST_CODE void dcu_can_submit_batches(dcu_can_bus_batch_t batches[DCU_CAN_BUS_COUNT], uint32_t cutoff_us)
+{
+    unsigned staged = 0;
+    for (unsigned bus = 0; bus < DCU_CAN_BUS_COUNT; ++bus) {
+        dcu_can_bus_batch_t *b = &batches[bus];
+        b->first_id = 0;
+        b->submit_us = 0;
+        if (b->count && stage_paced_batch(bus, b->items, b->count, cutoff_us))
+            staged |= 1U << bus;
+    }
+    if (!staged) return;
+
+    /* Only first requests share this short IRQ window. Each bus paces its own tail. */
+    taskENTER_CRITICAL();
+    for (unsigned mask = staged; mask; mask &= mask - 1U) {
+        const unsigned bus = __builtin_ctz(mask);
+        dcu_can_bus_batch_t *b = &batches[bus];
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+        b->submit_us = dcu_time_now_us();
+#endif
+        if (launch_paced(bus)) {
+            b->first_id = s_tx_serial[bus] + 1U;
+            s_tx_serial[bus] += b->count;
+            staged &= ~(1U << bus);
+        }
     }
     taskEXIT_CRITICAL();
-    return ok ? first : 0;
+    for (; staged; staged &= staged - 1U) {
+        const unsigned bus = __builtin_ctz(staged);
+        taskENTER_CRITICAL();
+        memset(s_tx[bus], 0, batches[bus].count * sizeof(tx_slot_t));
+        s_chain[bus] = (paced_tx_t){0};
+        taskEXIT_CRITICAL();
+    }
+}
+
+DCU_FAST_CODE dcu_can_tx_id_t dcu_can_submit_batch(unsigned bus, const dcu_can_batch_item_t *items,
+                                                   unsigned count, uint32_t cutoff_us)
+{
+    if (bus >= DCU_CAN_BUS_COUNT) return 0;
+    dcu_can_bus_batch_t batches[DCU_CAN_BUS_COUNT] = {0};
+    batches[bus].items = items;
+    batches[bus].count = count;
+    dcu_can_submit_batches(batches, cutoff_us);
+    return batches[bus].first_id;
 }

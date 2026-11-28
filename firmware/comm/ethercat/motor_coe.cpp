@@ -197,7 +197,7 @@ UINT8 MC_OD_Read(UINT16 index, UINT8 sub, UINT32 bytes, UINT16 *data, UINT8 comp
                  (index - 0x2400) % 16 == 0)
             adapter::refresh_axis_feedback((index - 0x2400) / 16);
         if ((index == 0x6400 && (mode() != OperatingMode::MotorWithRaw || raw_state() != RawState::Active)) ||
-            (index == 0x6401 && (mode() != OperatingMode::SingleFd || raw_state() != RawState::Active)) ||
+            (index >= 0x6401 && index <= 0x6405 && (mode() != OperatingMode::SingleFd || raw_state() != RawState::Active)) ||
             (index >= 0x6500 && index <= 0x6530 && !(index & 15) &&
              (mode() != OperatingMode::Raw || raw_state() != RawState::Active)))
             memset(data, 0, bytes);

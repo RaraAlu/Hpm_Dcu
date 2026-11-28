@@ -29,6 +29,13 @@ typedef struct {
     const dcu_can_frame_t *frame;
 } dcu_can_batch_item_t;
 
+typedef struct {
+    const dcu_can_batch_item_t *items;
+    unsigned count;
+    dcu_can_tx_id_t first_id; /* Output: zero if this bus did not start. */
+    uint32_t submit_us;       /* First request time when batch sampling is enabled. */
+} dcu_can_bus_batch_t;
+
 /* Hardware frame-end ticks are only comparable on the same controller. */
 typedef struct {
     uint32_t tick;
@@ -39,6 +46,10 @@ typedef struct {
 typedef struct {
     uint32_t observed_ms;
     dcu_can_eof_t eof;
+#if defined(CONFIG_CAN_BATCH_SAMPLE)
+    uint32_t irq_us, enqueued_us, dequeue_us, dequeued_us;
+    uint32_t can_irq_us; /* Time inside CAN IRQ handlers between enqueue and successful dequeue. */
+#endif
 } dcu_can_rx_stamp_t;
 
 typedef enum {
@@ -50,6 +61,7 @@ typedef struct {
     dcu_can_tx_id_t id;
     dcu_can_tx_status_t status;
     dcu_can_eof_t eof;
+    unsigned batch_owner_plus_one; /* Zero for ordinary FIFO submissions. */
 } dcu_can_tx_event_t;
 
 #ifdef __cplusplus
@@ -90,6 +102,8 @@ dcu_can_tx_id_t dcu_can_submit(unsigned bus, unsigned device, const dcu_can_fram
 /* All or none. Contiguous IDs identify individual results; only the first TXBAR is issued here. */
 dcu_can_tx_id_t dcu_can_submit_batch(unsigned bus, const dcu_can_batch_item_t *items, unsigned count,
                                      uint32_t cutoff_us);
+/* One entry per bus; zero count skips it. Start ready buses before any successor can launch. */
+void dcu_can_submit_batches(dcu_can_bus_batch_t batches[DCU_CAN_BUS_COUNT], uint32_t cutoff_us);
 void dcu_can_gap_elapsed_isr(void);
 /* Consume one terminal event. CANCELLED means revoked, not that the frame
  * could not have appeared on the bus during a cancellation race. */

@@ -6,7 +6,7 @@
 #define DCU_WORKER_PERIOD_US 50U
 /* SM2-synchronous operation expects a 1 kHz master, with no Sync0 pulses. */
 #define DCU_SM2_CYCLE_NS 1000000U
-#define DCU_SINGLE_FD_PDO_BYTES 88U
+#define DCU_EVENT_PDO_MAX_BYTES (24U + 4U * 64U)
 
 /* Must precede the master's next input read, not merely the next Sync0. */
 #ifndef DCU_TX_PUBLISH_ADVANCE_US

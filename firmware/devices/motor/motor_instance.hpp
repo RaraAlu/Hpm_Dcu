@@ -31,12 +31,13 @@ public:
     // A cyclic caller supplies a destination and an optional preview for this axis and sequence.
     bool accept(const Command &command, bool permitted, uint32_t now_ms, CanFrame *cyclic,
                 const ControlPreview *preview, bool &used_preview);
-    void check_timeouts(uint32_t now_ms, bool sdo_owner, uint16_t feedback_timeout_ms);
+    void check_timeouts(uint32_t now_ms, uint16_t feedback_timeout_ms);
     void check_startup(uint32_t now_ms);
     bool query_ready(uint32_t now_ms) const;
     bool start_query(uint32_t now_ms, bool cyclic_owner);
     bool prepare_status_poll(uint32_t now_ms, StatusPoll &poll) const;
     void status_poll_submitted(uint32_t now_ms) { driver_->status_poll_submitted(now_ms); }
+    bool poll_can_alias_control_reply() const { return driver_ && driver_->poll_can_alias_control_reply(); }
     bool consume_status_reply(const CanFrame &, uint32_t timestamp_ms);
     bool neutral_mit_only() const { return driver_ && driver_->neutral_mit_only(); }
     bool accept_neutral_mit(const Command &, bool permitted, bool continuing);
@@ -45,6 +46,11 @@ public:
     bool consume_neutral_mit(const CanFrame &, uint32_t timestamp_ms);
     void abort_neutral_mit(uint16_t fault);
     bool accepts_payload(uint8_t bytes) const { return driver_ && bytes <= driver_->max_rx_bytes(); }
+    unsigned reply_bytes() const { return driver_->max_rx_bytes(); }
+    bool cyclic_impedance() const { return driver_ && (driver_->capabilities().control_modes & mode_bit(ControlMode::Impedance)); }
+    bool requires_pdo_window() const { return driver_ && driver_->capabilities().control_modes == mode_bit(ControlMode::Impedance); }
+    bool zero_pdo_only() const;
+    bool is_zero_pdo(const Command &) const;
     bool supports_legacy_queries() const { return driver_ && driver_->capabilities().legacy_parameter_queries; }
     bool consume_feedback(const CanFrame &, uint32_t timestamp_ms, uint32_t now_ms);
     bool encode_control(dcu_can_frame_t &frame) const;
@@ -56,7 +62,6 @@ public:
     }
     void control_submitted(uint32_t now_ms, dcu_can_tx_id_t id);
     bool finish_tx(const dcu_can_tx_event_t &event);
-    void set_sdo_lease(uint16_t lease_ms, uint32_t now_ms);
     void record_tx_drop() { ++history_.tx_drop_count; }
     // Copy a complete task-owned snapshot without consuming event flags.
     MotorPublication read_feedback(uint32_t now_ms, uint16_t feedback_timeout_ms,
@@ -80,6 +85,7 @@ public:
     uint32_t cyclic_feedback_count() const { return state_.cyclic_feedback_count; }
 
 private:
+    bool local_limits_ok() const;
     detail::MotorState state_{};
     detail::MotorHistory history_{};
     dcu_can_tx_id_t control_tx_id_{};

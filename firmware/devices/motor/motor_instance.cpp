@@ -111,12 +111,26 @@ void MotorInstance::abort_neutral_mit(uint16_t fault)
     stop(fault);
     state_.neutral_reply = state_.new_feedback = false;
 }
-bool MotorInstance::query_ready(uint32_t now) const
+bool MotorInstance::zero_pdo_only() const
 {
-    return driver_ && driver_->query_ready(now) &&
-        within_magnitude(state_.feedback.sample.current_cA, int64_t{route_.current_limit_dA} * 10) &&
+    return requires_pdo_window() && !route_.position_min_urad && !route_.position_max_urad &&
+        !route_.velocity_limit_urad_s && !route_.torque_limit_mNm && route_.current_limit_dA;
+}
+
+bool MotorInstance::is_zero_pdo(const Command &cmd) const
+{
+    return zero_pdo_only() && cmd.control_bits == (Arm | StartMotion) && is_zero_mit(cmd);
+}
+
+bool MotorInstance::local_limits_ok() const
+{
+    return within_magnitude(state_.feedback.sample.current_cA, int64_t{route_.current_limit_dA} * 10) &&
         !state_.feedback.sample.motor_fault && !state_.feedback.bridge_fault &&
         dcu_can_bus_state(bus_) != DCU_CAN_BUS_OFF;
+}
+bool MotorInstance::query_ready(uint32_t now) const
+{
+    return driver_ && driver_->query_ready(now) && local_limits_ok();
 }
 bool MotorInstance::accept(const Command &intent, bool permit, uint32_t now, CanFrame *cyclic,
                            const ControlPreview *preview, bool &used_preview)
@@ -144,6 +158,18 @@ bool MotorInstance::accept(const Command &intent, bool permit, uint32_t now, Can
         return false;
     }
     if (!driver_ || !driver_->capabilities().control_modes) return false;
+    // Exact zero on a zero-bounded production PDO never enters a position hold.
+    // Acquiring a motor sample is not necessary to encode or transmit it.
+    if (cyclic && is_zero_pdo(intent)) {
+        if (control_tx_id_ || !local_limits_ok() || !within_limits(intent, route_) ||
+            !preview_control(intent, *cyclic)) return false;
+        x->command = x->startup_command = intent;
+        x->active_ms = now;
+        x->phase = MotorPhase::StartupQueued;
+        x->new_feedback = false;
+        s->mode = intent.mode;
+        return true;
+    }
     if (x->phase == MotorPhase::Stopped || x->phase == MotorPhase::ReadyForArm) {
         if (!configured() || x->phase != MotorPhase::ReadyForArm || (prev & Arm) || (command->control_bits & StartMotion))
             return false;
@@ -197,12 +223,10 @@ bool MotorInstance::accept(const Command &intent, bool permit, uint32_t now, Can
     if (cyclic && used_preview) *cyclic = preview->frame;
     return true;
 }
-void MotorInstance::check_timeouts(uint32_t now, bool sdo_owner, uint16_t feedback_timeout_ms)
+void MotorInstance::check_timeouts(uint32_t now, uint16_t feedback_timeout_ms)
 {
     auto *x = &state_;
     if (active() || x->phase == MotorPhase::QueryOnly) {
-        if (sdo_owner && uint32_t(now - x->commit_ms) >= x->lease_ms)
-            stop(3);
         // First feedback is timed only after the first successful CAN submission.
         if (control_sent() && uint32_t(now - (x->phase == MotorPhase::Running ? x->feedback_ms : x->active_ms)) >= feedback_timeout_ms)
             stop(4);
@@ -210,7 +234,8 @@ void MotorInstance::check_timeouts(uint32_t now, bool sdo_owner, uint16_t feedba
 }
 void MotorInstance::check_startup(uint32_t now)
 {
-    if (state_.phase == MotorPhase::StartupQueued && !query_ready(now))
+    if (state_.phase == MotorPhase::StartupQueued &&
+        !(is_zero_pdo(state_.startup_command) ? local_limits_ok() : query_ready(now)))
         stop(8);
 }
 bool MotorInstance::encode_control(dcu_can_frame_t &frame) const
@@ -221,6 +246,7 @@ void MotorInstance::control_submitted(uint32_t now, dcu_can_tx_id_t id)
 {
     if (!active() || !id) return;
     control_tx_id_ = id;
+    driver_->control_submitted();
     if (state_.phase == MotorPhase::StartupQueued) {
         state_.phase = MotorPhase::AwaitingFeedback;
         state_.active_ms = now;
@@ -236,11 +262,6 @@ bool MotorInstance::finish_tx(const dcu_can_tx_event_t &event)
     else if (active()) stop(6);
     return true;
 }
-void MotorInstance::set_sdo_lease(uint16_t lease_ms, uint32_t now)
-{
-    state_.lease_ms = lease_ms;
-    state_.commit_ms = now;
-}
 bool MotorInstance::start_query(uint32_t now, bool cyclic_owner)
 {
     if (!driver_ || (!cyclic_owner && (active() || state_.phase != MotorPhase::QueryOnly)))
@@ -250,6 +271,7 @@ bool MotorInstance::start_query(uint32_t now, bool cyclic_owner)
 
 bool MotorInstance::prepare_status_poll(uint32_t now, StatusPoll &poll) const
 {
+    if (active() || (state_.phase == MotorPhase::QueryOnly && query_ready(now))) return false;
     return driver_ && driver_->prepare_status_poll(now, poll);
 }
 

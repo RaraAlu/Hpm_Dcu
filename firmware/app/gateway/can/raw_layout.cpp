@@ -40,7 +40,9 @@ bool GatewayApplication::set_pure_raw_limits(uint32_t packed)
 
 bool GatewayApplication::raw_channel(unsigned bus) const
 {
-    return raw_only(state_.mode) ? layout_.limits[bus] != 0 : state_.channels[bus].role >= 2;
+    if (state_.mode == OperatingMode::SingleFd)
+        return (layout_.event_buses & (1U << bus)) != 0;
+    return state_.mode == OperatingMode::Raw ? layout_.limits[bus] != 0 : state_.channels[bus].role >= 2;
 }
 
 bool GatewayApplication::raw_motor_bus_idle(uint8_t buses) const
@@ -145,12 +147,12 @@ bool GatewayApplication::reset_layout()
     return true;
 }
 
-bool GatewayApplication::map_layout(OperatingMode mode)
+bool GatewayApplication::map_layout(OperatingMode mode, uint32_t event_buses)
 {
-    return finish_layout(mode, false);
+    return finish_layout(mode, false, event_buses);
 }
 
-bool GatewayApplication::finish_layout(OperatingMode mode, bool topology)
+bool GatewayApplication::finish_layout(OperatingMode mode, bool topology, uint32_t event_buses)
 {
     if (mode > OperatingMode::SingleFd) return false;
     const auto next = next_layout(topology ? PDO_SDO_2103_06_COMMIT : PDO_PREOP_MAPPING, mode);
@@ -160,15 +162,16 @@ bool GatewayApplication::finish_layout(OperatingMode mode, bool topology)
             readiness().revision != layout_.revision || !drain_layout() ||
             !raw_motor_bus_idle(layout_.pending_motor_owner)) return false;
     } else {
-        if (mode != state_.mode) return false;
+        if (mode != state_.mode || event_buses != layout_.event_buses) return false;
         // 故障不妨碍电机用原布局重新上线，也不解除透传闭锁。
         if (raw_state() == RawState::Faulted) return true;
     }
-    if (mode != state_.mode) {
+    if (mode != state_.mode || event_buses != layout_.event_buses) {
         checkpoint_raw_losses();
         if (raw_only(mode) || raw_only(state_.mode)) clear_layout_business();
     }
     state_.mode = mode;
+    layout_.event_buses = event_buses;
     if (layout_.switching()) layout_.motor_owner = layout_.pending_motor_owner;
     layout_.pending_motor_owner = 0;
     layout_.selected = true;
@@ -223,7 +226,9 @@ void GatewayApplication::advance_layout(uint32_t now)
     }
     if (layout_.topology && raw_state() == RawState::Requested && now - layout_.drain_ms >= 60000U)
         layout_fault(PDO_TOPOLOGY_TIMEOUT);
-    if ((layout_.phase == PDO_ACTIVE || layout_.switching()) &&
+    const bool event_mode = state_.mode == OperatingMode::SingleFd ||
+                            (layout_.switching() && layout_.target == OperatingMode::SingleFd);
+    if (!event_mode && (layout_.phase == PDO_ACTIVE || layout_.switching()) &&
         raw_drops() - layout_.baseline > config::raw_can::drop_limit)
         layout_fault(PDO_DROP_LIMIT);
 }

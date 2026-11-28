@@ -37,6 +37,7 @@ typedef enum {
 } dcu_cycle_work_t;
 dcu_cycle_work_t dcu_cycle_service_pdo_can(uint32_t start_us);
 void dcu_cycle_service_ethercat_al(void);
+bool dcu_cycle_event_enabled(void);
 void dcu_cycle_record_worker_duration(uint32_t start_us);
 /* SSC/worker task only, except for the explicit PDI/Sync/timer handoffs below. */
 uint16_t dcu_cycle_configure(void);

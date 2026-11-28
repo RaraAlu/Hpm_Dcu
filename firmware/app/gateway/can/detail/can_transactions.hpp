@@ -27,6 +27,7 @@ public:
     bool busy(unsigned bus, unsigned device) const;
     bool any_busy() const;
     bool legacy_busy(unsigned bus) const;
+    bool external_service_busy(unsigned bus) const;
     bool awaiting_tx(unsigned bus) const;
     bool raw_send_allowed(unsigned bus, uint32_t now_ms) const;
     uint8_t reply_format(unsigned bus, uint32_t id, uint8_t fallback) const;

@@ -328,7 +328,7 @@ void ecat_pdi_isr(void)
     tracing_sm2 = false;
 #endif
 
-    /* callback */
+    if (dcu_cycle_event_enabled()) dcu_notify_ecat_can_from_isr();
 }
 
 /* ECAT SYNC0 IRQ handler */
@@ -432,7 +432,7 @@ void ENABLE_ESC_INT(void)
 {
     intc_m_enable_irq_with_priority(IRQn_ESC_SYNC0, DCU_IRQ_SYNC0_PRIORITY);
     intc_m_enable_irq_with_priority(IRQn_ESC_SYNC1, 3);
-    intc_m_enable_irq_with_priority(IRQn_ESC, DCU_IRQ_PDI_PRIORITY);
+    intc_m_enable_irq_with_priority(IRQn_ESC, dcu_cycle_event_enabled() ? DCU_IRQ_KERNEL_PRIORITY : DCU_IRQ_PDI_PRIORITY);
     intc_m_enable_irq_with_priority(IRQn_ESC_RESET, 2);
 #if !defined(ECAT_SSC_TIMER_USE_RTOS_TICK) || !ECAT_SSC_TIMER_USE_RTOS_TICK
     /* SSC watchdog and Sync handlers are serialized in the business task. */

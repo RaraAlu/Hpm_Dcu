@@ -189,7 +189,7 @@ void pdo_pipeline_update_cyclic(pdo_pipeline_t *p, uint32_t epoch, uint32_t miss
     store(&p->cyclic_active, 1U);
 }
 
-uint32_t pdo_pipeline_cyclic_deadline(const pdo_pipeline_t *p, uint32_t sync_us)
+DCU_FAST_CODE uint32_t pdo_pipeline_cyclic_deadline(const pdo_pipeline_t *p, uint32_t sync_us)
 {
     const uint32_t advance = p->advance_us > DCU_CYCLIC_SM3_ADVANCE_US ? p->advance_us : DCU_CYCLIC_SM3_ADVANCE_US;
     return sync_us + p->period_us - advance;
@@ -219,7 +219,7 @@ bool pdo_pipeline_mark_published(pdo_pipeline_t *p, uint32_t epoch, uint32_t now
     return true;
 }
 
-uint32_t pdo_pipeline_check(pdo_pipeline_t *p, uint32_t now_us)
+DCU_FAST_CODE uint32_t pdo_pipeline_check(pdo_pipeline_t *p, uint32_t now_us)
 {
     if (load(&p->enabled) && load(&p->started)) {
         uint32_t epoch = load(&p->epoch);

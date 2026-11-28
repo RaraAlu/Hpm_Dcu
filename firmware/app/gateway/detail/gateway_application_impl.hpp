@@ -12,6 +12,35 @@
 
 namespace dcu::app::gateway_application::detail {
 
+// Built from the selected devices; receive order never changes transmit order.
+struct ReceiveRoutes {
+    static_assert(DCU_MOTOR_DEVICE_CAPACITY <= 32, "PDO device masks must represent every configured device");
+    struct Entry { uint16_t id; uint8_t device; };
+    Entry entries[DCU_MOTOR_DEVICES_PER_BUS]{};
+    unsigned count{};
+    uint32_t members{};
+    constexpr void bind(unsigned device, uint16_t id) {
+        unsigned i = count++;
+        while (i && entries[i - 1].id > id) {
+            entries[i] = entries[i - 1];
+            --i;
+        }
+        entries[i] = {id, static_cast<uint8_t>(device)};
+        members |= 1U << device;
+    }
+    constexpr unsigned find(uint32_t id) const {
+        unsigned first = 0;
+        unsigned last = count;
+        while (first < last) {
+            const unsigned mid = first + (last - first) / 2;
+            if (entries[mid].id < id) first = mid + 1;
+            else last = mid;
+        }
+        if (first < count && entries[first].id == id) return entries[first].device;
+        return DCU_MOTOR_DEVICE_CAPACITY;
+    }
+};
+
 // MainLoop and SDO callbacks share one task; only the C/C++ entry points own this object.
 class GatewayApplication {
 public:
@@ -39,7 +68,7 @@ public:
     }
     bool request_layout(OperatingMode target, uint32_t profile, uint32_t revision,
                         const uint8_t (&digest)[DCU_GATEWAY_DIGEST_BYTES]);
-    bool map_layout(OperatingMode mode);
+    bool map_layout(OperatingMode mode, uint32_t event_buses);
     bool reset_layout();
     bool request_topology();
     bool topology_pending() const { return layout_.topology; }
@@ -53,27 +82,34 @@ public:
     OperatingMode mode() const { return state_.mode; }
     bool set_owner(Owner owner);
     Owner owner() const { return state_.owner; }
-    CommandResult commit_sdo_command(unsigned device, const SdoCommand &command, uint32_t now_ms);
+    CommandResult commit_sdo_command(unsigned device, uint32_t sequence, uint32_t now_ms);
     bool parameter_service_busy(unsigned bus) const { return transactions_.legacy_busy(bus); }
     ParameterReadResult read_parameter(unsigned device, const ParameterRead &, uint32_t now_ms, bool preop);
     bool read_device(unsigned device, motor::MotorFeedback &feedback, motor::MotorDiagnostics &diagnostics) const;
     void prepare_publication(Publication &snapshot);
+    void bind_feedback_writer(FeedbackWriter writer) { feedback_writer_ = writer; }
+    bool finish_cyclic_publication(Publication &snapshot);
     void set_neutral_window(uint32_t period_ns, uint32_t cutoff_us);
     void neutral_feedback_deadline() { stop_neutral_run(true); }
     bool neutral_feedback_pending() const;
     void set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us);
-    void preview_axis(unsigned a, const motor::Command &command);
+    void preview_control(unsigned device, const motor::Command &command);
     void reset_preview(uint32_t seq) { preview_.mask = 0; preview_.sequence = seq; }
     uint32_t cyclic_feedback_required() const { return cyclic_.required; }
-    uint32_t cyclic_feedback_missing() const { return cyclic_.required & ~cyclic_.matched; }
+    uint32_t cyclic_feedback_missing() const {
+        return cyclic_.required & ~cyclic_.matched;
+    }
     void fault_cyclic_feedback(uint32_t missing);
     bool take_raw_frame(unsigned bus, dcu_can_frame_t &frame);
 
 private:
+    void bind_device_route(unsigned device, unsigned bus, uint16_t id);
+    bool stage_device(unsigned device, uint32_t now);
+    void prepare_header(Publication &snapshot, uint32_t now, uint32_t active_devices);
     bool drain_raw();
     bool drain_layout();
     bool begin_layout(OperatingMode, uint32_t, uint32_t, const uint8_t (&)[DCU_GATEWAY_DIGEST_BYTES], bool);
-    bool finish_layout(OperatingMode, bool topology);
+    bool finish_layout(OperatingMode, bool topology, uint32_t event_buses = 0);
     bool raw_channel(unsigned bus) const;
     void route_raw_rx(unsigned bus, const dcu_can_frame_t &frame, uint32_t observed_ms, bool routed, bool single_fd);
     bool raw_motor_bus_idle(uint8_t buses) const;
@@ -90,8 +126,7 @@ private:
             return phase == PDO_DRAINING || phase == PDO_DRAINING_CONFIRMED ||
                    phase == PDO_WAIT_CONFIRM || phase == PDO_WAIT_COMMIT;
         }
-        uint32_t drain_ms{}, drops{}, baseline{}, revision{};
-        uint64_t session{};
+        uint32_t drain_ms{}, drops{}, baseline{}, revision{}, event_buses{};
         uint8_t limits[DCU_DEVICE_CAN_BUS_COUNT]{};
         uint8_t pending_motor_owner{}, motor_owner{};
         uint32_t loss_origin[DCU_DEVICE_CAN_BUS_COUNT]{};
@@ -116,7 +151,8 @@ private:
     void revoke_business();
     bool accept_candidate(const CycleCommand &candidate, uint32_t now_ms, ProcessResult &result);
     bool process_raw(const CycleCommand &candidate, uint32_t now_ms, uint8_t reserved_buses = 0);
-    void collect_tx_events(unsigned bus);
+    void collect_tx_events(unsigned bus, unsigned budget = ~0U);
+    void submit_cyclic_batches(unsigned buses, uint32_t now_ms, uint32_t now_us);
     void service_cyclic_feedback(uint32_t now_ms, uint32_t now_us);
     bool consume_feedback(unsigned bus, const dcu_can_frame_t &frame,
                           const dcu_can_rx_stamp_t &stamp, uint32_t now_ms, uint32_t now_us);
@@ -125,6 +161,8 @@ private:
     unsigned device_count_{};
     uint8_t devices_on_bus_[DCU_DEVICE_CAN_BUS_COUNT][DCU_MOTOR_DEVICES_PER_BUS]{};
     uint8_t bus_device_count_[DCU_DEVICE_CAN_BUS_COUNT]{};
+    ReceiveRoutes routes_[DCU_DEVICE_CAN_BUS_COUNT]{};
+    FeedbackWriter feedback_writer_{};
     ChannelConfiguration catalogue_channels_[DCU_DEVICE_CAN_BUS_COUNT]{};
     RawCanGateway raw_{};
     const CyclicCanObserver *observer_{};
@@ -132,15 +170,16 @@ private:
     CanTransactions transactions_{};
     ProductionStartup startup_{};
     uint32_t readiness_devices_{};
-    uint32_t timestamped_encos_{};
+    uint32_t timestamped_motors_{};
     struct {
         uint32_t mask{}, sequence{};
         uint32_t encoded_us[DCU_MOTOR_DEVICE_CAPACITY]{};
         motor::ControlPreview controls[DCU_MOTOR_DEVICE_CAPACITY]{};
     } preview_{};
     struct CyclicFeedback {
-        uint32_t period_us{}, deadline_us{}, required{}, submitted{}, completed{}, matched{};
-        uint8_t buses{};
+        uint32_t period_us{}, deadline_us{}, required{}, zero_commands{}, submitted{}, matched{};
+        uint32_t buses{}, ambiguous{}, active{}, online{}, faults{};
+        bool image_valid{};
         uint8_t queued[DCU_DEVICE_CAN_BUS_COUNT]{};
         dcu_can_frame_t frames[DCU_MOTOR_DEVICE_CAPACITY]{};
         dcu_can_eof_t tx_eof[DCU_MOTOR_DEVICE_CAPACITY]{};

@@ -23,7 +23,7 @@ constexpr bool raw_only(OperatingMode mode)
 { return mode == OperatingMode::Raw || mode == OperatingMode::SingleFd; }
 enum class RawState : uint8_t { Disabled = PDO_DISABLED, Requested = PDO_WAIT_CONFIRM, Armed = PDO_WAIT_OP,
     Active = PDO_ACTIVE, Draining = PDO_DRAINING, Faulted = PDO_FAULTED };
-enum Owner : uint8_t { OWNER_NONE, OWNER_PDO, OWNER_SDO };
+enum Owner : uint8_t { OWNER_NONE, OWNER_PDO };
 
 struct ChannelConfiguration {
     uint8_t role{}, frame_format{};
@@ -54,15 +54,8 @@ struct ProcessResult {
     bool consumed{}, accepted{}, raw_mirrored{};
     uint32_t mirrored_devices{};
 };
-struct SdoCommand {
-    motor::Command command{};
-    uint32_t sequence{};
-    uint16_t lease_ms{};
-};
 struct CommandResult {
     motor::ResultCode result{motor::RESULT_INVALID};
-    uint32_t accepted_sequence{};
-    bool mirror_command{};
     bool changed{true};
 };
 struct ParameterRead {
@@ -112,7 +105,7 @@ uint32_t pure_raw_limits();
 bool set_pure_raw_limits(uint32_t packed);
 bool stage_raw_motor_owner(uint8_t buses);
 uint8_t raw_motor_owner();
-bool map_layout(OperatingMode target);
+bool map_layout(OperatingMode target, uint32_t event_buses);
 bool request_topology();
 bool topology_pending();
 bool commit_topology(const dcu_production_profile_t &catalogue, uint32_t buses, uint32_t devices);
@@ -121,16 +114,19 @@ void layout_fault(dcu_layout_event_t cause = PDO_ABORT);
 OperatingMode mode();
 bool set_owner(Owner owner);
 Owner owner();
-CommandResult commit_sdo_command(unsigned device, const SdoCommand &command, uint32_t now_ms);
+CommandResult commit_sdo_command(unsigned device, uint32_t sequence, uint32_t now_ms);
 bool parameter_service_busy(unsigned bus);
 ParameterReadResult read_parameter(unsigned device, const ParameterRead &, uint32_t now_ms, bool preop);
 // A read does not acknowledge events; only publication does.
 bool read_device(unsigned device, motor::MotorFeedback &feedback, motor::MotorDiagnostics &diagnostics);
+using FeedbackWriter = bool (*)(unsigned device, const Publication::Device &, bool online, bool fault);
+void bind_feedback_writer(FeedbackWriter writer);
+bool finish_cyclic_publication(Publication &snapshot);
 void prepare_publication(Publication &snapshot);
 bool neutral_feedback_pending();
 void set_cyclic_feedback_window(uint32_t period_us, uint32_t deadline_us);
 void reset_preview(uint32_t sequence);
-void preview_axis(unsigned device, const motor::Command &command);
+void preview_control(unsigned device, const motor::Command &command);
 uint32_t cyclic_feedback_required();
 uint32_t cyclic_feedback_missing();
 void fault_cyclic_feedback(uint32_t missing);
