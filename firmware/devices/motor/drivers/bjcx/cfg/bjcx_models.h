@@ -6,6 +6,8 @@
 
 namespace dcu::motor::bjcx_config {
 
+inline constexpr uint16_t coe_encoding_id = 0x8001U; // CiH408 impedance PDO
+
 struct Model {
     std::string_view alias{};
     std::string_view part_number{};

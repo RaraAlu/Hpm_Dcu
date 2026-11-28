@@ -22,6 +22,12 @@ bool matches_encos_model(const MotorConfiguration &motor, uint8_t format) noexce
         p.torque[0] == -r.max_torque_Nm && p.torque[1] == r.max_torque_Nm &&
         p.current[0] == -r.max_current_A && p.current[1] == r.max_current_A;
 }
+
+bool zero_target_bounds(const Routing &route)
+{
+    return !route.position_min_urad && !route.position_max_urad && !route.velocity_limit_urad_s &&
+        !route.torque_limit_mNm && route.current_limit_dA;
+}
 }
 
 bool known_motor_model(dcu_motor_protocol_t protocol, const char *type) noexcept
@@ -41,13 +47,23 @@ bool validate_motor_configuration(const MotorConfiguration &config, uint8_t form
     switch (config.protocol) {
     case DCU_MOTOR_PROTOCOL_BJCX:
         return known_motor_model(config.protocol, config.type) &&
-            config.model_profile_id == 0 && format == 1 && !config.power_query_period_ms &&
+            (config.model_profile_id == 0 ||
+             (config.model_profile_id == bjcx_config::coe_encoding_id && !config.neutral_mit_only &&
+              zero_target_bounds(config.route))) &&
+            format == 1 && !config.power_query_period_ms &&
             BjcxMotorDriver::validate(config.route.can_id, config.status_poll_period_ms,
                                       config.status_reply_timeout_ms, config.neutral_mit_only);
     case DCU_MOTOR_PROTOCOL_ENCOS:
         if (config.motion_parameters_pending)
             return config.route.can_id >= 1 && config.route.can_id <= 8 && !config.status_poll_period_ms &&
                    !config.status_reply_timeout_ms && !config.power_query_period_ms;
+        if (zero_target_bounds(config.route)) {
+            const auto *model = config.type ? encos_config::find_model(config.type) : nullptr;
+            return config.model_profile_id == encos_config::coe_encoding_id && format == 1 && !config.neutral_mit_only &&
+                !config.status_poll_period_ms && !config.status_reply_timeout_ms && !config.power_query_period_ms &&
+                model && model->centered_mit_zero && model->ack1.known() &&
+                config.route.current_limit_dA <= model->ack1.current_A * 10 && config.route.can_id >= 1 && config.route.can_id <= 8;
+        }
         return config.model_profile_id == encos_config::coe_encoding_id && !config.neutral_mit_only &&
             !config.status_poll_period_ms && !config.status_reply_timeout_ms &&
             (!config.power_query_period_ms || (config.power_query_period_ms >= 20 && config.power_query_period_ms <= 1000)) &&
@@ -65,11 +81,16 @@ MotorSessionDriver *configure_motor_driver(unsigned device, const MotorConfigura
     if (config.protocol == DCU_MOTOR_PROTOCOL_BJCX) {
         auto &driver = bjcx_drivers[device];
         return driver.configure(config.route.can_id, config.status_poll_period_ms,
-                                config.status_reply_timeout_ms, config.neutral_mit_only) ? &driver : nullptr;
+                                config.status_reply_timeout_ms, config.neutral_mit_only,
+                                config.model_profile_id == bjcx_config::coe_encoding_id) ? &driver : nullptr;
     }
     auto &driver = encos_drivers[device];
     if (config.motion_parameters_pending) driver.configure_queries(config.route);
-    else if (!driver.configure(config.route, config.encos, format)) return nullptr;
+    else if (zero_target_bounds(config.route)) {
+        if (!driver.configure_impedance(config.route, *encos_config::find_model(config.type))) return nullptr;
+    }
+    else if (!driver.configure(config.route, config.encos, format,
+                               encos_config::find_model(config.type)->centered_mit_zero)) return nullptr;
     driver.bind_session(device, config.bus, format, config.power_query_period_ms);
     return &driver;
 }

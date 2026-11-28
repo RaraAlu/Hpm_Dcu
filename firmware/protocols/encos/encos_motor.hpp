@@ -6,6 +6,9 @@
 
 namespace dcu::encos {
 
+// Only for models with the lower-midpoint wire convention. Does not use feedback scales.
+bool encode_centered_zero(const motor::Command &, const motor::Routing &, motor::CanFrame &) noexcept;
+
 // Use validated routing/profile limits. Failed conversions leave output unchanged.
 // CAN identity and transport flags are checked by the device driver.
 bool encode_motion(const motor::Command &, const motor::Routing &,

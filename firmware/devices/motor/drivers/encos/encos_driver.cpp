@@ -1,5 +1,6 @@
 #include "encos_driver.hpp"
 #include "encos_motor.hpp"
+#include "motor_limits.hpp"
 
 #include <math.h>
 
@@ -9,6 +10,7 @@ void EncosMotorDriver::configure_queries(const Routing &route) noexcept
 {
     // Parameter replies carry physical values; MIT frames require a verified model encoding.
     configured_ = false;
+    centered_mit_zero_ = false;
     route_ = route;
     profile_ = {};
     capabilities_ = {};
@@ -30,8 +32,25 @@ bool EncosMotorDriver::validate(const Routing &r, const encos_settings_t &settin
         settings.frame_format == format && format <= 1 && settings.timeout_ms && settings.timeout_ms <= 500;
 }
 
+bool EncosMotorDriver::configure_impedance(const Routing &route, const encos_config::Model &model) noexcept
+{
+    configure_queries(route);
+    if (!model.centered_mit_zero || !model.ack1.known() || route.can_id < 1 || route.can_id > 8 ||
+        route.position_min_urad || route.position_max_urad || route.velocity_limit_urad_s ||
+        route.torque_limit_mNm || !route.current_limit_dA || route.current_limit_dA > model.ack1.current_A * 10)
+        return false;
+    const auto &a = model.ack1;
+    profile_.pos[0] = -(profile_.pos[1] = a.position_rad);
+    profile_.vel[0] = -(profile_.vel[1] = a.velocity_rad_s);
+    profile_.current[0] = -(profile_.current[1] = a.current_A);
+    capabilities_.control_modes = mode_bit(ControlMode::Impedance);
+    capabilities_.feedback_fields |= MotorTemperature | MosTemperature;
+    centered_mit_zero_ = configured_ = true;
+    return true;
+}
+
 bool EncosMotorDriver::configure(const Routing &route, const encos_settings_t &settings,
-                                 uint8_t format) noexcept
+                                 uint8_t format, bool centered_mit_zero) noexcept
 {
     configured_ = false;
     capabilities_ = {};
@@ -39,6 +58,9 @@ bool EncosMotorDriver::configure(const Routing &route, const encos_settings_t &s
         return false;
     route_ = route;
     profile_ = settings.profile;
+    centered_mit_zero_ = centered_mit_zero && profile_.kp[0] == 0 && profile_.kd[0] == 0 &&
+        profile_.pos[0] == -profile_.pos[1] && profile_.vel[0] == -profile_.vel[1] &&
+        profile_.torque[0] == -profile_.torque[1];
     capabilities_.control_modes = mode_bit(ControlMode::Position) | mode_bit(ControlMode::Velocity) |
         mode_bit(ControlMode::Current) | mode_bit(ControlMode::Impedance) | mode_bit(ControlMode::Torque);
     capabilities_.feedback_fields = Position | Velocity | Current | MotorTemperature | MosTemperature;
@@ -54,6 +76,10 @@ Result EncosMotorDriver::encode(const Command &command, CanFrame &frame) const n
 {
     if (!configured_)
         return Result::NotConfigured;
+    if (centered_mit_zero_ && is_zero_mit(command))
+        return encos::encode_centered_zero(command, route_, frame) ? Result::Ok : Result::InvalidCommand;
+    if (capabilities_.control_modes == mode_bit(ControlMode::Impedance))
+        return Result::InvalidCommand;
     return encos::encode_motion(command, route_, profile_, frame) ? Result::Ok : Result::InvalidCommand;
 }
 

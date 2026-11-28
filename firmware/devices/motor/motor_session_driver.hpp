@@ -25,6 +25,7 @@ struct StatusPoll {
 // and TX cancellation; the driver owns protocol readiness and query samples.
 class MotorSessionDriver : public MotorDriver {
 public:
+    virtual void control_submitted() {}
     virtual bool query_ready(uint32_t now_ms) const = 0;
     virtual bool prepare_start(const Command &, uint32_t now_ms, Command &first) = 0;
     virtual bool start_query(uint32_t now_ms, bool active) = 0;
@@ -36,6 +37,7 @@ public:
     // Preparing a frame does not consume the poll period; a successful TX submission does.
     virtual bool prepare_status_poll(uint32_t, StatusPoll &) const { return false; }
     virtual void status_poll_submitted(uint32_t) {}
+    virtual bool poll_can_alias_control_reply() const { return false; }
     virtual bool neutral_mit_only() const { return false; }
     virtual bool encode_neutral_mit(CanFrame &, uint8_t) const { return false; }
     virtual uint8_t max_rx_bytes() const { return DCU_CAN_CLASSIC_MAX_PAYLOAD; }

@@ -27,6 +27,35 @@ static bool quantize(double x, const double r[2], unsigned bits, uint32_t *v)
 }
 static double decode(uint32_t v,const double r[2],unsigned bits) { return r[0]+v*(r[1]-r[0])/((1u<<bits)-1); }
 namespace dcu::encos {
+namespace {
+constexpr uint64_t mit_word(uint32_t kp, uint32_t kd, uint32_t pos, uint32_t vel, uint32_t torque)
+{
+    return static_cast<uint64_t>(kp) << 49 | static_cast<uint64_t>(kd) << 40 |
+        static_cast<uint64_t>(pos) << 24 | static_cast<uint64_t>(vel) << 12 | torque;
+}
+
+constexpr motor::CanFrame impedance_frame(uint16_t id, uint64_t word)
+{
+    motor::CanFrame out{};
+    out.id = id;
+    out.dlc = 8;
+    for (unsigned i = 0; i < 8; ++i) out.data[i] = static_cast<uint8_t>(word >> (56 - 8 * i));
+    return out;
+}
+
+constexpr auto centered_zero = mit_word(0, 0, 65535 / 2, 4095 / 2, 4095 / 2);
+static_assert(centered_zero == UINT64_C(0x0000007fff7ff7ff));
+}
+
+bool encode_centered_zero(const motor::Command &c, const motor::Routing &r, motor::CanFrame &out) noexcept
+{
+    if (!motor::is_zero_mit(c) || !motor::within_limits(c, r) || r.can_id < 1 || r.can_id > 8 ||
+        (c.control_bits & ~(motor::Arm | motor::StartMotion)))
+        return false;
+    out = impedance_frame(r.can_id, centered_zero);
+    return true;
+}
+
 bool encode_motion(const motor::Command &c, const motor::Routing &r,
                    const encos_profile_t &p, motor::CanFrame &frame) noexcept
 {
@@ -96,11 +125,7 @@ bool encode_motion(const motor::Command &c, const motor::Routing &r,
             !quantize(pos, p.pos, 16, &x) || !quantize(vel, p.vel, 12, &v) ||
             !quantize(c.torque_mNm / 1000., p.torque, 12, &t))
             return false;
-        const uint64_t bits = static_cast<uint64_t>(kp) << 49 | static_cast<uint64_t>(kd) << 40 |
-            static_cast<uint64_t>(x) << 24 | static_cast<uint64_t>(v) << 12 | t;
-        candidate.dlc = 8;
-        for (unsigned i = 0; i < 8; ++i)
-            candidate.data[i] = static_cast<uint8_t>(bits >> (56 - 8 * i));
+        candidate = impedance_frame(r.can_id, mit_word(kp, kd, x, v, t));
         break;
     }
     default:
