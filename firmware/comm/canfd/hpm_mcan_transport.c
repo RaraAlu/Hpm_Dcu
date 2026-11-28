@@ -265,9 +265,10 @@ static DCU_FAST_CODE void receive_isr(uint32_t bus)
         collect_tx_eofs(bus, base);
         portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
     }
-    while(mcan_get_rxfifo_fill_level(base,0U)) {
+    while ((flags & MCAN_INT_RXFIFO0_NEW_MSG) && mcan_get_rxfifo_fill_level(base, 0U)) {
         mcan_rx_message_t f;
-        if(mcan_read_rxfifo(base,0,&f)!=status_success)break;
+        /* FIFO0 is configured for 64-byte elements and this ISR is its only reader. */
+        mcan_read_rxfifo_unchecked(base, 0, &f);
         dcu_can_eof_t eof = {0};
         if (channel->timestamp_eof)
             eof = read_eof(bus, f.rx_timestamp_captured, f.rx_timestamp_pointer);
@@ -296,13 +297,11 @@ static DCU_FAST_CODE void receive_isr(uint32_t bus)
 #endif
         __asm__ volatile("" ::: "memory");q->write=next;
     }
-    if (flags & MCAN_EVENT_TRANSMIT) led_pulse(bus, CANFD_LED_TX);
+    if (flags & (MCAN_EVENT_TRANSMIT | MCAN_INT_TX_EVT_FIFO_NEW_ENTRY)) led_pulse(bus,CANFD_LED_TX);
     if(flags&MCAN_EVENT_ERROR)led_pulse(bus,CANFD_LED_ERR);
-    const uint32_t left = s_chain[bus].cutoff_us - dcu_time_now_us();
-    /* Paced TX events advance the next frame here, not on the worker.
-     * RX wakes the consumer; the independent periodic tick covers a silent peer. */
-    if ((flags & MCAN_INT_RXFIFO0_NEW_MSG) && (dcu_cycle_event_enabled() ||
-        (s_chain[bus].cutoff_us && left && left <= DCU_SYNC_MAX_PERIOD_NS / 1000U)))
+    /* The paced batch is submitted and drained within one worker activation.
+     * Only event PDO can have an asleep worker waiting for this RX interrupt. */
+    if ((flags & MCAN_INT_RXFIFO0_NEW_MSG) && dcu_cycle_event_enabled())
         dcu_notify_ecat_can_from_isr();
 #if defined(CONFIG_CAN_BATCH_SAMPLE)
     can_irq_total_us += dcu_time_now_us() - irq_us;
@@ -412,11 +411,10 @@ hpm_stat_t dcu_mcan_init(const dcu_can_channel_config_t *channels, size_t count)
         config.ram_config.enable_tx_evt_fifo = channel->timestamp_eof;
         config.ram_config.tx_evt_fifo_elem_count = channel->timestamp_eof ? CANFD_TX_FIFO_DEPTH : 0U;
         config.ram_config.tx_evt_fifo_watermark = 0U;
-        /*
-         * TX 完成中断有两级开关：除全局 TC 外，还必须在 TXBTIE 中使能
-         * 对应 TX FIFO 元素；否则报文能正常上总线，但不会产生 TX 灯事件。
-         */
-        config.txbuf_trans_interrupt_mask = (1UL << (channel->timestamp_eof ? CANFD_TX_SLOTS : CANFD_TX_FIFO_DEPTH)) - 1UL;
+        /* Dedicated paced buffers already raise the TX event FIFO interrupt
+         * with the hardware EOF. Ordinary FIFO buffers keep their TC interrupt. */
+        config.txbuf_trans_interrupt_mask = ((1UL << CANFD_TX_FIFO_DEPTH) - 1UL) <<
+                                            (channel->timestamp_eof ? CANFD_PACED_SLOTS : 0U);
         config.interrupt_mask = MCAN_INT_RXFIFO0_NEW_MSG
                               | (channel->timestamp_eof ? MCAN_INT_TX_EVT_FIFO_NEW_ENTRY : 0U)
                               | MCAN_EVENT_TRANSMIT
