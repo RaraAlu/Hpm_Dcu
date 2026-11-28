@@ -3,7 +3,30 @@ set(_tools "${PROJECT_SOURCE_DIR}/tools/protocol")
 set(DCU_CAN_PROFILE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/profile/cfg/生产CAN配置.yaml"
     CACHE FILEPATH "Production CAN Profile YAML")
 set(_can_profile_header "${CMAKE_CURRENT_BINARY_DIR}/dcu_can_profile_generated.h")
+set(DCU_WG3_CONFIG "" CACHE FILEPATH "WG3 whole-robot YAML instead of a native CAN Profile")
+if(DCU_WG3_CONFIG)
+    set(_profile_input "${DCU_WG3_CONFIG}")
+    get_filename_component(_wg3_cfg_dir "${DCU_WG3_CONFIG}" DIRECTORY)
+    find_program(DCU_WG3_GENERATOR NAMES generate_pdo_contract
+        HINTS "${_wg3_cfg_dir}/../../../../build" NO_CMAKE_FIND_ROOT_PATH REQUIRED)
+    set(_generate_contract "${DCU_WG3_GENERATOR}" "${_profile_input}" "${DCU_PROTOCOL_ROOT}")
+    set(_wg3_dependencies "${DCU_WG3_GENERATOR}")
+    set(_wg3_outputs protocol/ethercat/dcu_device_pdo.hpp firmware/generated/dcu_can_profile_generated.h)
+    if(EXISTS "${_wg3_cfg_dir}/../generator/接口定义.json")
+        list(APPEND _wg3_dependencies "${_wg3_cfg_dir}/../generator/接口定义.json" "${_wg3_cfg_dir}/../generator/设备模板.xml")
+    endif()
+    set(_can_header_command "${CMAKE_COMMAND}" -E copy_if_different
+        "${DCU_PROTOCOL_ROOT}/firmware/generated/dcu_can_profile_generated.h" "${_can_profile_header}")
+else()
+    set(_profile_input "${DCU_CAN_PROFILE_FILE}")
+    set(_generate_contract "${PYTHON_EXECUTABLE}" "${_tools}/generate.py"
+        --profile "${_profile_input}" --output-root "${DCU_PROTOCOL_ROOT}")
+    set(_can_header_command "${PYTHON_EXECUTABLE}" "${_tools}/generate_can_profile.py"
+        --profile "${_profile_input}" --output "${_can_profile_header}")
+endif()
 set(_contract_files
+    ${_wg3_outputs}
+    protocol/ethercat/dcu_can_event.hpp
     firmware/generated/encos/encos_interface.h firmware/generated/encos/encos_storage.inc
     firmware/generated/ethercat/digital_ioObjects.h firmware/generated/ethercat/gatewayObjects.h
     firmware/generated/ethercat/eeprom.h protocol/ethercat/dcu_profile_pdo.hpp protocol/ethercat/dcu_igh_layout.hpp
@@ -11,17 +34,18 @@ set(_contract_files
     protocol/ethercat/HPM_ENCOS_4CAN_28AXIS_IMU.xml protocol/ethercat/HPM_ENCOS_4CAN_28AXIS_IMU.bin)
 list(TRANSFORM _contract_files PREPEND "${DCU_PROTOCOL_ROOT}/")
 add_custom_command(OUTPUT "${_can_profile_header}" ${_contract_files}
-    COMMAND "${PYTHON_EXECUTABLE}" "${_tools}/generate_can_profile.py"
-        --profile "${DCU_CAN_PROFILE_FILE}" --output "${_can_profile_header}"
-    COMMAND "${PYTHON_EXECUTABLE}" "${_tools}/generate.py"
-        --profile "${DCU_CAN_PROFILE_FILE}" --output-root "${DCU_PROTOCOL_ROOT}"
+    COMMAND ${_generate_contract}
+    COMMAND ${_can_header_command}
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_layout.hpp"
         "${DCU_PROTOCOL_ROOT}/protocol/ethercat/dcu_igh_layout.hpp"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_can_event.hpp"
+        "${DCU_PROTOCOL_ROOT}/protocol/ethercat/dcu_can_event.hpp"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_selection.hpp"
         "${DCU_PROTOCOL_ROOT}/protocol/ethercat/dcu_igh_selection.hpp"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_sideband.hpp"
         "${DCU_PROTOCOL_ROOT}/protocol/ethercat/dcu_sideband.hpp"
-    DEPENDS "${DCU_CAN_PROFILE_FILE}" "${_tools}/generate_can_profile.py"
+    DEPENDS "${_profile_input}" ${_wg3_dependencies} "${_tools}/generate_can_profile.py"
+        "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_can_event.hpp"
         "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_layout.hpp"
         "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_igh_selection.hpp"
         "${PROJECT_SOURCE_DIR}/protocol/ethercat/dcu_sideband.hpp"

@@ -10,6 +10,16 @@
     "MC_STATUS_ARMED_QUERY_ONLY": "0x2000u"
   },
   "types": {
+    "mc_event_header_t": [
+      {"name":"Seq","type":"uint32_t","label":"Publication sequence","access":"ro","default":0},
+      {"name":"Routes","type":"uint8_t","count":20,"label":"Physical CAN0..3 descriptors","access":"ro","default":0}
+    ],
+    "mc_event_data_t": [
+      {"name":"A","type":"uint8_t","count":16,"label":"Bytes 0 to 15","access":"ro","default":0},
+      {"name":"B","type":"uint8_t","count":16,"label":"Bytes 16 to 31","access":"ro","default":0},
+      {"name":"C","type":"uint8_t","count":16,"label":"Bytes 32 to 47","access":"ro","default":0},
+      {"name":"D","type":"uint8_t","count":16,"label":"Bytes 48 to 63","access":"ro","default":0}
+    ],
     "mc_head_health_t": [
       {"name":"Monitoring","type":"uint8_t","label":"Head monitor active","access":"ro","default":0},
       {"name":"HeartbeatSeen","type":"uint8_t","label":"Heartbeat seen board mask","access":"ro","default":0},
@@ -2888,6 +2898,10 @@
     ]
   },
   "families": [
+    {"index":"0x7305","type":"mc_event_header_t","name":"CAN event SM2 header","count":1,"stride":0,"access":"rw",
+     "pdo":{"index":"0x165F","direction":"rx","default":false,"stride":0}},
+    {"index":"0x6405","type":"mc_event_header_t","name":"CAN event SM3 header","count":1,"stride":0,
+     "pdo":{"index":"0x1A5F","direction":"tx","default":false,"stride":0}},
     {
       "index": "0x2000",
       "type": "mc_board_info_t",
@@ -3179,20 +3193,20 @@
     },
     {
       "index": "0x7301",
-      "type": "mc_raw_t",
-      "name": "SingleFD.Outputs",
-      "count": 1,
-      "stride": 0,
+      "type": "mc_event_data_t",
+      "name": "SingleFD{bus}.Outputs",
+      "count": 4,
+      "stride": 1,
       "access": "rw",
-      "pdo": {"index": "0x1641", "direction": "rx", "default": false, "stride": 0}
+      "pdo": {"index": "0x1660", "direction": "rx", "default": false, "stride": 1}
     },
     {
       "index": "0x6401",
-      "type": "mc_raw_t",
-      "name": "SingleFD.Inputs",
-      "count": 1,
-      "stride": 0,
-      "pdo": {"index": "0x1A42", "direction": "tx", "default": false, "stride": 0}
+      "type": "mc_event_data_t",
+      "name": "SingleFD{bus}.Inputs",
+      "count": 4,
+      "stride": 1,
+      "pdo": {"index": "0x1A60", "direction": "tx", "default": false, "stride": 1}
     },
     {
       "index": "0x7400",
@@ -3253,8 +3267,8 @@
     },
     {
       "name": "single_fd",
-      "rx": ["0x1641"],
-      "tx": ["0x1A42"]
+      "rx": ["0x165F", "0x1660:0x1663"],
+      "tx": ["0x1A5F", "0x1A60:0x1A63"]
     }
   ],
   "default_profile": 1,

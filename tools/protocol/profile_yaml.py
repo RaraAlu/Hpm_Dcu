@@ -1,6 +1,6 @@
 """Strict YAML input and field validation shared by Profile tools."""
-from pathlib import Path
 import re
+from pathlib import Path
 
 import yaml
 

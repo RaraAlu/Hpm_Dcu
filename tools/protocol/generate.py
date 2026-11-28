@@ -1,15 +1,17 @@
-#!/usr/bin/env python3
 """Generate the DCU wire contract, SSC dictionary, ESI and SII without SDK tools."""
 import argparse
 import copy
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
+import shutil
 import struct
+import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -477,7 +479,7 @@ def eeprom_header(data):
     return BANNER + '\r\nunsigned char aEepromData[] = {\r\n' + '\r\n'.join(rows) + '\r\n};\r\n'
 
 
-def cyclic_contract(schema, pdos, profile):
+def cyclic_contract(schema, pdos, profile, *, bind_profile=False):
     from generate_can_profile import profile_digest
     buses = sorted(c['bus'] for c in profile['channels'])
     counts = [0] * 4
@@ -500,6 +502,7 @@ def cyclic_contract(schema, pdos, profile):
                 ordinal = index - base
                 if 1 <= ordinal <= 4 and ordinal - 1 not in buses: continue
                 if 0x50 <= ordinal <= 0x53 and ordinal - 0x50 not in buses: continue
+                if mode == 3 and ordinal >= 0x60 and ordinal - 0x60 not in buses: continue
                 if 0x20 <= ordinal < 0x3C:
                     device = axes.get(ordinal - 0x20)
                     if not device or (not tx and device['protocol'] == 'bjcx' and
@@ -508,18 +511,21 @@ def cyclic_contract(schema, pdos, profile):
                 offset = length
                 for sub, field in enumerate(p['fields'], 1):
                     width = field_size(field)
-                    entries.append(dict(index=p['index'], sub=sub, bits=width * 8, offset=length,
-                                        type=field_type(field)[0], name=field['name'], meaning=field['label']))
+                    entries.append({'index': p['index'], 'sub': sub, 'bits': width * 8, 'offset': length,
+                                    'type': field_type(field)[0], 'name': field['name'], 'meaning': field['label']})
                     length += width
-                refs.append(dict(mapping=index, object=p['index'], offset=offset, bytes=length-offset,
-                                 fields=len(p['fields'])))
-            image[direction] = dict(bytes=length, blocks=refs, entries=entries)
+                refs.append({'mapping': index, 'object': p['index'], 'offset': offset, 'bytes': length - offset,
+                             'fields': len(p['fields'])})
+            image[direction] = {'bytes': length, 'blocks': refs, 'entries': entries}
         modes.append(image)
-    result = dict(version=schema['constants']['MC_INTERFACE_VERSION'], channels=buses,
-                  axes=[dict(slot=k, **axes[k]) for k in sorted(axes)], modes=modes)
+    result = {'version': schema['constants']['MC_INTERFACE_VERSION'], 'channels': buses,
+              'axes': [dict(slot=k, **axes[k]) for k in sorted(axes)], 'modes': modes}
     for channel in profile['channels']:
         if 'cyclic_sideband' in channel:
             result['cyclic_sideband'] = dict(bus=channel['bus'], **channel['cyclic_sideband'])
+    # PREOP exposes this digest, so changes to MCU policy must also invalidate a WG3 image.
+    if bind_profile:
+        result['profile_sha256'] = profile_digest(profile).hex()
     result['sha256'] = hashlib.sha256(json.dumps(result, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     result['profile_id'] = profile['startup']['profile_id']
     result['profile_revision'] = profile['startup']['revision']
@@ -527,7 +533,7 @@ def cyclic_contract(schema, pdos, profile):
     return result
 
 
-def rk_header(contract):
+def rk_header(contract, *, native_units=True):
     pending_mask = sum(1 << a['slot'] for a in contract['axes'] if a.get('motion_parameters') == 'pending')
     lines = [BANNER, '#ifndef DCU_PROFILE_PDO_HPP', '#define DCU_PROFILE_PDO_HPP', '#include <array>', '#include <cstdint>',
              'namespace dcu_profile_pdo {',
@@ -535,9 +541,11 @@ def rk_header(contract):
              f"inline constexpr uint32_t profile_id = {contract['profile_id']}u, profile_revision = {contract['profile_revision']}u;",
              f"inline constexpr uint32_t channel_mask = {sum(1 << c for c in contract['channels'])}u, axis_mask = {sum(1 << a['slot'] for a in contract['axes'])}u;",
              f"inline constexpr uint32_t motion_parameters_pending_mask = {pending_mask}u;",
-             'struct Unit { const char *name; unsigned slot; };',
-             'inline constexpr Unit units[] = {' +
-             ''.join('{' + json.dumps(a['id']) + ',' + str(a['slot']) + '},' for a in contract['axes']) + '{nullptr,0}};',
+             *(['struct Unit { const char *name; unsigned slot, bus, can_id; const char *protocol, *model; };',
+                'inline constexpr Unit units[] = {' +
+             ''.join('{' + ','.join(json.dumps(value) for value in
+                     (a['id'], a['slot'], a['bus'], a['can_id'], a['protocol'], str(a['type']))) + '},'
+                     for a in contract['axes']) + '{nullptr,0,0,0,nullptr,nullptr}};'] if native_units else []),
              'struct Block { uint16_t mapping, object, offset, bytes, fields; };',
              'struct Image { const Block *blocks; const uint32_t *entries; unsigned count, bytes; };',
              'struct Mode { Image rx, tx; };',
@@ -568,7 +576,8 @@ def rk_header(contract):
         images = []
         for direction, image in mode.items():
             prefix = f'{direction}{n}'
-            blocks = ','.join('{0x%(mapping)04x,0x%(object)04x,%(offset)d,%(bytes)d,%(fields)d}' % b for b in image['blocks'])
+            blocks = ','.join(f"{{0x{b['mapping']:04x},0x{b['object']:04x},{b['offset']},{b['bytes']},{b['fields']}}}"
+                              for b in image['blocks'])
             words = ','.join(f"0x{e['index']:04x}{e['sub']:02x}{e['bits']:02x}u" for e in image['entries'])
             lines += [f'inline constexpr Block {prefix}_blocks[] = {{{blocks}}};',
                       f'inline constexpr uint32_t {prefix}_entries[] = {{{words}}};']
@@ -582,8 +591,21 @@ def rk_header(contract):
 
 
 def outputs(schema_path=HERE / 'cfg/接口定义.json', template_path=HERE / 'cfg/设备模板.xml',
-            profile_path=DEFAULT_CAN_PROFILE):
-    from generate_can_profile import header as validate_profile, load_yaml
+            profile_path=DEFAULT_CAN_PROFILE, wg3_path=None, wg3_generator=None):
+    if wg3_path is not None:
+        generator = wg3_generator or shutil.which("generate_pdo_contract")
+        if not generator:
+            generator = wg3_path.resolve().parent / "../../../../build/generate_pdo_contract"
+        if not Path(generator).is_file():
+            raise ValueError("Build the WG3 host generate_pdo_contract target and pass --wg3-generator")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run([Path(generator).resolve(), wg3_path, root], check=True)
+            return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+    from generate_can_profile import header as validate_profile
+    from profile_yaml import load_yaml
+
     schema = json.loads(schema_path.read_text(encoding='utf-8'))
     profile = load_yaml(profile_path)
     validate_profile(profile)
@@ -600,7 +622,7 @@ def outputs(schema_path=HERE / 'cfg/接口定义.json', template_path=HERE / 'cf
         p['default'] = i in assignments[p['direction']]
     xml = esi(template_path.read_bytes(), objects, pdos)
     binary = sii(xml, schema['sii'])
-    return {
+    result = {
         'firmware/generated/encos/encos_interface.h': header(schema).encode(),
         'firmware/generated/encos/encos_storage.inc': storage(objects, contract['sha256']).encode(),
         'firmware/generated/ethercat/gatewayObjects.h': gateway(schema, objects, pdos, assignments).encode(),
@@ -608,18 +630,22 @@ def outputs(schema_path=HERE / 'cfg/接口定义.json', template_path=HERE / 'cf
         'protocol/ethercat/HPM_ENCOS_4CAN_28AXIS_IMU.xml': xml,
         'protocol/ethercat/HPM_ENCOS_4CAN_28AXIS_IMU.bin': binary,
         'firmware/generated/ethercat/eeprom.h': eeprom_header(binary).encode(),
-        'protocol/ethercat/dcu_profile_pdo.hpp': rk_header(contract).encode(),
+        'protocol/ethercat/dcu_profile_pdo.hpp': rk_header(contract, native_units=True).encode(),
         'protocol/ethercat/周期布局.json': (json.dumps(contract, ensure_ascii=False, indent=2) + '\n').encode(),
     }
+    return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output-root', type=Path, help='Generate into this directory; default is read-only check')
-    parser.add_argument('--profile', type=Path, default=DEFAULT_CAN_PROFILE)
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument('--profile', type=Path, default=DEFAULT_CAN_PROFILE)
+    source.add_argument('--wg3', type=Path, help='Generate MCU and RK images from one WG3 device configuration')
+    parser.add_argument('--wg3-generator', type=Path, help='Host WG3 generate_pdo_contract executable')
     arguments = parser.parse_args()
     mismatches = []
-    for relative, content in outputs(profile_path=arguments.profile).items():
+    for relative, content in outputs(profile_path=arguments.profile, wg3_path=arguments.wg3, wg3_generator=arguments.wg3_generator).items():
         target = (arguments.output_root or ROOT) / relative
         if arguments.output_root:
             target.parent.mkdir(parents=True, exist_ok=True)

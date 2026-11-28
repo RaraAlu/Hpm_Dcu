@@ -12,6 +12,24 @@
 #define MC_STATUS_QUERY_SOURCE 0x1000u
 #define MC_STATUS_ARMED_QUERY_ONLY 0x2000u
 typedef struct __attribute__((packed)) {
+    uint32_t Seq;
+    uint8_t Routes[20];
+} mc_event_header_t;
+DCU_STATIC_ASSERT(sizeof(mc_event_header_t)==24, "event_header size");
+DCU_STATIC_ASSERT(offsetof(mc_event_header_t,Seq)==0, "event_header.Seq");
+DCU_STATIC_ASSERT(offsetof(mc_event_header_t,Routes)==4, "event_header.Routes");
+typedef struct __attribute__((packed)) {
+    uint8_t A[16];
+    uint8_t B[16];
+    uint8_t C[16];
+    uint8_t D[16];
+} mc_event_data_t;
+DCU_STATIC_ASSERT(sizeof(mc_event_data_t)==64, "event_data size");
+DCU_STATIC_ASSERT(offsetof(mc_event_data_t,A)==0, "event_data.A");
+DCU_STATIC_ASSERT(offsetof(mc_event_data_t,B)==16, "event_data.B");
+DCU_STATIC_ASSERT(offsetof(mc_event_data_t,C)==32, "event_data.C");
+DCU_STATIC_ASSERT(offsetof(mc_event_data_t,D)==48, "event_data.D");
+typedef struct __attribute__((packed)) {
     uint8_t Monitoring;
     uint8_t HeartbeatSeen;
     uint8_t Offline;

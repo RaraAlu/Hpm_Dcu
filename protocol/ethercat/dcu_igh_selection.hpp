@@ -3,6 +3,7 @@
 
 #include <dcu_igh_layout.hpp>
 #include <chrono>
+#include <iterator>
 #include <thread>
 #include <vector>
 
@@ -16,6 +17,27 @@ struct SelectedImage {
 struct Selection {
     uint32_t channels{}, axes{};
     SelectedImage rx, tx;
+
+    bool build()
+    {
+        const auto generated = [](const auto &blocks, const auto &entries, unsigned bytes) -> SelectedImage {
+            return {{std::begin(blocks), std::end(blocks)}, {std::begin(entries), std::end(entries)}, bytes};
+        };
+        channels = channel_mask;
+        axes = axis_mask;
+        rx = generated(rx1_blocks, rx1_entries, modes[1].rx.bytes);
+        tx = generated(tx1_blocks, tx1_entries, modes[1].tx.bytes);
+        return channels != 0;
+    }
+
+    template<class Read>
+    bool active(Read &read) const
+    {
+        return read(0x2103, 3, 4) == channels && read(0x2103, 4, 4) == axes;
+    }
+
+    template<class Read>
+    bool feedback_active(Read &read) const { return read(0x2001, 1, 4) == axes; }
 
     bool build(uint32_t buses, uint32_t slots)
     {
